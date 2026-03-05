@@ -1,0 +1,57 @@
+# 构建 backend / frontend 镜像并推送到 GitHub Container Registry (ghcr.io)
+# 服务器上使用 docker compose pull && docker compose up -d 拉取镜像运行，无需本地 build
+
+name: Build and push Docker images
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract short SHA
+        id: meta
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/orient-g-backend:latest
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/orient-g-backend:sha-${{ steps.meta.outputs.sha }}
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/orient-g-frontend:latest
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/orient-g-frontend:sha-${{ steps.meta.outputs.sha }}

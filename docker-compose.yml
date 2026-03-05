@@ -1,5 +1,6 @@
 # Orient-G（财务信息内网）- 生产环境仅内网部署
-# 使用方式：在 Portainer 中上传本文件并配置环境变量，或服务器上 docker compose up -d
+# 使用方式：在 Portainer 中上传本文件并配置环境变量，或服务器上 docker compose pull && docker compose up -d
+# backend/frontend 镜像来自 ghcr.io，可在 .env 中设置 BACKEND_IMAGE、FRONTEND_IMAGE 覆盖
 # 反向代理与业务服务应只绑定内网 IP（见规划文档第三节）
 
 services:
@@ -19,9 +20,7 @@ services:
       retries: 5
 
   backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
+    image: ${BACKEND_IMAGE:-ghcr.io/jairwye/orient-g-backend:latest}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-mgmt}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-mgmt_web}
       UPLOAD_DIR: /app/uploads
@@ -33,9 +32,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
+    image: ${FRONTEND_IMAGE:-ghcr.io/jairwye/orient-g-frontend:latest}
     environment:
       API_BASE_SERVER: http://backend:8000
     depends_on:
