@@ -4,9 +4,8 @@ WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm install --legacy-peer-deps
 COPY frontend/ .
-RUN mkdir -p public
 ENV NEXT_PUBLIC_API_BASE=
-RUN npm run build
+RUN mkdir -p public && npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app
