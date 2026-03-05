@@ -4,8 +4,7 @@ WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm install --legacy-peer-deps
 COPY frontend/ .
-# 确保 public 存在且非空，避免 COPY --from=builder /app/public 在 runner 阶段报 not found
-RUN mkdir -p public && (test -f public/.gitkeep || touch public/.keep) && npm run build
+RUN npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app

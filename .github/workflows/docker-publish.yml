@@ -52,6 +52,7 @@ jobs:
           context: .
           file: frontend/Dockerfile
           push: true
+          no-cache: true
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/orient-g-frontend:latest
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/orient-g-frontend:sha-${{ steps.meta.outputs.sha }}
