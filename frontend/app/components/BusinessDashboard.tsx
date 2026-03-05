@@ -21,6 +21,13 @@ const PROFIT_COMPARE_CURRENT_GRADIENT_ID = "profitCompareCurrentGradient";
 const FLOW_ACTUAL_GRADIENT_ID = "flowActualGradient";
 const FLOW_UNFINISHED_GRADIENT_ID = "flowUnfinishedGradient";
 
+const chartHeight = 280;
+const PROFIT_TREND_BAR_SIZE = 40;
+const FLOW_BAR_SIZE = 40;
+const PROFIT_COMPARE_BAR_SIZE = 30;
+/** 左列两格总高（2*图表高度 + 两段标题/内边距/间距），用于右列流水图对齐 */
+const leftColumnTotalHeight = 2 * chartHeight + 136;
+
 const DEFAULT_STATS = [
   { title: "流水", value: "—", desc: "万元", completionRatio: "—" as string },
   { title: "利润", value: "—", desc: "万元", lastYearValue: "—" as string, changePercent: "—" as string },
@@ -193,8 +200,6 @@ export default function BusinessDashboard() {
     [fc.target]
   );
 
-  const chartHeight = 260;
-
   return (
     <div className="p-6 md:p-8">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -283,7 +288,7 @@ export default function BusinessDashboard() {
         })}
       </div>
 
-      <div className="grid gap-6 sm:grid-cols-2">
+      <div className="grid gap-6 sm:grid-cols-[1.12fr_0.88fr]">
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
           <h3 className="mb-3 text-sm font-medium text-zinc-300">利润（本年趋势与往年）</h3>
           {hasProfitTrend ? (
@@ -306,19 +311,19 @@ export default function BusinessDashboard() {
                 />
                 <Tooltip content={<ChartTooltip />} />
                 <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="往年" fill={`url(#${PROFIT_BAR_GRADIENT_ID})`} radius={[4, 4, 0, 0]} barSize={30} />
+                <Bar dataKey="往年" fill={`url(#${PROFIT_BAR_GRADIENT_ID})`} radius={[4, 4, 0, 0]} barSize={PROFIT_TREND_BAR_SIZE} />
                 <Area type="monotone" dataKey="本年_面积" fill={CHART_COLORS.current} fillOpacity={0.2} stroke="transparent" legendType="none" />
                 <Line type="monotone" dataKey="本年_线" name="本年" stroke={CHART_COLORS.current} strokeWidth={2} dot={{ fill: CHART_COLORS.current }} />
               </ComposedChart>
             </ResponsiveContainer>
           ) : (
-            <div className="flex h-[260px] items-center justify-center text-sm text-zinc-500">暂无数据，请上传 Excel</div>
+            <div className="flex items-center justify-center text-sm text-zinc-500" style={{ height: chartHeight }}>暂无数据，请上传 Excel</div>
           )}
         </div>
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 sm:row-span-2 min-h-[540px] flex flex-col">
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 sm:row-span-2 flex flex-col" style={{ minHeight: leftColumnTotalHeight }}>
           <h3 className="mb-3 text-sm font-medium text-zinc-300">流水（实际 vs 目标）</h3>
           {hasFlowCompare ? (
-            <div className="flex-1 min-h-[500px]">
+            <div className="flex-1 min-h-0">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={flowCompareData} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
                   <defs>
@@ -338,13 +343,13 @@ export default function BusinessDashboard() {
                     cursor={{ fill: "rgba(39,39,42,0.35)", stroke: "rgba(63,63,70,0.8)", strokeWidth: 1 }}
                   />
                   <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="实际" name="实际" stackId="flow" fill={`url(#${FLOW_ACTUAL_GRADIENT_ID})`} radius={[4, 0, 0, 4]} barSize={30} />
-                  <Bar dataKey="未完成" name="未完成" stackId="flow" fill={`url(#${FLOW_UNFINISHED_GRADIENT_ID})`} radius={[0, 4, 4, 0]} barSize={30} />
+                  <Bar dataKey="实际" name="实际" stackId="flow" fill={`url(#${FLOW_ACTUAL_GRADIENT_ID})`} radius={[4, 0, 0, 4]} barSize={FLOW_BAR_SIZE} />
+                  <Bar dataKey="未完成" name="未完成" stackId="flow" fill={`url(#${FLOW_UNFINISHED_GRADIENT_ID})`} radius={[0, 4, 4, 0]} barSize={FLOW_BAR_SIZE} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           ) : (
-            <div className="flex-1 flex min-h-[500px] items-center justify-center text-sm text-zinc-500">暂无数据，请上传 Excel</div>
+            <div className="flex-1 flex items-center justify-center text-sm text-zinc-500">暂无数据，请上传 Excel</div>
           )}
         </div>
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
@@ -376,12 +381,12 @@ export default function BusinessDashboard() {
                   cursor={{ fill: "rgba(39,39,42,0.35)", stroke: "rgba(63,63,70,0.8)", strokeWidth: 1 }}
                 />
                 <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="本年" fill={`url(#${PROFIT_COMPARE_CURRENT_GRADIENT_ID})`} radius={[4, 4, 0, 0]} barSize={30} />
-                <Bar dataKey="去年" fill={`url(#${PROFIT_COMPARE_LAST_YEAR_GRADIENT_ID})`} radius={[4, 4, 0, 0]} barSize={30} />
+                <Bar dataKey="本年" fill={`url(#${PROFIT_COMPARE_CURRENT_GRADIENT_ID})`} radius={[4, 4, 0, 0]} barSize={PROFIT_COMPARE_BAR_SIZE} />
+                <Bar dataKey="去年" fill={`url(#${PROFIT_COMPARE_LAST_YEAR_GRADIENT_ID})`} radius={[4, 4, 0, 0]} barSize={PROFIT_COMPARE_BAR_SIZE} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <div className="flex h-[260px] items-center justify-center text-sm text-zinc-500">暂无数据，请上传 Excel</div>
+            <div className="flex items-center justify-center text-sm text-zinc-500" style={{ height: chartHeight }}>暂无数据，请上传 Excel</div>
           )}
         </div>
       </div>
