@@ -1,0 +1,13 @@
+# 构建时忽略，避免上下文过大且不污染镜像
+frontend/node_modules
+frontend/.next
+backend/__pycache__
+.git
+.gitignore
+*.md
+.env
+.venv
+venv
+__pycache__
+*.pyc
+.DS_Store
