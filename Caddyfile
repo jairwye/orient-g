@@ -1,0 +1,12 @@
+# 生产环境仅绑定内网 IP（在 compose 或 Portainer 中设置 BIND_IP=192.168.x.x）
+:80 {
+    reverse_proxy /api/* backend:8000
+    reverse_proxy frontend:3000
+}
+
+# 可选：HTTPS，使用 Caddy 自签名证书（浏览器会提示不受信任，内网可接受）
+:443 {
+    tls internal
+    reverse_proxy /api/* backend:8000
+    reverse_proxy frontend:3000
+}

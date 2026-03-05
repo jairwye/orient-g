@@ -1,0 +1,21 @@
+# 规则与规划文档不上传到 GitHub 库（见 规则与规划/规则.md）
+规则与规划/
+
+# 参考文档不上传代码仓库
+参考/
+
+# 本地上传目录（不同步到生产）
+uploads/
+.venv/
+.node/
+# 前端依赖与构建产物（由 package.json 与 npm install / npm run build 复现）
+frontend/node_modules/
+frontend/.next/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+.env
+.env.local
+.env.*.local
+.DS_Store
+Thumbs.db

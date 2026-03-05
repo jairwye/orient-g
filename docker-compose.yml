@@ -1,0 +1,62 @@
+# Orient-G（财务信息内网）- 生产环境仅内网部署
+# 使用方式：在 Portainer 中上传本文件并配置环境变量，或服务器上 docker compose up -d
+# 反向代理与业务服务应只绑定内网 IP（见规划文档第三节）
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mgmt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-mgmt_web}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mgmt}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mgmt}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-mgmt_web}
+      UPLOAD_DIR: /app/uploads
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      db: { condition: service_healthy }
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      API_BASE_SERVER: http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # 反向代理：生产环境应只监听内网 IP（在部署时通过 Portainer 或 compose 覆盖）
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${BIND_IP:-127.0.0.1}:443:443"
+      - "${BIND_IP:-127.0.0.1}:80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}
+  uploads_data: {}
+  caddy_data: {}
