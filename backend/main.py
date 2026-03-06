@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.routers import health, exchange, policy_news, business, competitor
+from backend.routers import auth, health, exchange, policy_news, business, competitor, settings as settings_router
 
 
 @asynccontextmanager
@@ -38,3 +38,5 @@ app.include_router(exchange.router, prefix="/api/exchange", tags=["exchange"])
 app.include_router(policy_news.router, prefix="/api/policy-news", tags=["policy-news"])
 app.include_router(business.router, prefix="/api/business", tags=["business"])
 app.include_router(competitor.router, prefix="/api/competitor", tags=["competitor"])
+app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])

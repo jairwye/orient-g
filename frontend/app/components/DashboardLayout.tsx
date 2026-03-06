@@ -3,13 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen, User } from "lucide-react";
 
 const navItems = [
   { href: "/", label: "经营数据", icon: BarChart3 },
   { href: "/competitor", label: "竞品财报", icon: FileText },
   { href: "/exchange", label: "汇率趋势", icon: TrendingUp },
   { href: "/policy-news", label: "政策新闻", icon: Newspaper },
+  { href: "/user", label: "用户管理", icon: User },
 ];
 
 export default function DashboardLayout({

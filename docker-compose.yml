@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-mgmt}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-mgmt_web}
       UPLOAD_DIR: /app/uploads
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      AUTH_SECRET: ${AUTH_SECRET:-orient-g-auth-secret-change-in-production}
     volumes:
       - uploads_data:/app/uploads
     depends_on:
@@ -34,6 +35,7 @@ services:
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/jairwye/orient-g-frontend:latest}
     environment:
+      API_URL: http://backend:8000
       API_BASE_SERVER: http://backend:8000
     depends_on:
       - backend

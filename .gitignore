@@ -14,6 +14,7 @@ frontend/.next/
 backend/__pycache__/
 **/__pycache__/
 *.pyc
+# 敏感配置与数据（防外泄，勿提交）
 .env
 .env.local
 .env.*.local

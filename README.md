@@ -42,7 +42,7 @@ copy .env.example .env
 1. 复制环境变量：`copy .env.example .env`
 2. 编辑 `.env`：
    - `DATABASE_URL`：指向本机 PostgreSQL（如 `postgresql://user:pass@localhost:5432/mgmt_web`）
-   - `UPLOAD_DIR`：本地上传目录（如 `./uploads`），该目录已加入 `.gitignore`
+   - `UPLOAD_DIR`：本地上传目录（如 `./uploads`），该目录已加入 `.gitignore`；财务后台路径、登录用户名等应用设置保存在该目录下的 `app_settings.json`，请勿删除
 3. 在 PostgreSQL 中创建数据库（若尚未创建）：
    ```sql
    CREATE DATABASE mgmt_web;
@@ -52,7 +52,7 @@ copy .env.example .env
 ## 启动顺序
 
 1. 确保本机 **PostgreSQL 服务已启动**。
-2. 启动后端（在项目根目录）：
+2. 在**项目根目录**启动后端（保证 `UPLOAD_DIR` 解析一致，应用设置才能持久保存）：
    ```powershell
    .\.venv\Scripts\Activate.ps1
    uvicorn backend.main:app --reload
@@ -83,8 +83,10 @@ copy .env.example .env
 - **BIND_IP**：反向代理绑定的内网 IP（如 `192.168.1.100`），生产环境必须设置，否则默认 `127.0.0.1` 仅本机可访问、内网其他机器无法访问。
 - **POSTGRES_PASSWORD**：数据库密码；生产环境务必修改，勿使用默认值。
 - **FRONTEND_ORIGIN**：浏览器实际访问的地址（如 `http://192.168.1.100` 或 `https://192.168.1.100`），用于后端 CORS。未设置时默认为 `http://localhost:3000`，若用户通过内网 IP 访问则跨域请求会被拒绝。
+- **AUTH_SECRET**：页面登录 JWT 签名密钥；生产环境务必设置为强随机字符串，勿使用默认值，防止 token 被伪造。
 
 ## 扩展与协同
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
-- 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`。
+- 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`。财务后台默认路径为 `/admin`，可在后台页面修改。
+- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.1**：多用户与登录鉴权、管理后台布局、关闭标签页需重新登录等见 CHANGELOG。

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
-import DashboardLayout from "./components/DashboardLayout";
+import AuthGuard from "./components/AuthGuard";
 
 const geistSans = Geist({
   subsets: ["latin"],
@@ -21,7 +21,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" className={geistSans.variable}>
       <body className="min-h-screen antialiased">
-        <DashboardLayout>{children}</DashboardLayout>
+        <AuthGuard>{children}</AuthGuard>
       </body>
     </html>
   );

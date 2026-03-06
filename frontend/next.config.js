@@ -2,11 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
-  async rewrites() {
-    return [
-      { source: "/api/:path*", destination: "http://localhost:8000/api/:path*" },
-    ];
-  },
+  // /api/* 由 app/api/[[...path]]/route.ts 代理到后端并转发 Authorization 等头，不再用 rewrites
 };
 
 module.exports = nextConfig;
