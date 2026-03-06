@@ -343,7 +343,7 @@ export default function BusinessDashboard() {
                     cursor={{ fill: "rgba(39,39,42,0.35)", stroke: "rgba(63,63,70,0.8)", strokeWidth: 1 }}
                   />
                   <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="实际" name="实际" stackId="flow" fill={`url(#${FLOW_ACTUAL_GRADIENT_ID})`} radius={[4, 0, 0, 4]} barSize={FLOW_BAR_SIZE} />
+                  <Bar dataKey="实际" name="实际" stackId="flow" fill={`url(#${FLOW_ACTUAL_GRADIENT_ID})`} radius={0} barSize={FLOW_BAR_SIZE} />
                   <Bar dataKey="未完成" name="未完成" stackId="flow" fill={`url(#${FLOW_UNFINISHED_GRADIENT_ID})`} radius={[0, 4, 4, 0]} barSize={FLOW_BAR_SIZE} />
                 </BarChart>
               </ResponsiveContainer>
