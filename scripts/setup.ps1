@@ -115,7 +115,7 @@ if (-not $pgOk) {
 }
 if (-not $pgOk) {
     Write-Host ""
-    Write-Host "未检测到 PostgreSQL。请本机安装并创建数据库 mgmt_web，详见参考/PostgreSQL安装与连接说明.md"
+    Write-Host "未检测到 PostgreSQL。请本机安装并创建数据库 mgmt_web，连接与排查见 docs/汇率-PostgreSQL排查.md"
 }
 
 # ---------- Git 检测（可选）----------

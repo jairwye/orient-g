@@ -19,7 +19,7 @@
 .\scripts\setup.ps1
 ```
 
-脚本按依赖特性分别处理：**Python** 使用项目内 `.venv` 并安装后端依赖；**Node.js** 若未安装则通过 winget **全局安装**（不限制在项目目录）；前端依赖安装到 `frontend/node_modules`；复制 `.env.example` 为 `.env`、创建 `uploads`。PostgreSQL 需本机单独安装并创建数据库（脚本会检测并提示，详见参考/PostgreSQL安装与连接说明.md）。
+脚本按依赖特性分别处理：**Python** 使用项目内 `.venv` 并安装后端依赖；**Node.js** 若未安装则通过 winget **全局安装**（不限制在项目目录）；前端依赖安装到 `frontend/node_modules`；复制 `.env.example` 为 `.env`、创建 `uploads`。PostgreSQL 需本机单独安装并创建数据库（脚本会检测并提示）；连接与排查见 [docs/汇率-PostgreSQL排查.md](docs/汇率-PostgreSQL排查.md)。
 
 ## 手动安装
 
@@ -65,10 +65,12 @@ copy .env.example .env
 ```
 ├── frontend/          # Next.js 前端（员工 X 负责首页、经营、竞品；他人负责汇率、政策新闻细致页）
 ├── backend/           # FastAPI 后端（鉴权、Excel、CRUD）
-├── ai-bridge/         # 可选：AI 相关封装（当前仓库中未实现）
-├── docs/              # 部署说明、API 契约（见 docs/api-contract.md）
-├── scripts/           # 一键安装、部署用脚本
+├── docs/              # 部署说明、API 契约、汇率 PostgreSQL 排查（见 docs/api-contract.md、docs/汇率-PostgreSQL排查.md）
+├── scripts/           # 一键安装、部署用脚本（如 setup.ps1）
 ├── docker-compose.yml # 生产环境一键部署
+├── Caddyfile         # 反向代理配置，生产部署时与 compose 同目录
+├── .env.example       # 环境变量示例（复制为 .env 后修改，.env 已加入 .gitignore）
+├── CHANGELOG.md      # 版本更新记录
 └── README.md
 ```
 
@@ -89,4 +91,4 @@ copy .env.example .env
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
 - 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`。财务后台默认路径为 `/admin`，可在后台页面修改。
-- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.1.1**：经营数据页布局与图表优化、侧边栏收放、汇率趋势滚轮缩放与样式等见 CHANGELOG。
+- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.1.2**：侧边栏不随路由刷新、新闻政策页完成、生产环境 PostgreSQL 排查文档补充等见 CHANGELOG。

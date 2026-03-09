@@ -25,11 +25,39 @@
 
 ---
 
-## 2. 政策新闻摘要
+## 2. 新闻政策
 
-- **路径**：`GET /api/policy-news/summary`
-- **可选查询参数**：`limit=5`（条数，默认 5）
-- **响应**：首页展示最近几条政策新闻标题与链接/时间。
+- **列表（新闻政策页主接口）**：`GET /api/policy-news/list`
+  - **可选查询参数**：`category`（`观点` | `新闻` | `AI`），不传则返回全部三类。
+  - **响应**：`categories`（分类 key 列表）、`itemsByCategory`（各分类下的条目列表）、`lastSuccessAt`、`lastError`。
+
+```json
+{
+  "categories": ["观点", "新闻", "AI"],
+  "itemsByCategory": {
+    "观点": [
+      {
+        "id": "tag:...",
+        "title": "标题",
+        "published": "2025-03-01T12:00:00Z",
+        "date": "2025-03-01",
+        "link": "https://...",
+        "originTitle": "来源 feed 名",
+        "summary": "",
+        "thumbnail": ""
+      }
+    ],
+    "新闻": [],
+    "AI": []
+  },
+  "lastSuccessAt": 1234567890,
+  "lastError": null
+}
+```
+
+- **摘要**：`GET /api/policy-news/summary`
+  - **可选查询参数**：`limit=5`（条数，默认 5）
+  - **响应**：首页展示最近几条新闻政策标题与链接/时间。
 
 ```json
 {
@@ -38,13 +66,13 @@
       "id": "1",
       "title": "政策标题示例",
       "date": "2025-03-01",
-      "link": "/policy-news/1"
+      "link": "https://..."
     }
   ]
 }
 ```
 
-- **说明**：由负责「政策新闻」细致页的员工实现；首页仅展示摘要，点击跳转 `/policy-news` 或具体条目。
+- **说明**：数据来自 FreshRSS GReader API 定时拉取，内存缓存不写库；侧栏入口为「新闻政策」，页上三按钮「观点 / 新闻 / AI」对应三类；详见规则与规划/新闻页方案.md。
 
 ---
 

@@ -148,3 +148,144 @@ psql -h localhost -p 5432 -U 你的用户名 -d mgmt_web
 参考：[psycopg2 #417](https://github.com/psycopg/psycopg2/issues/417)、[psycopg2 #1442](https://github.com/psycopg/psycopg2/issues/1442)。
 
 **仍可先用 psql 排查**：`psql -h 127.0.0.1 -p 5432 -U 你的用户名 -d mgmt_web`，按提示输入密码。若 psql 能连上而 Python 仍不能，改完 `lc_messages` 后 Python 端应会显示与 psql 一致的错误信息。
+
+---
+
+## 8. 生产环境：页面提示「暂无汇率数据，请稍后或检查后端定时任务」时如何排查
+
+页面上出现该提示说明前端拿到的历史数据为空（`/api/exchange/history` 返回的 `data` 为空或请求失败）。按下面顺序排查。
+
+### 8.1 直接请求后端接口
+
+**含义**：用浏览器或命令行直接访问后端 API，看返回是空数据、报错还是正常有数据。
+
+**具体做法：**
+
+1. **确定「后端地址」**  
+   即浏览器访问生产站点的域名或 IP（例如 `http://192.168.1.100` 或 `https://mgmt.company.com`）。前端请求的是「同一站点下的 /api/...」，所以后端地址就是该站点的协议+主机+端口（如有），例如 `http://192.168.1.100:80` 或 `https://mgmt.company.com`。
+
+2. **用浏览器**  
+   - 打开新标签页，访问：`你的后端地址/api/exchange/history`  
+   - 再访问：`你的后端地址/api/exchange/status`  
+   看页面显示的 JSON：`data` 是否为空数组、是否有 `fetching`/`totalRecords` 等。
+
+3. **用命令行（可选）**  
+   - **Linux / macOS / Git Bash**：在终端执行（把 `http://192.168.1.100` 换成你的后端地址）：
+     ```bash
+     curl -s "http://192.168.1.100/api/exchange/history"
+     curl -s "http://192.168.1.100/api/exchange/status"
+     ```
+   - **Windows PowerShell**：
+     ```powershell
+     Invoke-RestMethod -Uri "http://192.168.1.100/api/exchange/history"
+     Invoke-RestMethod -Uri "http://192.168.1.100/api/exchange/status"
+     ```
+     若未安装 curl 也可用：`(Invoke-WebRequest -Uri "http://192.168.1.100/api/exchange/history").Content`
+
+**如何判断结果：**
+
+- 返回 **502、连接失败、超时**：后端未启动或网络/反向代理有问题，需先让后端可访问。
+- 返回 **200 且内容为 `{"data":[]}`**：接口正常但库里没有数据，继续 8.2、8.3。
+- 返回 **200 且 `data` 里有数组且非空**：接口和库都正常，问题多半在前端请求的地址或缓存，可强制刷新（Ctrl+F5）或清缓存后再试。
+
+---
+
+### 8.2 看后端启动日志
+
+**含义**：通过日志确认数据库是否连上、调度器是否启动、是否有「exchange_rates table ready」或报错。
+
+**具体做法：**
+
+- **本机直接运行 uvicorn 时**：在启动后端的那个终端/控制台里看输出。启动瞬间会打印 PostgreSQL 相关提示；若有报错会直接出现在同一窗口。
+- **Docker 部署时**：  
+  1. 查后端容器名：`docker ps` 或 `docker compose ps`，找到运行 FastAPI/uvicorn 的容器（名称可能是 `orient-g-backend`、`backend` 等，以你实际 compose/运行名为准）。  
+  2. 看最近日志：`docker logs 容器名 --tail 200`，或 `docker compose logs backend --tail 200`。  
+  3. 在日志中搜索：`PostgreSQL`、`exchange_rates table ready`、`汇率趋势功能已禁用`、`updated today rates`、`OperationalError` 等。
+
+**如何判断：**
+
+- 出现 **「PostgreSQL 不可用，汇率趋势功能已禁用」**：数据库未连上，调度器未启动，不会拉取也不会写库，需按本文档第 0～7 节排查 PostgreSQL 连接。
+- 出现 **「exchange_rates table ready」**：说明建表/连接正常；若页面仍无数据，继续 8.3 查库里是否真有数据。
+
+---
+
+### 8.3 确认数据库是否有数据
+
+**含义**：直接查 PostgreSQL 里 `exchange_rates` 表是否有行，确认后端用的库和当前连的是否一致。
+
+**具体做法：**
+
+任选一种能执行 SQL 的方式（在能连上生产 PostgreSQL 的机器上操作）：
+
+**方式 A：psql 命令行**
+
+```bash
+# 格式：psql -h 主机 -p 端口 -U 用户名 -d 数据库名
+# 示例（按你实际的主机、端口、用户名、库名改）：
+psql -h 192.168.1.100 -p 5432 -U postgres -d mgmt_web
+# 按提示输入密码后，在 psql 里执行：
+SELECT COUNT(*), MIN(date), MAX(date) FROM exchange_rates;
+```
+
+**方式 B：Docker 内 PostgreSQL**
+
+若数据库在 Docker 里（例如服务名为 `db` 或 `postgres`）：
+
+```bash
+docker exec -it 数据库容器名 psql -U postgres -d mgmt_web -c "SELECT COUNT(*), MIN(date), MAX(date) FROM exchange_rates;"
+```
+
+或先进入容器再执行：
+
+```bash
+docker exec -it 数据库容器名 bash
+psql -U postgres -d mgmt_web
+# 在 psql 里执行：
+SELECT COUNT(*), MIN(date), MAX(date) FROM exchange_rates;
+```
+
+**方式 C：图形化工具（如 pgAdmin、DBeaver）**
+
+连上生产 PostgreSQL，选中数据库（如 `mgmt_web`），打开 SQL 窗口，执行：
+
+```sql
+SELECT COUNT(*), MIN(date), MAX(date) FROM exchange_rates;
+```
+
+**如何判断：**
+
+- **COUNT = 0**：表里没有数据，从未写入成功。结合 8.2 的日志看：若启动时报了 PostgreSQL 不可用，先修连接；若已出现「exchange_rates table ready」仍为 0，可能是定时任务还没跑到或拉取三方 API 失败，可再查日志里是否有 `updated today rates` 或异常。
+- **COUNT > 0**：库里有数据。若 8.1 里接口仍返回空，多半是后端用的 **DATABASE_URL** 和当前查的库不一致（例如连了别的库或别的库名），需要核对生产环境里后端容器的 `DATABASE_URL` 与当前连接的库、库名是否一致。
+
+---
+
+### 8.4 核对生产环境 DATABASE_URL（Docker 时）
+
+**含义**：确认后端实际连的是哪个库，和 8.3 里查的是不是同一个。
+
+**具体做法：**
+
+- **Docker Compose**：看 compose 里后端服务的 `environment` 或 `env_file`，找到 `DATABASE_URL`。或在宿主机执行：
+  ```bash
+  docker exec 后端容器名 env | findstr DATABASE_URL
+  ```
+  （Linux/mac 下把 `findstr` 换成 `grep`，例如 `docker exec 后端容器名 env | grep DATABASE_URL`）
+- 对比 8.3 中你连接的：主机、端口、数据库名、用户名是否与 `DATABASE_URL` 里一致。若不一致，要么改环境变量让后端连到有数据的库，要么在正确的库里执行 8.3 的 SQL 再对比接口返回。
+
+---
+
+### 8.5 Docker 部署时其他注意点
+
+- 后端容器的 **DATABASE_URL** 必须指向可访问的 PostgreSQL：若数据库在宿主机，用宿主机 IP 或 `host.docker.internal`（Windows/Mac），不要用 `localhost`（在容器内 localhost 是容器自己）。
+- 若数据库与后端在同一 compose 内，一般用**服务名**作主机名（如 `postgres`、`db`）。
+- **密码与 volume 一致性**：PostgreSQL 官方镜像只在**首次初始化数据目录**时用 `POSTGRES_PASSWORD` 创建用户并设密码，之后密码写在 volume（如 `pgdata`）里；修改 `.env` 中的 `POSTGRES_PASSWORD` 并重启容器**不会**更新库里已有用户的密码。若你改过 `.env` 后出现 `password authentication failed for user "mgmt"`，说明 backend 用的是新密码、库里仍是旧密码。解决方式二选一：（1）在库里把密码改成与当前 `.env` 一致：`docker exec -it 数据库容器名 psql -U mgmt -d mgmt_web -c "ALTER USER mgmt PASSWORD '你的新密码';"`，并确保生产环境 `.env` 中 `POSTGRES_PASSWORD` 与该密码一致后重启 backend；（2）将 `.env` 的 `POSTGRES_PASSWORD` 改回首次部署时使用的密码。compose 中 db 与 backend 共用同一套 `POSTGRES_USER`/`POSTGRES_PASSWORD` 环境变量，两边理论上一致，不一致多因 volume 曾用旧密码初始化导致。
+- 查看后端日志：`docker logs 后端容器名 --tail 200` 或 `docker compose logs backend --tail 200`，确认是否有「exchange_rates table ready」「updated today rates」或 PostgreSQL/API 相关报错。
+
+### 8.6 小结
+
+| 现象 | 可能原因 | 建议 |
+|------|----------|------|
+| /history 返回 502 或无法访问 | 后端未起或网络/代理问题 | 检查后端进程、反向代理、防火墙 |
+| /history 返回 200 且 data 为空 | 库无数据或后端连错库 | 查启动日志是否报 DB 错误；查库中 COUNT(*)；核对 DATABASE_URL |
+| 启动日志报 PostgreSQL 不可用 / password authentication failed | 数据库连接失败；Docker 下常见为 .env 改过密码但 volume 仍为旧密码 | 按第 0～7 节排查；Docker 见 8.5「密码与 volume 一致性」，用 ALTER USER 或改回 .env 密码 |
+| 库有数据但页面仍无 | 前端请求的并非该后端或缓存 | 核对前端请求的 API 基地址、清缓存或强制刷新 |

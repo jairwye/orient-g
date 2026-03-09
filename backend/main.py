@@ -15,6 +15,7 @@ from backend.config import settings
 from backend.database import init_exchange_rates_table
 from backend.routers import auth, health, exchange, policy_news, business, competitor, settings as settings_router
 from backend.services.exchange_rates import finalize_today_data, update_today_rate
+from backend.services.freshrss import fetch_all as freshrss_fetch_all
 
 logger = logging.getLogger(__name__)
 scheduler: BackgroundScheduler | None = None
@@ -28,6 +29,9 @@ async def lifespan(app: FastAPI):
         scheduler = BackgroundScheduler()
         scheduler.add_job(update_today_rate, "interval", hours=1)
         scheduler.add_job(finalize_today_data, "cron", hour=20, minute=0)
+        if settings.freshrss_configured:
+            interval_min = max(1, getattr(settings, "freshrss_fetch_interval_minutes", 10))
+            scheduler.add_job(freshrss_fetch_all, "interval", minutes=interval_min)
         scheduler.start()
         # 首次拉取放后台，避免阻塞启动（历史补全可能需数分钟）
         def _run_initial_update():
@@ -36,6 +40,13 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning("initial exchange rate update failed: %s", e)
         threading.Thread(target=_run_initial_update, daemon=True).start()
+        if settings.freshrss_configured:
+            def _run_initial_freshrss():
+                try:
+                    freshrss_fetch_all()
+                except Exception as e:
+                    logger.warning("initial FreshRSS fetch failed: %s", e)
+            threading.Thread(target=_run_initial_freshrss, daemon=True).start()
     except OperationalError as e:
         from urllib.parse import urlparse
         try:

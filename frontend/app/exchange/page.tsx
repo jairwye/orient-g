@@ -182,7 +182,7 @@ export default function ExchangePage() {
         <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">汇率变动趋势</h1>
-            <p className="mt-1 text-sm text-zinc-500">数据自 2025-04-02 起，默认最近两个月，可拖动下方滑块查看更早数据。</p>
+            <p className="mt-1 text-sm text-zinc-500">数据自 2025-04-02 起，来源于三方api</p>
           </div>
         </div>
         <div className="flex flex-1 items-center justify-center rounded-xl bg-zinc-900/30 text-zinc-500">
@@ -198,7 +198,7 @@ export default function ExchangePage() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">汇率变动趋势</h1>
-            <p className="mt-1 text-sm text-zinc-500">数据自 2025-04-02 起，默认最近两个月，可拖动下方滑块查看更早数据。</p>
+            <p className="mt-1 text-sm text-zinc-500">数据自 2025-04-02 起，来源于三方api</p>
           </div>
           <div className="flex shrink-0 overflow-hidden rounded-lg border border-zinc-600">
             {(["usd", "eur", "jpy"] as const).map((c, i) => (

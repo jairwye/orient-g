@@ -3,13 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen, User } from "lucide-react";
+import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen, User, Wrench } from "lucide-react";
 
 const navItems = [
   { href: "/", label: "经营数据", icon: BarChart3 },
-  { href: "/competitor", label: "竞品财报", icon: FileText },
   { href: "/exchange", label: "汇率趋势", icon: TrendingUp },
-  { href: "/policy-news", label: "政策新闻", icon: Newspaper },
+  { href: "/policy-news", label: "新闻政策", icon: Newspaper },
+  { href: "/utils", label: "实用工具", icon: Wrench },
+  { href: "/competitor", label: "竞品财报", icon: FileText },
   { href: "/user", label: "用户管理", icon: User },
 ];
 
@@ -63,7 +64,7 @@ export default function DashboardLayout({
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
-          className="absolute left-0 top-3 z-10 flex h-6 w-6 translate-x-1/2 -translate-y-1/2 items-center justify-center text-zinc-400 hover:text-zinc-200"
+          className="absolute left-0 top-3 z-10 flex h-6 w-6 translate-x-0 -translate-y-1/2 items-center justify-center text-zinc-400 hover:text-zinc-200"
           title={collapsed ? "展开侧边栏" : "收拢侧边栏"}
           aria-label={collapsed ? "展开侧边栏" : "收拢侧边栏"}
         >

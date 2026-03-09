@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getAuthHeaders, setAuthToken } from "../lib/auth";
 import DashboardLayout from "./DashboardLayout";
@@ -16,6 +16,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [authEnabled, setAuthEnabled] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  const initialAuthDoneRef = useRef(false); // 是否已完成首次鉴权；完成后路由切换只做静默鉴权，不卸掉侧边栏
 
   useEffect(() => {
     if (pathname === LOGIN_PATH) {
@@ -23,10 +24,13 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       setAuthCheckDone(false); // 在登录页时清掉，避免跳到 / 后仍用旧值 true 立刻被 redirect 回 /login
       return;
     }
+    const isFirstCheck = !initialAuthDoneRef.current;
+    if (isFirstCheck) {
+      setLoading(true);
+      setAuthCheckDone(false);
+    }
     let cancelled = false;
     let willRetry = false;
-    setLoading(true);
-    setAuthCheckDone(false);
     const run = (isRetry = false) => {
       willRetry = false;
       Promise.all([
@@ -64,6 +68,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
         })
         .finally(() => {
           if (!cancelled && !willRetry) {
+            initialAuthDoneRef.current = true;
             setLoading(false);
             setAuthCheckDone(true);
           }
