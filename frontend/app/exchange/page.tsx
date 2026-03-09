@@ -210,7 +210,7 @@ export default function ExchangePage() {
                   i === 0 ? "rounded-l-md" : i === 2 ? "rounded-r-md" : ""
                 } ${
                   currency === c
-                    ? "bg-[#2563eb] text-white"
+                    ? "bg-[#2563eb]/35 text-white"
                     : "bg-zinc-800/80 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
                 }`}
               >
