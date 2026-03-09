@@ -211,7 +211,7 @@ export default function BusinessDashboard() {
         <p className="mb-4 text-sm text-zinc-500">加载中…</p>
       )}
 
-      <div className="mb-8 grid gap-4 sm:grid-cols-3">
+      <div className="mb-4 grid gap-4 sm:grid-cols-3">
         {stats.map((card, index) => {
           const isFlowCard = index === 0;
           const isProfitCard = index === 1;
