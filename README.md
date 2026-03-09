@@ -89,4 +89,4 @@ copy .env.example .env
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
 - 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`。财务后台默认路径为 `/admin`，可在后台页面修改。
-- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.1**：多用户与登录鉴权、管理后台布局、关闭标签页需重新登录等见 CHANGELOG。
+- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.1.1**：经营数据页布局与图表优化、侧边栏收放、汇率趋势滚轮缩放与样式等见 CHANGELOG。

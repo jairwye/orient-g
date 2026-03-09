@@ -2,21 +2,60 @@
 Orient-G（财务信息内网）- 后端 API
 职责：鉴权、Excel 解析与存储（经营数据当前为单文件，可扩展为入库）、经营/竞品/汇率/新闻 CRUD。
 """
+import logging
+import threading
 from contextlib import asynccontextmanager
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import OperationalError
 
 from backend.config import settings
+from backend.database import init_exchange_rates_table
 from backend.routers import auth, health, exchange, policy_news, business, competitor, settings as settings_router
+from backend.services.exchange_rates import finalize_today_data, update_today_rate
+
+logger = logging.getLogger(__name__)
+scheduler: BackgroundScheduler | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时可选：建表、检查 DB 连接等
+    global scheduler
+    try:
+        init_exchange_rates_table()
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(update_today_rate, "interval", hours=1)
+        scheduler.add_job(finalize_today_data, "cron", hour=20, minute=0)
+        scheduler.start()
+        # 首次拉取放后台，避免阻塞启动（历史补全可能需数分钟）
+        def _run_initial_update():
+            try:
+                update_today_rate()
+            except Exception as e:
+                logger.warning("initial exchange rate update failed: %s", e)
+        threading.Thread(target=_run_initial_update, daemon=True).start()
+    except OperationalError as e:
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(settings.database_url)
+            db_info = f"{parsed.hostname or '?'}:{parsed.port or '?'}{parsed.path or ''}"
+        except Exception:
+            db_info = "(解析 DATABASE_URL 失败)"
+        err_msg = str(getattr(e, "orig", e)) or repr(e)
+        logger.warning(
+            "PostgreSQL 不可用，汇率趋势功能已禁用。尝试连接: %s 错误: %s",
+            db_info,
+            err_msg,
+        )
+        logger.warning(
+            "若错误为空，多为 Windows 下 PostgreSQL 非英文 locale 导致；"
+            "请在 postgresql.conf 中设置 lc_messages = 'en_US' 或 'C' 并重启 PostgreSQL，详见 docs/汇率-PostgreSQL排查.md",
+        )
     yield
-    # 关闭时清理
-    pass
+    if scheduler:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(

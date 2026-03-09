@@ -57,7 +57,7 @@ const fetchOverview = () =>
     .catch(() => null);
 
 const CHART_COLORS = {
-  current: "#818cf8",
+  current: "#2563eb",
   previous: "#3f3f46",
   actual: "#22c55e",
   target: "#3f3f46",

@@ -1,4 +1,8 @@
 # 构建时忽略，避免上下文过大且不污染镜像
+# 规则与规划、参考文档不上传；本地上传目录由挂载提供
+规则与规划/
+参考/
+uploads/
 frontend/node_modules
 frontend/.next
 backend/__pycache__
