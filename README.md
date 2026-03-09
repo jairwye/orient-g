@@ -90,5 +90,5 @@ copy .env.example .env
 ## 扩展与协同
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
-- 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`。财务后台默认路径为 `/admin`，可在后台页面修改。
-- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.1.2**：侧边栏不随路由刷新、新闻政策页完成、生产环境 PostgreSQL 排查文档补充等见 CHANGELOG。
+- 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`、`/knowledge`（知识库展位）。财务后台默认路径为 `/admin`，可在后台页面修改。
+- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.1.3**：知识库入口与展位页、新闻政策卡片上滑动画等见 CHANGELOG。

@@ -199,11 +199,25 @@ export default function PolicyNewsPage() {
                       {it.title}
                     </span>
                   </div>
-                  {showSummary && summaryText && (
-                    <p className="mt-1.5 line-clamp-4 min-h-0 flex-[17] text-base leading-relaxed text-zinc-400">
-                      {summaryText}
-                    </p>
-                  )}
+                  {summaryText ? (
+                    <div
+                      className={`overflow-hidden ${
+                        showSummary
+                          ? "max-h-[8rem] opacity-100 transition-all duration-300 ease-out"
+                          : "max-h-0 opacity-0"
+                      }`}
+                    >
+                      <p
+                        className={`mt-1.5 line-clamp-4 min-h-0 flex-[17] text-base leading-relaxed text-zinc-400 ${
+                          showSummary
+                            ? "translate-y-0 transition-transform duration-300 ease-out"
+                            : "translate-y-3"
+                        }`}
+                      >
+                        {summaryText}
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               </button>
             );
