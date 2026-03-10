@@ -57,7 +57,9 @@ export default function ExchangePage() {
   const [status, setStatus] = useState<FetchStatus | null>(null);
   const [currency, setCurrency] = useState<"usd" | "eur" | "jpy">("usd");
   const [brushRange, setBrushRange] = useState<{ startIndex: number; endIndex: number } | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const lastPanClientXRef = useRef<number>(0);
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -132,6 +134,52 @@ export default function ExchangePage() {
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [handleChartWheel]);
+
+  const handlePanStart = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button !== 0) return;
+      if (!brushRange || chartData.length <= 1) return;
+      const span = brushRange.endIndex - brushRange.startIndex + 1;
+      if (span >= chartData.length) return;
+      setIsPanning(true);
+      lastPanClientXRef.current = e.clientX;
+    },
+    [brushRange, chartData.length]
+  );
+
+  useEffect(() => {
+    if (!isPanning) return;
+    const onMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - lastPanClientXRef.current;
+      lastPanClientXRef.current = e.clientX;
+      const width = chartContainerRef.current?.getBoundingClientRect().width ?? 300;
+      setBrushRange((prev) => {
+        if (!prev) return prev;
+        const span = prev.endIndex - prev.startIndex + 1;
+        const indexDelta = -(deltaX * span) / width;
+        let newStart = Math.round(prev.startIndex + indexDelta);
+        let newEnd = newStart + span - 1;
+        if (newStart < 0) {
+          newStart = 0;
+          newEnd = Math.min(chartData.length - 1, span - 1);
+        } else if (newEnd >= chartData.length) {
+          newEnd = chartData.length - 1;
+          newStart = Math.max(0, newEnd - span + 1);
+        } else {
+          newStart = Math.max(0, Math.min(newStart, chartData.length - span));
+          newEnd = newStart + span - 1;
+        }
+        return { startIndex: newStart, endIndex: newEnd };
+      });
+    };
+    const onUp = () => setIsPanning(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [isPanning, chartData.length]);
 
   useEffect(() => {
     fetchHistory();
@@ -236,8 +284,25 @@ export default function ExchangePage() {
         ) : (
           <div
             ref={chartContainerRef}
-            className="flex h-full min-h-[400px] w-full flex-col rounded-xl bg-zinc-900/30 pl-0 pr-4 pt-4 pb-4 md:pr-6 md:pt-6 md:pb-6 min-h-0"
-            style={{ minWidth: 300 }}
+            className="exchange-chart-panable flex h-full min-h-[400px] w-full flex-col rounded-xl bg-zinc-900/30 pl-0 pr-4 pt-4 pb-4 md:pr-6 md:pt-6 md:pb-6 min-h-0"
+            style={{
+              minWidth: 300,
+              cursor:
+                brushRange && chartData.length > 1 && brushRange.endIndex - brushRange.startIndex + 1 < chartData.length
+                  ? isPanning
+                    ? "grabbing"
+                    : "grab"
+                  : undefined,
+              userSelect: isPanning ? "none" : undefined,
+            }}
+            data-pan={
+              brushRange && chartData.length > 1 && brushRange.endIndex - brushRange.startIndex + 1 < chartData.length
+                ? isPanning
+                  ? "grabbing"
+                  : "grab"
+                : undefined
+            }
+            onMouseDown={handlePanStart}
           >
             <div className="min-h-0 flex-1">
               <ResponsiveContainer width="100%" height="100%">

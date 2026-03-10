@@ -21,6 +21,7 @@ services:
 
   backend:
     image: ${BACKEND_IMAGE:-ghcr.io/jairwye/orient-g-backend:latest}
+    env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-mgmt}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-mgmt_web}
       UPLOAD_DIR: /app/uploads
@@ -44,6 +45,10 @@ services:
   # 反向代理：生产环境应只监听内网 IP（在部署时通过 Portainer 或 compose 覆盖）
   caddy:
     image: caddy:2-alpine
+    environment:
+      # 域名访问时用：CADDY_DOMAIN=你的域名，CADDY_BACKEND_HOST=服务器 IP（与 BIND_IP 一致），避免 502；不设则用默认
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
+      CADDY_BACKEND_HOST: ${CADDY_BACKEND_HOST:-127.0.0.1}
     ports:
       - "${BIND_IP:-127.0.0.1}:443:443"
       - "${BIND_IP:-127.0.0.1}:80:80"

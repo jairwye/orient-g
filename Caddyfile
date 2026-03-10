@@ -1,12 +1,38 @@
+# 关闭自动 HTTP→HTTPS 重定向，避免用域名访问 http 时被 308 到 https 导致 TLS/502
+{
+	auto_https disable_redirects
+}
+
 # 生产环境仅绑定内网 IP（在 compose 或 Portainer 中设置 BIND_IP=192.168.x.x）
 :80 {
-    reverse_proxy /api/* backend:8000
-    reverse_proxy frontend:3000
+	@domain host {env.CADDY_DOMAIN}
+	handle @domain {
+		reverse_proxy /api/* backend:8000
+		reverse_proxy frontend:3000 {
+			header_up Host {env.CADDY_BACKEND_HOST}
+		}
+	}
+	handle {
+		reverse_proxy /api/* backend:8000
+		reverse_proxy frontend:3000 {
+			header_up Host {env.CADDY_BACKEND_HOST}
+		}
+	}
 }
 
 # 可选：HTTPS，使用 Caddy 自签名证书（浏览器会提示不受信任，内网可接受）
 :443 {
-    tls internal
-    reverse_proxy /api/* backend:8000
-    reverse_proxy frontend:3000
+	tls internal
+	reverse_proxy /api/* backend:8000
+	reverse_proxy frontend:3000
+}
+
+# 域名访问：反代时把 Host 改成服务器 IP，避免前端因 Host 与 IP 不一致返回 502
+# 在 .env 或 Portainer 中设置 CADDY_DOMAIN、CADDY_BACKEND_HOST；不设则使用下方默认值（仅本地）
+{env.CADDY_DOMAIN} {
+	tls internal
+	reverse_proxy /api/* backend:8000
+	reverse_proxy frontend:3000 {
+		header_up Host {env.CADDY_BACKEND_HOST}
+	}
 }

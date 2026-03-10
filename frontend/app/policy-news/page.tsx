@@ -32,10 +32,16 @@ type ListResponse = {
 };
 
 function getSummaryText(it: NewsItem, maxChars: number = 200): string {
-  const raw = it.summary || it.content || "";
+  const strip = (s: string) =>
+    s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const summaryStripped = strip(it.summary || "");
+  const contentStripped = strip(it.content || "");
+  const raw =
+    contentStripped.length > summaryStripped.length
+      ? contentStripped
+      : summaryStripped || contentStripped;
   if (!raw) return "";
-  const stripped = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  return stripped.length <= maxChars ? stripped : stripped.slice(0, maxChars) + "…";
+  return raw.length <= maxChars ? raw : raw.slice(0, maxChars) + "…";
 }
 
 export default function PolicyNewsPage() {
@@ -177,7 +183,7 @@ export default function PolicyNewsPage() {
                 onClick={() => setExpandedItem(it)}
                 onMouseEnter={() => setHoveredId(it.id)}
                 onMouseLeave={() => setHoveredId(null)}
-                className="flex min-h-[10rem] flex-col overflow-hidden rounded-md border border-zinc-800 bg-zinc-900/50 text-left transition-colors hover:border-zinc-700 hover:bg-zinc-800/50 hover:bg-[#2563eb]/10"
+                className="flex min-h-[10rem] flex-col overflow-hidden rounded-md border border-zinc-800 bg-zinc-900/50 text-left transition-colors hover:border-zinc-700 hover:bg-[#2563eb]/35"
               >
                 {showThumbnail && (
                   <div className="aspect-[2/1] w-full shrink-0 bg-zinc-800">

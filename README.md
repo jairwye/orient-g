@@ -80,6 +80,12 @@ copy .env.example .env
 
 **Caddy 相关**：反向代理 Caddy 通过卷挂载使用项目根目录的 `Caddyfile`，因此**必须在包含 Caddyfile 的目录下执行** `docker compose`（推荐：先克隆仓库，再在项目根目录执行）。若仅用 Portainer 粘贴 compose 而不克隆仓库，需在宿主机某路径（如 `/opt/mgmt-web/`）放置 `Caddyfile`，并在 compose 中把 `./Caddyfile` 改为该绝对路径。
 
+若 Caddy 启动或 reload 时提示 `input is not formatted`，请用**官方格式化工具**在已部署环境中执行一次，挂载的 Caddyfile 会被原地格式化，可将更新后的文件提交到仓库以消除后续警告：
+
+```bash
+docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
+```
+
 **部署时务必配置的环境变量**（在 Portainer 的 Stack 环境变量或服务器 `.env` 中设置）：
 
 - **BIND_IP**：反向代理绑定的内网 IP（如 `192.168.1.100`），生产环境必须设置，否则默认 `127.0.0.1` 仅本机可访问、内网其他机器无法访问。

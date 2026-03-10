@@ -7,8 +7,8 @@ import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOp
 
 const navItems = [
   { href: "/", label: "经营数据", icon: BarChart3 },
-  { href: "/exchange", label: "汇率趋势", icon: TrendingUp },
   { href: "/policy-news", label: "新闻政策", icon: Newspaper },
+  { href: "/exchange", label: "汇率趋势", icon: TrendingUp },
   { href: "/knowledge", label: "知识库", icon: BookOpen },
   { href: "/utils", label: "实用工具", icon: Wrench },
   { href: "/competitor", label: "竞品财报", icon: FileText },

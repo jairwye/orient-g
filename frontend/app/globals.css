@@ -21,3 +21,11 @@ body {
   @apply bg-zinc-950 text-zinc-100 antialiased;
   font-family: var(--font-sans), system-ui, sans-serif;
 }
+
+/* 汇率趋势图：悬停张开手、拖拽握拳，覆盖 Recharts 内部光标 */
+.exchange-chart-panable[data-pan="grab"] * {
+  cursor: grab !important;
+}
+.exchange-chart-panable[data-pan="grabbing"] * {
+  cursor: grabbing !important;
+}

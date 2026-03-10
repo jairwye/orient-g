@@ -24,7 +24,9 @@ async function getAdminPath(origin: string): Promise<string> {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  const origin = request.nextUrl.origin;
+  // 用 Host 头拼 origin，保证与 Caddy 的 header_up Host 一致，避免用域名访问时容器内请求 /api/settings 失败回退到 /admin
+  const host = request.headers.get("host") || request.nextUrl.hostname;
+  const origin = `${request.nextUrl.protocol}//${host}`;
   const adminPath = await getAdminPath(origin);
 
   if (adminPath !== CANONICAL_ADMIN_PATH && pathname === adminPath) {
