@@ -2,17 +2,27 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const CANONICAL_ADMIN_PATH = "/admin";
+const BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "http://localhost:8000";
 
-async function getAdminPath(origin: string): Promise<string> {
+/** 内存缓存，避免每次请求都请求后端（导致页面切换慢）；TTL 5 秒，保存路径后最多等 5 秒生效 */
+let cachedPath: string | null = null;
+let cacheExpiry = 0;
+const CACHE_TTL_MS = 5_000;
+
+async function getAdminPath(): Promise<string> {
+  const now = Date.now();
+  if (cachedPath != null && now < cacheExpiry) return cachedPath;
   try {
-    const res = await fetch(new URL("/api/settings", origin), {
-      next: { revalidate: 0 },
+    const res = await fetch(`${BACKEND_BASE}/api/settings`, {
       headers: { "Cache-Control": "no-store" },
+      cache: "no-store",
     });
     if (res.ok) {
       const data = await res.json();
       const path = typeof data?.admin_path === "string" ? data.admin_path.trim() : CANONICAL_ADMIN_PATH;
       if (path.startsWith("/") && /^\/[a-zA-Z0-9_]+$/.test(path)) {
+        cachedPath = path;
+        cacheExpiry = now + CACHE_TTL_MS;
         return path;
       }
     }
@@ -24,10 +34,8 @@ async function getAdminPath(origin: string): Promise<string> {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  // 用 Host 头拼 origin，保证与 Caddy 的 header_up Host 一致，避免用域名访问时容器内请求 /api/settings 失败回退到 /admin
-  const host = request.headers.get("host") || request.nextUrl.hostname;
-  const origin = `${request.nextUrl.protocol}//${host}`;
-  const adminPath = await getAdminPath(origin);
+  const adminPath = await getAdminPath();
+  const origin = request.nextUrl.origin;
 
   if (adminPath !== CANONICAL_ADMIN_PATH && pathname === adminPath) {
     return NextResponse.rewrite(new URL(CANONICAL_ADMIN_PATH, origin));

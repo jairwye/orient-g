@@ -7,6 +7,8 @@ import DashboardLayout from "./DashboardLayout";
 
 const LOGIN_PATH = "/login";
 const CHANGE_PASSWORD_PATH = "/change-password";
+/** 路由切换时鉴权缓存 TTL（毫秒），已鉴权且在此时间内切换页面则跳过重复请求 */
+const AUTH_CACHE_TTL_MS = 5000;
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -17,6 +19,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const initialAuthDoneRef = useRef(false); // 是否已完成首次鉴权；完成后路由切换只做静默鉴权，不卸掉侧边栏
+  const lastAuthCheckRef = useRef(0); // 上次完整鉴权时间戳，用于路由切换时跳过重复请求
 
   useEffect(() => {
     if (pathname === LOGIN_PATH) {
@@ -28,6 +31,11 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     if (isFirstCheck) {
       setLoading(true);
       setAuthCheckDone(false);
+    }
+    // 已鉴权且缓存未过期时跳过 fetch，减少路由切换时的重复请求
+    const now = Date.now();
+    if (!isFirstCheck && authenticated && now - lastAuthCheckRef.current < AUTH_CACHE_TTL_MS) {
+      return;
     }
     let cancelled = false;
     let willRetry = false;
@@ -43,6 +51,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       ])
         .then(([settings, me]) => {
           if (cancelled) return;
+          lastAuthCheckRef.current = Date.now();
           const enabled = !!settings?.auth_enabled;
           setAuthEnabled(enabled);
           if (!enabled) {
@@ -78,7 +87,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [pathname]);
+  }, [pathname, authenticated]);
 
   useEffect(() => {
     if (loading || pathname === LOGIN_PATH) return;

@@ -96,7 +96,7 @@ export default function AdminPage() {
       }
       setAdminPath(data.admin_path);
       setAdminPathEdit(data.admin_path);
-      setPathMessage({ type: "success", text: "后台路径已保存。新路径生效后，请使用新地址访问本页。" });
+      setPathMessage({ type: "success", text: "后台路径已保存。新路径生效后（最多约 5 秒），请使用新地址访问本页。" });
     } catch (err) {
       const text = err instanceof Error ? err.message : "保存失败，请重试";
       setPathMessage({

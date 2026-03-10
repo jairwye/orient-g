@@ -84,7 +84,7 @@ export default function PolicyNewsPage() {
             新闻政策
           </h1>
           <p className="mt-1 text-sm text-zinc-500">
-            按分类查看：业界观点、游戏新闻、AI资讯；数据来自自建RSS列表定时拉取。点击卡片展开全文。
+            按分类查看：业界观点、游戏新闻、AI资讯；数据来自自建RSS列表。
           </p>
         </div>
         <div className="flex shrink-0 overflow-hidden rounded-lg border border-zinc-600">
