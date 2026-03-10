@@ -14,6 +14,7 @@
 
 - 知识库入口与展位页：侧栏新增「知识库」、路由 `/knowledge`，页面分两块——外部知识库、内部知识库（展位，待后续对接）。
 - 新闻政策卡片交互：鼠标移入时由「缩略图+标题」切换为「标题+预览」，预览区增加上滑动画（max-h + translate-y 过渡）。
+- Open Graph / Twitter 分享元数据：`generateMetadata` 动态 baseUrl，新增 og-image.png（1200x630）供链接预览。
 
 ### Changed
 
