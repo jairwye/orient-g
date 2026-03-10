@@ -29,7 +29,7 @@ const PROFIT_COMPARE_BAR_SIZE = 30;
 const leftColumnTotalHeight = 2 * chartHeight + 136;
 
 const DEFAULT_STATS = [
-  { title: "流水", value: "—", desc: "万元", completionRatio: "—" as string },
+  { title: "流水", value: "—", desc: "万元", completionRatio: "—" as string, targetValue: "—" as string },
   { title: "利润", value: "—", desc: "万元", lastYearValue: "—" as string, changePercent: "—" as string },
   { title: "资金", value: "—", desc: "万元", overseas: "—" as string, overseasRatio: "—" as string },
 ];
@@ -40,6 +40,7 @@ type Overview = {
     value: string;
     desc: string;
     completionRatio?: string;
+    targetValue?: string;
     lastYearValue?: string;
     changePercent?: string;
     overseas?: string;
@@ -256,10 +257,20 @@ export default function BusinessDashboard() {
               <p className="mt-2 font-bold tabular-nums text-zinc-100 text-5xl tracking-tight">
                 {formatNumber(card.value)}
               </p>
-              {isFlowCard && totalFlowTarget > 0 && (
-                <p className="mt-3 text-lg text-zinc-500">
-                  目标 {formatNumber(totalFlowTarget)} {card.desc}
-                </p>
+              {isFlowCard && (() => {
+                const flowTarget = card.targetValue != null && card.targetValue !== "—"
+                  ? card.targetValue
+                  : totalFlowTarget > 0
+                    ? String(totalFlowTarget)
+                    : null;
+                return flowTarget != null ? (
+                  <p className="mt-3 text-lg text-zinc-500">
+                    目标 {formatNumber(flowTarget)} {card.desc}
+                  </p>
+                ) : null;
+              })()}
+              {isFlowCard && (card.targetValue == null || card.targetValue === "—") && totalFlowTarget <= 0 && (
+                <p className="mt-3 text-lg text-zinc-500">{card.desc}</p>
               )}
               {isProfitCard && card.lastYearValue != null && card.lastYearValue !== "—" && (
                 <p className="mt-3 text-lg text-zinc-500">
@@ -270,9 +281,6 @@ export default function BusinessDashboard() {
                 <p className="mt-3 text-lg text-zinc-500">
                   海外 {formatNumber(card.overseas)} {card.desc}
                 </p>
-              )}
-              {isFlowCard && totalFlowTarget <= 0 && (
-                <p className="mt-3 text-lg text-zinc-500">{card.desc}</p>
               )}
               {isProfitCard && (card.lastYearValue == null || card.lastYearValue === "—") && (
                 <p className="mt-3 text-lg text-zinc-500">{card.desc}</p>
@@ -293,7 +301,7 @@ export default function BusinessDashboard() {
           <h3 className="mb-3 text-sm font-medium text-zinc-300">利润（本年趋势与往年）</h3>
           {hasProfitTrend ? (
             <ResponsiveContainer width="100%" height={chartHeight}>
-              <ComposedChart data={profitTrendData} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+              <ComposedChart data={profitTrendData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id={PROFIT_BAR_GRADIENT_ID} x1="0" y1="1" x2="0" y2="0">
                     <stop offset="0%" stopColor="#fafafa" stopOpacity="0.25" />
@@ -302,7 +310,7 @@ export default function BusinessDashboard() {
                 </defs>
                 <XAxis dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 12 }} axisLine={{ stroke: "#3f3f46" }} tickLine={false} />
                 <YAxis
-                  width={40}
+                  width={52}
                   tick={{ fill: "#a1a1aa", fontSize: 12 }}
                   axisLine={false}
                   tickLine={false}
@@ -356,7 +364,7 @@ export default function BusinessDashboard() {
           <h3 className="mb-3 text-sm font-medium text-zinc-300">项目利润（本年 vs 去年）</h3>
           {hasProfitCompare ? (
             <ResponsiveContainer width="100%" height={chartHeight}>
-              <BarChart data={profitCompareData} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+              <BarChart data={profitCompareData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id={PROFIT_COMPARE_LAST_YEAR_GRADIENT_ID} x1="0" y1="1" x2="0" y2="0">
                     <stop offset="0%" stopColor="#ffffff" stopOpacity="0.25" />
@@ -369,7 +377,8 @@ export default function BusinessDashboard() {
                 </defs>
                 <XAxis dataKey="name" tick={{ fill: "#a1a1aa", fontSize: 12 }} axisLine={{ stroke: "#3f3f46" }} tickLine={false} />
                 <YAxis
-                  width={40}
+                  width={52}
+                  domain={['auto', 'auto']}
                   tick={{ fill: "#a1a1aa", fontSize: 12 }}
                   axisLine={false}
                   tickLine={false}

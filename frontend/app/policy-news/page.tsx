@@ -191,6 +191,8 @@ export default function PolicyNewsPage() {
                       src={it.thumbnail}
                       alt=""
                       className="h-full w-full object-cover"
+                      loading="lazy"
+                      decoding="async"
                       onError={() => markThumbnailFailed(it.id)}
                     />
                   </div>

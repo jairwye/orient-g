@@ -47,32 +47,11 @@ def _num(row: tuple, i: int) -> float:
         return 0.0
 
 
-def _parse_excel(path: Path) -> dict:
-    """
-    将 Excel 映射为经营数据标准结构（stats / profitTrend / flowCompare / profitCompare）。
-    映射规则见 docs/api-contract.md「Excel → 标准结构的映射规则」；当前实现为单张表区块格式。
-    若文件不存在或解析异常，返回 _default_overview()，保证响应形状始终符合契约。
-    """
-    try:
-        import openpyxl
-    except ImportError:
-        logger.warning("openpyxl 未安装，无法解析 Excel")
-        return _default_overview()
-
-    if not path.exists():
-        logger.warning("经营数据 Excel 不存在: %s（当前 UPLOAD_DIR 解析为: %s）", path, path.parent)
-        return _default_overview()
-
-    try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    except Exception as e:
-        logger.warning("解析 Excel 失败（文件可能损坏或格式不符）: %s", e)
-        return _default_overview()
-
-    # 标准结构（与 api-contract 一致），以下只填充各字段，不增删 key
-    result = {
+def _empty_overview() -> dict:
+    """空结构（与 api-contract 一致），供无数据或解析失败时返回，及 _parse_excel 初始化。"""
+    return {
         "stats": [
-            {"title": "流水", "value": "—", "desc": "万元", "completionRatio": "—"},
+            {"title": "流水", "value": "—", "desc": "万元", "completionRatio": "—", "targetValue": "—"},
             {"title": "利润", "value": "—", "desc": "万元", "lastYearValue": "—", "changePercent": "—"},
             {"title": "资金", "value": "—", "desc": "万元", "overseas": "—", "overseasRatio": "—"},
         ],
@@ -80,6 +59,31 @@ def _parse_excel(path: Path) -> dict:
         "flowCompare": {"labels": [], "actual": [], "target": []},
         "profitCompare": {"labels": [], "currentYear": [], "lastYear": []},
     }
+
+
+def _parse_excel(path: Path) -> dict:
+    """
+    将 Excel 映射为经营数据标准结构（stats / profitTrend / flowCompare / profitCompare）。
+    映射规则见 docs/api-contract.md「Excel → 标准结构的映射规则」；当前实现为单张表区块格式。
+    若文件不存在或解析异常，返回 _empty_overview()，保证响应形状始终符合契约。
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        logger.warning("openpyxl 未安装，无法解析 Excel")
+        return _empty_overview()
+
+    if not path.exists():
+        logger.warning("经营数据 Excel 不存在: %s（当前 UPLOAD_DIR 解析为: %s）", path, path.parent)
+        return _empty_overview()
+
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception as e:
+        logger.warning("解析 Excel 失败（文件可能损坏或格式不符）: %s", e)
+        return _empty_overview()
+
+    result = _empty_overview()
 
     if not wb.worksheets:
         wb.close()
@@ -93,7 +97,6 @@ def _parse_excel(path: Path) -> dict:
     # 区块1：C 列为「流水」「净利润」「资金」，下一行起 B=子项、C=值
     for i, row in enumerate(rows):
         c_val = _cell(row, 2)
-        b_val = _cell(row, 1)
         if c_val == "流水":
             for j in range(i + 1, min(i + 6, len(rows))):
                 r = rows[j]
@@ -116,6 +119,11 @@ def _parse_excel(path: Path) -> dict:
                         except (TypeError, ValueError):
                             ratio_val = str(r[2])
                     result["stats"][0]["completionRatio"] = ratio_val
+                elif b == "目标":
+                    v = _cell(r, 2) or "—"
+                    if r[2] is not None and not isinstance(r[2], str):
+                        v = str(r[2])
+                    result["stats"][0]["targetValue"] = v
         elif c_val == "净利润":
             for j in range(i + 1, min(i + 6, len(rows))):
                 r = rows[j]
@@ -251,20 +259,6 @@ def _parse_excel(path: Path) -> dict:
         break
 
     return result
-
-
-def _default_overview() -> dict:
-    """无数据或解析失败时返回的空结构，与标准结构契约一致，便于前端安全渲染。"""
-    return {
-        "stats": [
-            {"title": "流水", "value": "—", "desc": "万元", "completionRatio": "—"},
-            {"title": "利润", "value": "—", "desc": "万元", "lastYearValue": "—", "changePercent": "—"},
-            {"title": "资金", "value": "—", "desc": "万元", "overseas": "—", "overseasRatio": "—"},
-        ],
-        "profitTrend": {"labels": [], "currentYear": [], "previousYear": []},
-        "flowCompare": {"labels": [], "actual": [], "target": []},
-        "profitCompare": {"labels": [], "currentYear": [], "lastYear": []},
-    }
 
 
 @router.post("/upload")

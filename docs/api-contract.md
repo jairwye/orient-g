@@ -21,6 +21,10 @@
   - **可选查询参数**：`days=7` 或 `days=30`（默认 7）
   - **响应**：`labels` + `series`（USD/CNY、EUR/CNY、JPY/CNY 三条），可与 Recharts 共用。
 
+- **取数状态**：`GET /api/exchange/status`
+  - **用途**：供汇率趋势页展示取数进度（是否正在拉取、已入库条数、最后填充日期）。
+  - **响应**：`{ "fetching": bool, "totalRecords": number, "lastFilledDate": string | null }`。
+
 - **说明**：汇率趋势为单页（`/exchange`），按钮切换美元/欧元/日元，默认最近一个月，可拖动滑块查看至 2025-04-02；数据来源与定时更新见 `docs/汇率趋势页方案.md`。
 
 ---
@@ -72,6 +76,11 @@
 }
 ```
 
+- **单条详情**：`GET /api/policy-news/item`
+  - **必需查询参数**：`id`（条目 id，与 list 返回的 `id` 一致）。
+  - **用途**：供详情页 `/policy-news/item?id=xxx` 展示完整内容（含 HTML）。
+  - **响应**：与 list 中单条结构类似，增加 `content` 等完整字段；404 表示未找到。
+
 - **说明**：数据来自 FreshRSS GReader API 定时拉取，内存缓存不写库；侧栏入口为「新闻政策」，页上三按钮「观点 / 新闻 / AI」对应三类；详见规则与规划/新闻页方案.md。
 
 ---
@@ -114,7 +123,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `stats` | `Array<{ title, value, desc, completionRatio?, lastYearValue?, changePercent?, overseas?, overseasRatio? }>` | 三项指标：流水、利润、资金；`title` 为中文名，`value` 为展示值（字符串），`desc` 为单位（如「万元」）；第一项（流水）可选带 `completionRatio`；第二项（利润）可选带 `lastYearValue`、`changePercent`；第三项（资金）可选带 `overseas`（「海外」行的 C 列值）、`overseasRatio`（「海外占比」行的 C 列值，小数会转为百分比数字） |
+| `stats` | `Array<{ title, value, desc, completionRatio?, targetValue?, lastYearValue?, changePercent?, overseas?, overseasRatio? }>` | 三项指标：流水、利润、资金；`title` 为中文名，`value` 为展示值（字符串），`desc` 为单位（如「万元」）；第一项（流水）可选带 `completionRatio`、`targetValue`（区块 1 流水下「目标」行 C 列，用于卡片大数字下方「目标 xxx 万元」）；第二项（利润）可选带 `lastYearValue`、`changePercent`；第三项（资金）可选带 `overseas`（「海外」行的 C 列值）、`overseasRatio`（「海外占比」行的 C 列值，小数会转为百分比数字） |
 | `profitTrend` | `{ labels: string[], currentYear: number[], previousYear: number[] }` | 利润趋势：月份标签、本年各月值、往年各月值 |
 | `flowCompare` | `{ labels: string[], actual: number[], target: number[] }` | 流水对比：项目名、实际值、目标值 |
 | `profitCompare` | `{ labels: string[], currentYear: number[], lastYear: number[] }` | 利润对比：项目名、本年值、去年值 |
@@ -128,7 +137,7 @@
 **区块 1：流水 / 净利润 / 资金（三项指标）**
 
 - 每个指标占一块：**列 C 出现区块标题**（「流水」「净利润」「资金」），紧接着若干行 **列 B 为子项名、列 C 为数值、列 D 为该行数值的单位**（与 C 列一一对应，如「万元」；D 为空时默认「万元」）。
-- **流水**：C 列某行为「流水」后，下一行起 B=「本年累计」/「目标」/「完成比例」等，C=数值，D=单位；展示取「本年累计」行的 C 作为流水主值、D 作为单位（无则取首个子项，单位缺省为「万元」）；取「完成比例」行的 C 作为 `stats[0].completionRatio`（表中已是百分比数字，直接引用）。
+- **流水**：C 列某行为「流水」后，下一行起 B=「本年累计」/「目标」/「完成比例」等，C=数值，D=单位；展示取「本年累计」行的 C 作为流水主值、D 作为单位（无则取首个子项，单位缺省为「万元」）；取「目标」行的 C 作为 `stats[0].targetValue`（卡片大数字下方「目标 xxx 万元」的单值）；取「完成比例」行的 C 作为 `stats[0].completionRatio`（表中已是百分比数字，直接引用）。
 - **净利润（即利润）**：C 列某行为「净利润」后，下一行起 B=「本年累计」/「去年同期」/「变动百分比」等，C=数值，D=单位；展示取「本年累计」行的 C 作为利润主值、D 作为单位；取「去年同期」行的 C 作为 `stats[1].lastYearValue`；取「变动百分比」行的 C 作为 `stats[1].changePercent`（若为小数如 0.05 则转为 5）。
 - **资金**：C 列某行为「资金」后，下一行起 B=「总额」/「海外」/「海外占比」等，C=数值，D=单位；展示取「总额」行的 C 作为资金主值、D 作为单位；取「海外」行的 C 作为 `stats[2].overseas`；取「海外占比」行的 C 作为 `stats[2].overseasRatio`（若为小数如 0.15 则转为 15）。
 
@@ -152,6 +161,12 @@
 - 后续行 **列 B 为「本年累计」/「去年」等**，列 C 起为各项目数值；解析得到 `labels`、`currentYear`、`lastYear`（若缺少某行则对应数组为空）。
 
 **说明**：以上映射规则与当前 `uploads/business.xlsx` 单张表区块格式一致。当前实现为单文件解析；若后续改为多张表或数据库按月份存储，仅扩展映射规则与数据源逻辑即可，前端与 API 仍以「经营数据标准结构」为准。
+
+**经营数据页第一个卡片（流水）「目标」的取数与逻辑**
+
+- **展示位置**：经营数据页第一个卡片为「流水」卡片；大数字为「本年流水」（来自 `stats[0].value`），下方一行显示「目标 xxx 万元」。
+- **目标数字**：**优先**使用区块 1 流水下「目标」行的单值，即 `stats[0].targetValue`（后端从区块 1 解析：B=「目标」那一行的 C 列）。若该值为空或「—」，则**回退**为 `flowCompare.target` 数组求和（区块 3 各项目目标之和）。前端据此展示「目标 {formatNumber(flowTarget)} {stats[0].desc}」。
+- **完成比例**：卡片右上角「完成比例」来自区块 1 中流水下的「完成比例」行（`stats[0].completionRatio`），与「目标」取数无关。
 
 ---
 
