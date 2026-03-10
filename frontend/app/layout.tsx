@@ -16,7 +16,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const baseUrl = `${proto}://${host}`;
 
   const title = "财务信息内网";
-  const description = "经营数据、竞品财报、汇率趋势、政策新闻与财务 AI";
+  const description = "经营数据、新闻政策、汇率趋势、竞品财报与财务AI应用、探索";
 
   return {
     metadataBase: new URL(baseUrl),
