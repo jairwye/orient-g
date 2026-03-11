@@ -24,8 +24,8 @@ from backend.routers.settings import (
 router = APIRouter()
 ALGORITHM = "HS256"
 COOKIE_NAME = "orient_g_token"
-# 30 分钟无活动则过期；/me 时返回新 token 供前端滑动刷新
-TOKEN_EXP_SECONDS = 30 * 60
+# 60 分钟无活动则过期；/me 时返回新 token 供前端滑动刷新
+TOKEN_EXP_SECONDS = 60 * 60
 
 
 def _get_token_from_request(request: Request) -> Optional[str]:
@@ -107,7 +107,7 @@ def login(body: LoginBody):
 def me(request: Request):
     """
     从 Authorization 头或 Cookie 读取 JWT，返回当前用户名；未登录或无效返回 401。
-    有效时刷新 JWT（滑动 30 分钟），新 token 放在响应 body 供前端更新 sessionStorage。
+    有效时刷新 JWT（滑动 60 分钟），新 token 放在响应 body 供前端更新 sessionStorage。
     """
     token = _get_token_from_request(request)
     if not token:

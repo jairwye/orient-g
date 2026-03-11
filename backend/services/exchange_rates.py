@@ -66,7 +66,7 @@ def _fetch_rate(date: str, currency: str) -> Optional[float]:
                 if rate > 0:
                     return rate
         except Exception as e:
-            logger.debug("exchange api fail %s: %s", url if "url" in dir() else api_base, e)
+            logger.debug("exchange api fail %s: %s", locals().get("url", api_base), e)
             continue
     return None
 

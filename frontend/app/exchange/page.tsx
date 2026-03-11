@@ -59,6 +59,7 @@ export default function ExchangePage() {
   const [brushRange, setBrushRange] = useState<{ startIndex: number; endIndex: number } | null>(null);
   const [isPanning, setIsPanning] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const brushContainerRef = useRef<HTMLDivElement>(null);
   const lastPanClientXRef = useRef<number>(0);
 
   const fetchHistory = useCallback(async () => {
@@ -141,6 +142,7 @@ export default function ExchangePage() {
       if (!brushRange || chartData.length <= 1) return;
       const span = brushRange.endIndex - brushRange.startIndex + 1;
       if (span >= chartData.length) return;
+      if (brushContainerRef.current?.contains(e.nativeEvent.target as Node)) return;
       setIsPanning(true);
       lastPanClientXRef.current = e.clientX;
     },
@@ -284,26 +286,29 @@ export default function ExchangePage() {
         ) : (
           <div
             ref={chartContainerRef}
-            className="exchange-chart-panable flex h-full min-h-[400px] w-full flex-col rounded-xl bg-zinc-900/30 pl-0 pr-4 pt-4 pb-4 md:pr-6 md:pt-6 md:pb-6 min-h-0"
-            style={{
-              minWidth: 300,
-              cursor:
+            className="flex h-full min-h-[400px] w-full flex-col rounded-xl bg-zinc-900/30 pl-0 pr-4 pt-4 pb-4 md:pr-6 md:pt-6 md:pb-6 min-h-0"
+            style={{ minWidth: 300 }}
+          >
+            <div
+              className="exchange-chart-panable flex min-h-0 flex-1 flex-col"
+              style={{
+                cursor:
+                  brushRange && chartData.length > 1 && brushRange.endIndex - brushRange.startIndex + 1 < chartData.length
+                    ? isPanning
+                      ? "grabbing"
+                      : "grab"
+                    : undefined,
+                userSelect: isPanning ? "none" : undefined,
+              }}
+              data-pan={
                 brushRange && chartData.length > 1 && brushRange.endIndex - brushRange.startIndex + 1 < chartData.length
                   ? isPanning
                     ? "grabbing"
                     : "grab"
-                  : undefined,
-              userSelect: isPanning ? "none" : undefined,
-            }}
-            data-pan={
-              brushRange && chartData.length > 1 && brushRange.endIndex - brushRange.startIndex + 1 < chartData.length
-                ? isPanning
-                  ? "grabbing"
-                  : "grab"
-                : undefined
-            }
-            onMouseDown={handlePanStart}
-          >
+                  : undefined
+              }
+              onMouseDown={handlePanStart}
+            >
             <div className="min-h-0 flex-1">
               <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
@@ -375,7 +380,8 @@ export default function ExchangePage() {
               </ComposedChart>
               </ResponsiveContainer>
             </div>
-            <div className="mt-2 h-8 w-full shrink-0">
+            </div>
+            <div ref={brushContainerRef} className="mt-2 h-8 w-full shrink-0">
             <ResponsiveContainer width="100%" height={32}>
               <ComposedChart data={chartData} margin={{ top: 0, right: 16, left: 40, bottom: 0 }}>
                 <XAxis dataKey="date" hide />
