@@ -1,5 +1,6 @@
-# 规则与规划文档不上传到 GitHub 库（见 规则与规划/规则.md）
-规则与规划/
+# 规则与规划文档不上传到 GitHub 库（见 规则/规则.md、规划/规划.md）
+规则/
+规划/
 
 # 参考文档不上传代码仓库
 参考/
@@ -11,9 +12,44 @@ uploads/
 # 前端依赖与构建产物（由 package.json 与 npm install / npm run build 复现）
 frontend/node_modules/
 frontend/.next/
+frontend/tsconfig.tsbuildinfo
+**/*.tsbuildinfo
+**/.turbo/
+**/.cache/
+**/dist/
+**/build/
+**/out/
 backend/__pycache__/
 **/__pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+# 第三方商业站点相关自动化采集（本地自用，不入库）
+tools/tyc-playwright/
+
+# 股权资料包本地打包产物（scripts/pack_equity_bundle.py 等生成的 zip，勿提交）
+bundle.zip
+
+# 股权全景/天眼查/OpenAPI：本地脚本与运行产物不入库
+scripts/tyc_openapi_export_bundle.py
+scripts/pack_equity_bundle.py
+out/
+tyc-open-*.png
+docs/playwright-mcp-cursor.md
+docs/*openapi*.md
+docs/*天眼查*.md
+docs/*股权*.md
+
+# 本地 IDE/MCP 状态（不入库）
+.cursor/
+.playwright-mcp/
+
 # 敏感配置与数据（防外泄，勿提交）
 .env
 .env.local

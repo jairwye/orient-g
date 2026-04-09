@@ -12,10 +12,11 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, Request, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 
 from backend.config import settings
+from backend.routers.settings import _require_admin, _require_view_business_dashboard
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -262,8 +263,9 @@ def _parse_excel(path: Path) -> dict:
 
 
 @router.post("/upload")
-async def business_upload(file: UploadFile = File(...)):
-    """上传经营数据 Excel，覆盖已有 business.xlsx。仅内网使用，生产环境应加鉴权。"""
+async def business_upload(request: Request, file: UploadFile = File(...)):
+    """上传经营数据 Excel，覆盖已有 business.xlsx。仅管理员可调（规划 2.a 财务后台鉴权）。"""
+    _require_admin(request)
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="请上传 .xlsx 或 .xls 文件")
     path = _excel_path()
@@ -274,21 +276,23 @@ async def business_upload(file: UploadFile = File(...)):
 
 
 @router.get("/overview")
-def business_overview():
+def business_overview(request: Request):
     """
     经营数据概览：从已上传的 Excel（uploads/business.xlsx）解析，
     返回流水/利润/资金三个指标及三张图表数据。若无文件或解析失败则返回默认空值。
     """
+    _require_view_business_dashboard(request)
     data = _parse_excel(_excel_path())
     return JSONResponse(content=data, headers={"Cache-Control": "no-store, no-cache"})
 
 
 @router.get("/summary")
-def business_summary():
+def business_summary(request: Request):
     """
     经营数据摘要，供首页/其他入口展示。
     数据来源为同一份 Excel；与 /overview 一致，返回简要指标。
     """
+    _require_view_business_dashboard(request)
     data = _parse_excel(_excel_path())
     body = {
         "updatedAt": "",  # 可选：从文件 mtime 或 Excel 内单元格读取

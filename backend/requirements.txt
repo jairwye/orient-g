@@ -1,14 +1,4 @@
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-python-multipart>=0.0.6
-python-dotenv>=1.0.0
-httpx>=0.26.0
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.9
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-openpyxl>=3.1.0
-bcrypt>=4.0.0
-PyJWT>=2.8.0
-apscheduler>=3.10.0
-requests>=2.31.0
+-r requirements-base.txt
+
+# docling-project（PyPI 仍为 docling）。本地/一键安装需要完整解析能力；Docker 生产 backend 镜像仅用 requirements-base.txt，解析走独立 docling 服务。
+docling>=2.70.0,<3

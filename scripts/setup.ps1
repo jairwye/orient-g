@@ -39,8 +39,22 @@ if (-not (Test-Path ".venv")) {
     Write-Host "[1/6] .venv 已存在，跳过。"
 }
 Write-Host "[2/6] 安装后端依赖（venv 内）..."
+Write-Host "  -> 说明：依赖含 Docling 2.x（torch/transformers 等大包），首次安装可能需 10～60+ 分钟，请勿中断。"
 & .\.venv\Scripts\pip.exe install -r backend\requirements.txt --quiet
+Write-Host "  -> pip 安装完成"
+$pipShow = & .\.venv\Scripts\pip.exe show docling 2>$null
+if ($LASTEXITCODE -eq 0 -and $pipShow -and ($pipShow -match '(?m)^Version:\s*(.+)$')) {
+    Write-Host "  -> Docling 包版本: $($Matches[1])"
+} elseif ($LASTEXITCODE -eq 0 -and $pipShow) {
+    Write-Host "  -> Docling 包已安装（版本行解析跳过）"
+} else {
+    Write-Host "  -> 警告：未检测到 docling 包。知识库 PDF 解析需执行: .\.venv\Scripts\pip.exe install -r backend\requirements.txt"
+}
+if (Test-Path .\.venv\Scripts\docling.exe) {
+    Write-Host "  -> Docling CLI: .venv\Scripts\docling.exe 已存在"
+}
 Write-Host "  -> 完成"
+
 
 # ---------- 2. Node.js（不适合项目内限制，采用全局安装）----------
 $nodeDir = $null

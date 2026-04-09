@@ -1,0 +1,18 @@
+{
+  "schema_version": "1",
+  "process_types": [
+    {
+      "id": "finance_workflow",
+      "name": "标准财务业务流程",
+      "description": "步骤、责任角色、输入输出、时限",
+      "output_schema": {
+        "title": "流程名称",
+        "steps": [
+          { "step_no": 1, "desc": "步骤描述", "role": "责任角色", "input": "输入", "output": "输出", "deadline": "时限" }
+        ],
+        "roles": ["角色列表"]
+      },
+      "prompt_instruction": "请将用户的自然语言描述转化为标准财务业务流程。严格按以下 JSON 输出，不要添加注释或多余字段：{\"title\": \"流程名称\", \"steps\": [{\"step_no\": 1, \"desc\": \"步骤描述\", \"role\": \"责任角色\", \"input\": \"输入\", \"output\": \"输出\", \"deadline\": \"时限\"}], \"roles\": [\"角色名\"]}。只输出这一份 JSON，不要其他文字。"
+    }
+  ]
+}

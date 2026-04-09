@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc \
     && rm -rf /var/lib/apt/lists/*
 
-COPY backend/requirements.txt .
+# 生产 backend 不打包 docling（解析由 docker/docling-sidecar 承担，见 DOCLING_MODE=http）
+COPY backend/requirements-base.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ ./backend/

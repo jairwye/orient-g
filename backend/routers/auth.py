@@ -1,6 +1,5 @@
 """
-页面登录鉴权：当设置中 auth_enabled 为 true 时，本项目页面需先登录。
-Token 仅由前端 sessionStorage + Authorization 头传递，不读 Cookie，关闭标签页即需重新登录。
+页面登录鉴权：默认始终需登录，Token 由前端 sessionStorage + Authorization 头传递，不读 Cookie，关闭标签页即需重新登录。
 """
 import time
 from typing import Optional
@@ -14,6 +13,7 @@ from backend.config import settings as config
 from backend.routers.settings import (
     DEFAULT_ADMIN_PASSWORD,
     _find_user_by_username,
+    _has_view_business_dashboard,
     _hash_password,
     _load_settings,
     _save_settings,
@@ -67,13 +67,8 @@ class ChangePasswordBody(BaseModel):
 
 @router.post("/login")
 def login(body: LoginBody):
-    """校验用户名密码，成功则设置 JWT Cookie 并返回 ok。"""
+    """校验用户名密码，成功则返回 token。始终允许登录（默认始终鉴权）。"""
     data = _load_settings()
-    if not data.get("auth_enabled"):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "未启用页面登录，无需登录"},
-        )
     username = (body.username or "").strip()
     password = body.password or ""
     if not username or not password:
@@ -93,7 +88,11 @@ def login(body: LoginBody):
     # 登录成功后将该用户密码哈希统一为新格式（SHA256+bcrypt）
     for i, u in enumerate(users):
         if (u.get("username") or "").strip().lower() == username.lower():
-            users[i] = {"username": u.get("username", "").strip(), "password_hash": _hash_password(password)}
+            users[i] = {
+                **{k: v for k, v in (u or {}).items() if k not in ("password_hash",)},
+                "username": u.get("username", "").strip(),
+                "password_hash": _hash_password(password),
+            }
             break
     data["users"] = users
     _save_settings(data)
@@ -121,11 +120,30 @@ def me(request: Request):
     admin_hash = (user.get("password_hash") or "").strip() if user else ""
     must_change_password = is_default_password(admin_hash)
     new_token = _create_token(username)
-    return JSONResponse(content={
-        "username": username,
-        "must_change_password": must_change_password,
-        "token": new_token,
-    })
+    roles = (user.get("roles") or []) if user else []
+    is_admin = any((str(x).strip().lower() == "admin") for x in (roles if isinstance(roles, list) else []))
+    view_business_dashboard = _has_view_business_dashboard(user) if user else False
+    finance_path = (data.get("finance_path") or "").strip() or "/finance"
+    try:
+        from backend.services.user_acl_store import get_user as pg_get_user
+
+        pu = pg_get_user(username) or {}
+    except Exception:
+        pu = {}
+    return JSONResponse(
+        content={
+            "username": username,
+            "roles": roles if isinstance(roles, list) else [],
+            "is_admin": is_admin,
+            "view_business_dashboard": view_business_dashboard,
+            "must_change_password": must_change_password,
+            "token": new_token,
+            "finance_path": finance_path,
+            "department": (pu.get("department") or "") if isinstance(pu, dict) else "",
+            "is_department_lead": bool(pu.get("is_department_lead")) if isinstance(pu, dict) else False,
+            "projects": pu.get("projects") if isinstance(pu, dict) else [],
+        }
+    )
 
 
 @router.post("/change-password")
@@ -159,7 +177,11 @@ def change_password(body: ChangePasswordBody, request: Request):
         return JSONResponse(status_code=401, content={"detail": "当前密码错误"})
     for i, u in enumerate(users):
         if (u.get("username") or "").strip().lower() == (username or "").lower():
-            users[i] = {"username": (u.get("username") or "").strip(), "password_hash": _hash_password(new_password)}
+            users[i] = {
+                **{k: v for k, v in (u or {}).items() if k not in ("password_hash",)},
+                "username": (u.get("username") or "").strip(),
+                "password_hash": _hash_password(new_password),
+            }
             break
     data["users"] = users
     _save_settings(data)

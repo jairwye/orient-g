@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const CANONICAL_ADMIN_PATH = "/admin";
+const CANONICAL_FINANCE_PATH = "/finance";
 const BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "http://localhost:8000";
 
 /** 内存缓存，避免每次请求都请求后端（导致页面切换慢）；TTL 5 秒，保存路径后最多等 5 秒生效 */
@@ -9,17 +9,17 @@ let cachedPath: string | null = null;
 let cacheExpiry = 0;
 const CACHE_TTL_MS = 5_000;
 
-async function getAdminPath(): Promise<string> {
+async function getFinancePath(): Promise<string> {
   const now = Date.now();
   if (cachedPath != null && now < cacheExpiry) return cachedPath;
   try {
-    const res = await fetch(`${BACKEND_BASE}/api/settings`, {
+    const res = await fetch(`${BACKEND_BASE}/api/settings/public`, {
       headers: { "Cache-Control": "no-store" },
       cache: "no-store",
     });
     if (res.ok) {
       const data = await res.json();
-      const path = typeof data?.admin_path === "string" ? data.admin_path.trim() : CANONICAL_ADMIN_PATH;
+      const path = typeof data?.finance_path === "string" ? data.finance_path.trim() : CANONICAL_FINANCE_PATH;
       if (path.startsWith("/") && /^\/[a-zA-Z0-9_]+$/.test(path)) {
         cachedPath = path;
         cacheExpiry = now + CACHE_TTL_MS;
@@ -29,19 +29,21 @@ async function getAdminPath(): Promise<string> {
   } catch {
     // ignore
   }
-  return CANONICAL_ADMIN_PATH;
+  return CANONICAL_FINANCE_PATH;
 }
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  const adminPath = await getAdminPath();
+  const financePath = await getFinancePath();
   const origin = request.nextUrl.origin;
 
-  if (adminPath !== CANONICAL_ADMIN_PATH && pathname === adminPath) {
-    return NextResponse.rewrite(new URL(CANONICAL_ADMIN_PATH, origin));
+  // 财务后台：canonical 为 /finance；若用户配置了其他路径，则将配置路径 rewrite 到 /finance
+  if (financePath !== CANONICAL_FINANCE_PATH && pathname === financePath) {
+    return NextResponse.rewrite(new URL(CANONICAL_FINANCE_PATH, origin));
   }
 
-  if (adminPath !== CANONICAL_ADMIN_PATH && pathname === CANONICAL_ADMIN_PATH) {
+  // 若财务后台路径被改走，则 canonical /finance 不再对外暴露（避免同时存在两个入口）
+  if (financePath !== CANONICAL_FINANCE_PATH && pathname === CANONICAL_FINANCE_PATH) {
     return new NextResponse(null, { status: 404 });
   }
 

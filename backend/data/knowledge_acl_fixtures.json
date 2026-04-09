@@ -1,0 +1,342 @@
+{
+  "tenant_id": "tenant1",
+  "departments": ["总裁办", "财务部", "研发部"],
+  "projects": [
+    { "project_id": "proj1", "name": "项目A" },
+    { "project_id": "proj2", "name": "项目B" },
+    { "project_id": "proj3", "name": "项目C" }
+  ],
+  "user_project_memberships": {
+    "admin": ["proj1"],
+    "alice": ["proj1"],
+    "bob": []
+  },
+  "collections": [
+    {
+      "collection_id": "c_company_public_1",
+      "type": "public",
+      "space_type": "CompanyPublic",
+      "tenant_id": "tenant1",
+      "name": "公司财务规章制度"
+    },
+    {
+      "collection_id": "c_finance_public_1",
+      "type": "department",
+      "space_type": "FinancePublic",
+      "tenant_id": "tenant1",
+      "department_id": "财务部",
+      "name": "财务公共制度"
+    },
+    {
+      "collection_id": "c_dept_public_1",
+      "type": "department",
+      "space_type": "DeptPublic",
+      "tenant_id": "tenant1",
+      "department_id": "研发部",
+      "name": "研发部门流程手册"
+    },
+    {
+      "collection_id": "c_project_public_1",
+      "type": "project",
+      "space_type": "ProjectPublic",
+      "tenant_id": "tenant1",
+      "project_id": "proj1",
+      "name": "项目核算电子表"
+    },
+    {
+      "collection_id": "c_project_public_2",
+      "type": "project",
+      "space_type": "ProjectPublic",
+      "tenant_id": "tenant1",
+      "project_id": "proj2",
+      "name": "项目B公共资料"
+    },
+    {
+      "collection_id": "c_project_public_3",
+      "type": "project",
+      "space_type": "ProjectPublic",
+      "tenant_id": "tenant1",
+      "project_id": "proj3",
+      "name": "项目C公共资料"
+    },
+    {
+      "collection_id": "c_zongban_public_1",
+      "type": "department",
+      "space_type": "DeptPublic",
+      "tenant_id": "tenant1",
+      "department_id": "总裁办",
+      "name": "总裁办公共资料"
+    },
+    {
+      "collection_id": "c_multi_dept_public_1",
+      "type": "public",
+      "space_type": "MultiDeptPublic",
+      "tenant_id": "tenant1",
+      "name": "多部门公共库"
+    },
+    {
+      "collection_id": "c_multi_dept_lead_1",
+      "type": "public",
+      "space_type": "MultiDeptLead",
+      "tenant_id": "tenant1",
+      "name": "多部门负责人库"
+    },
+    {
+      "collection_id": "c_multi_project_public_1",
+      "type": "public",
+      "space_type": "MultiProjectPublic",
+      "tenant_id": "tenant1",
+      "name": "多项目公共库"
+    },
+    {
+      "collection_id": "c_multi_project_lead_1",
+      "type": "public",
+      "space_type": "MultiProjectLead",
+      "tenant_id": "tenant1",
+      "name": "多项目负责人库"
+    },
+    {
+      "collection_id": "c_private_admin_1",
+      "type": "private",
+      "space_type": "Private",
+      "tenant_id": "tenant1",
+      "owner_user_id": "admin",
+      "name": "个人私有资料（admin）"
+    },
+    {
+      "collection_id": "c_private_alice_1",
+      "type": "private",
+      "space_type": "Private",
+      "tenant_id": "tenant1",
+      "owner_user_id": "alice",
+      "name": "个人私有资料（alice）"
+    }
+  ],
+  "documents": [
+    {
+      "doc_id": "d_company_rules_1",
+      "tenant_id": "tenant1",
+      "title": "公司财务规章制度",
+      "collection_ids": ["c_company_public_1"],
+      "sections": [
+        {
+          "section_id": "s_company_1",
+          "keywords": ["规章", "制度", "报销", "审批"],
+          "text": "公司制度：报销流程、审批链与归档要求。",
+          "chunks": [
+            {
+              "chunk_id": "ch_company_1",
+              "chunk_seq_no": 1,
+              "text": "报销流程：提交申请→部门审批→财务审核→归档。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "doc_id": "d_finance_public_rules_1",
+      "tenant_id": "tenant1",
+      "title": "财务公共制度",
+      "collection_ids": ["c_finance_public_1"],
+      "sections": [
+        {
+          "section_id": "s_finance_1",
+          "keywords": ["财务审核", "T+2", "逾期", "补充材料"],
+          "text": "财务审核口径与时间要求。",
+          "chunks": [
+            {
+              "chunk_id": "ch_finance_1",
+              "chunk_seq_no": 1,
+              "text": "财务审核：T+2 工作日完成；逾期需补充材料说明。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "doc_id": "d_dept_public_rules_1",
+      "tenant_id": "tenant1",
+      "title": "研发部门流程手册",
+      "collection_ids": ["c_dept_public_1"],
+      "sections": [
+        {
+          "section_id": "s_dept_1",
+          "keywords": ["研发流程", "立项", "审批"],
+          "text": "研发部门：立项申请与审批流程。",
+          "chunks": [
+            {
+              "chunk_id": "ch_dept_1",
+              "chunk_seq_no": 1,
+              "text": "立项申请：先提交方案，再走评审审批，最后归档。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "doc_id": "d_project_public_rules_1",
+      "tenant_id": "tenant1",
+      "title": "项目核算说明",
+      "collection_ids": ["c_project_public_1"],
+      "sections": [
+        {
+          "section_id": "s_project_1",
+          "keywords": ["核算", "口径", "本年累计"],
+          "text": "项目核算口径：本年累计按月汇总。",
+          "chunks": [
+            {
+              "chunk_id": "ch_project_1",
+              "chunk_seq_no": 1,
+              "text": "项目核算口径：本年累计净利润按月汇总后累加。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "doc_id": "d_private_admin_rules_1",
+      "tenant_id": "tenant1",
+      "title": "个人私有：核对清单（admin）",
+      "collection_ids": ["c_private_admin_1"],
+      "sections": [
+        {
+          "section_id": "s_private_admin_1",
+          "keywords": ["核对清单", "归档"],
+          "text": "个人清单：归档前核对要点。",
+          "chunks": [
+            {
+              "chunk_id": "ch_private_admin_1",
+              "chunk_seq_no": 1,
+              "text": "归档前核对：审批记录与附件是否齐全。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "doc_id": "d_private_alice_rules_1",
+      "tenant_id": "tenant1",
+      "title": "个人私有：预算口径（alice）",
+      "collection_ids": ["c_private_alice_1"],
+      "sections": [
+        {
+          "section_id": "s_private_alice_1",
+          "keywords": ["预算口径", "财务"],
+          "text": "个人预算口径备忘。",
+          "chunks": [
+            {
+              "chunk_id": "ch_private_alice_1",
+              "chunk_seq_no": 1,
+              "text": "预算口径：以合同金额为准，必要时按里程碑拆分。"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "table_id": "t_company_kpi_1",
+      "tenant_id": "tenant1",
+      "collection_id": "c_company_public_1",
+      "name": "公司 KPI（示例）",
+      "columns": [
+        { "column_id": "col_metric", "name": "指标" },
+        { "column_id": "col_amount", "name": "数值" }
+      ],
+      "rows": [
+        {
+          "row_key": "row_revenue_ytd",
+          "values": { "col_metric": "本年累计收入", "col_amount": 8888.8 },
+          "keywords": ["收入", "本年累计"]
+        }
+      ]
+    },
+    {
+      "table_id": "t_finance_budget_1",
+      "tenant_id": "tenant1",
+      "collection_id": "c_finance_public_1",
+      "name": "财务预算（示例）",
+      "columns": [
+        { "column_id": "col_metric", "name": "指标" },
+        { "column_id": "col_amount", "name": "数值" }
+      ],
+      "rows": [
+        {
+          "row_key": "row_profit_target",
+          "values": { "col_metric": "利润目标", "col_amount": 3000.0 },
+          "keywords": ["利润目标", "预算"]
+        }
+      ]
+    },
+    {
+      "table_id": "t_dept_cost_1",
+      "tenant_id": "tenant1",
+      "collection_id": "c_dept_public_1",
+      "name": "研发成本（示例）",
+      "columns": [
+        { "column_id": "col_metric", "name": "指标" },
+        { "column_id": "col_amount", "name": "数值" }
+      ],
+      "rows": [
+        {
+          "row_key": "row_r_and_d_cost",
+          "values": { "col_metric": "研发费用", "col_amount": 1500.5 },
+          "keywords": ["研发费用", "成本"]
+        }
+      ]
+    },
+    {
+      "table_id": "t_project_profit_1",
+      "tenant_id": "tenant1",
+      "collection_id": "c_project_public_1",
+      "name": "项目核算：利润表（示例）",
+      "columns": [
+        { "column_id": "col_metric", "name": "指标" },
+        { "column_id": "col_amount", "name": "数值" }
+      ],
+      "rows": [
+        {
+          "row_key": "row_total_profit",
+          "values": { "col_metric": "本年累计净利润", "col_amount": 1234.56 },
+          "keywords": ["净利润", "本年累计"]
+        }
+      ]
+    },
+    {
+      "table_id": "t_private_admin_note_1",
+      "tenant_id": "tenant1",
+      "collection_id": "c_private_admin_1",
+      "name": "个人笔记：归档状态（示例）",
+      "columns": [
+        { "column_id": "col_metric", "name": "指标" },
+        { "column_id": "col_amount", "name": "数值" }
+      ],
+      "rows": [
+        {
+          "row_key": "row_archive_done",
+          "values": { "col_metric": "归档完成度", "col_amount": 0.92 },
+          "keywords": ["归档", "完成度"]
+        }
+      ]
+    },
+    {
+      "table_id": "t_private_alice_budget_1",
+      "tenant_id": "tenant1",
+      "collection_id": "c_private_alice_1",
+      "name": "个人备忘：预算拆分（示例）",
+      "columns": [
+        { "column_id": "col_metric", "name": "指标" },
+        { "column_id": "col_amount", "name": "数值" }
+      ],
+      "rows": [
+        {
+          "row_key": "row_contract_amount",
+          "values": { "col_metric": "合同金额", "col_amount": 4200.0 },
+          "keywords": ["合同金额", "预算口径"]
+        }
+      ]
+    }
+  ]
+}
+

@@ -1,0 +1,8 @@
+#
+# Docling sidecar 本地 wheels 缓存目录
+# 用于在网络不稳定时，通过宿主机提前 pip download，构建时优先离线安装。
+# 仅忽略实际的 wheel / 源码包与缓存文件，允许保留少量占位文件（如 .gitkeep）。
+*
+!*.gitignore
+!.gitkeep
+

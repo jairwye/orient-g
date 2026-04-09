@@ -14,6 +14,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { getAuthHeaders } from "../lib/auth";
 
 const PROFIT_BAR_GRADIENT_ID = "profitBarGradient";
 const PROFIT_COMPARE_LAST_YEAR_GRADIENT_ID = "profitCompareLastYearGradient";
@@ -52,7 +53,11 @@ type Overview = {
 };
 
 const fetchOverview = () =>
-  fetch("/api/business/overview", { cache: "no-store" })
+  fetch("/api/business/overview", {
+    cache: "no-store",
+    credentials: "include",
+    headers: getAuthHeaders(),
+  })
     .then((r) => r.json())
     .then((data) => data as Overview)
     .catch(() => null);

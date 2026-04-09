@@ -1,13 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { Geist } from "next/font/google";
 import "./globals.css";
 import AuthGuard from "./components/AuthGuard";
-
-const geistSans = Geist({
-  subsets: ["latin"],
-  variable: "--font-sans",
-});
 
 export async function generateMetadata(): Promise<Metadata> {
   const headersList = await headers();
@@ -50,7 +44,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-CN" className={geistSans.variable}>
+    <html lang="zh-CN">
       <body className="min-h-screen antialiased">
         <AuthGuard>{children}</AuthGuard>
       </body>

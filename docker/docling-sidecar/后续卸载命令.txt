@@ -1,0 +1,2 @@
+docker rm -f orientg-docling-sidecar
+docker rmi orientg-docling-sidecar:temp

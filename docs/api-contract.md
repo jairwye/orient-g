@@ -25,7 +25,7 @@
   - **用途**：供汇率趋势页展示取数进度（是否正在拉取、已入库条数、最后填充日期）。
   - **响应**：`{ "fetching": bool, "totalRecords": number, "lastFilledDate": string | null }`。
 
-- **说明**：汇率趋势为单页（`/exchange`），按钮切换美元/欧元/日元，默认最近一个月，可拖动滑块查看至 2025-04-02；数据来源与定时更新见 `docs/汇率趋势页方案.md`。
+- **说明**：汇率趋势为单页（`/exchange`），按钮切换美元/欧元/日元，默认最近一个月，可拖动滑块查看至 2025-04-02；数据来源与定时更新见 `规划/汇率趋势页方案.md`。
 
 ---
 
@@ -81,7 +81,7 @@
   - **用途**：供详情页 `/policy-news/item?id=xxx` 展示完整内容（含 HTML）。
   - **响应**：与 list 中单条结构类似，增加 `content` 等完整字段；404 表示未找到。
 
-- **说明**：数据来自 FreshRSS GReader API 定时拉取，内存缓存不写库；侧栏入口为「新闻政策」，页上三按钮「观点 / 新闻 / AI」对应三类；详见规则与规划/新闻页方案.md。
+- **说明**：数据来自 FreshRSS GReader API 定时拉取，内存缓存不写库；侧栏入口为「新闻政策」，页上三按钮「观点 / 新闻 / AI」对应三类；详见规划/新闻页方案.md。
 
 ---
 
@@ -185,3 +185,201 @@
 ```
 
 - **说明**：由员工 X 实现。
+
+---
+
+## 5. 流程文档规则（读写）
+
+- **读取规则**：`GET /api/process-doc/rules`
+  - **用途**：供流程文档页「规则管理」区块展示与编辑；返回完整 `process_rules.json` 内容。
+  - **响应**：与 `backend/data/process_rules.json` 结构一致，至少包含 `schema_version`、`process_types`；每项流程类型含 `id`、`name`、`description`、`output_schema`、`prompt_instruction`。
+
+```json
+{
+  "schema_version": "1",
+  "process_types": [
+    {
+      "id": "finance_workflow",
+      "name": "标准财务业务流程",
+      "description": "步骤、责任角色、输入输出、时限",
+      "output_schema": { "title": "流程名称", "steps": [], "roles": [] },
+      "prompt_instruction": "请将用户的自然语言描述转化为..."
+    }
+  ]
+}
+```
+
+- **保存规则**：`PUT /api/process-doc/rules`
+  - **请求体**：与上述响应结构一致的 JSON；`process_types` 不能为空，且每项必须包含 `id` 与 `prompt_instruction`。
+  - **响应**：成功返回 `{ "ok": true }`；校验失败返回 422，写入失败返回 500 及 `detail`。
+  - **说明**：保存后写回 `backend/data/process_rules.json`，后续「生成流程文档」即使用新规则（生成时后端会重新读取规则文件）。
+
+---
+
+## 6. 知识库（ACL / 文档上传与共享）
+
+本模块用于「知识库页 / AI 互动页 / 管理后台」联动验收。核心约定：
+
+- **文档与表的“读权限”默认随知识库（collection）归属决定**（assignment）。
+- **文档所有者永远可读**（在管理后台默认可读模板中强制勾选并置灰）。
+- **MultiDept/MultiProject 的可读范围**由“共享时选择的部门/项目范围（share_scope）”决定（管理后台只读展示）。
+
+### 6.1 知识库可选项（供 AI 互动页加载范围）
+
+- **路径**：`GET /api/knowledge/options`
+- **用途**：返回当前用户可见的 collections/tables，以及默认选中项。
+
+```json
+{
+  "collections": [
+    {
+      "collection_id": "c_company_public_1",
+      "type": "public",
+      "space_type": "CompanyPublic",
+      "name": "公司财务规章制度"
+    }
+  ],
+  "tables": [],
+  "default_selected_collection_ids": [],
+  "default_selected_table_ids": []
+}
+```
+
+### 6.2 我的知识库文档（上传 / 列表 / 删除 / 共享）
+
+- **列表**：`GET /api/knowledge/my-documents`
+
+```json
+{
+  "items": [
+    {
+      "doc_id": "ud_xxx",
+      "title": "文件标题",
+      "original_filename": "a.txt",
+      "collection_ids": ["c_private_dyn_user"]
+    }
+  ]
+}
+```
+
+- **上传**：`POST /api/knowledge/my-documents/upload`（multipart，form-data `file`）
+
+```json
+{
+  "ok": true,
+  "doc_id": "ud_xxx",
+  "title": "a",
+  "private_collection_id": "c_private_dyn_admin",
+  "chunk_count": 1
+}
+```
+
+- **删除**：`DELETE /api/knowledge/my-documents/{doc_id}`（仅 owner）
+- **共享到**：`POST /api/knowledge/my-documents/{doc_id}/share`
+
+```json
+{
+  "kb_kind": "DeptPublic",
+  "department_ids": [],
+  "project_ids": [],
+  "company_public": false
+}
+```
+
+- **默认行为**：
+  - `Dept*`：未传 `department_ids` → 默认取当前用户部门
+  - `Project*`：未传 `project_ids` → 默认取当前用户参与项目
+  - `Multi*`：同上（默认取当前用户部门/参与项目）
+
+### 6.3 AI 问答（按可见范围检索）
+
+- **路径**：`POST /api/knowledge/ask`
+
+```json
+{
+  "query": "问题文本",
+  "selected_collection_ids": ["c_company_public_1"],
+  "selected_table_ids": []
+}
+```
+
+### 6.4 管理后台：知识库类型默认可读（模板）
+
+- **路径**：`GET /api/settings/kb-meta/default-read-policies`
+- **说明**：`policy.allow_owner` 永远为 `true`（强制勾选不可取消）。
+
+```json
+{
+  "tenant_id": "tenant1",
+  "items": [
+    { "kb_kind": "ProjectPublic", "policy": { "allow_project_member": true, "allow_owner": true } }
+  ]
+}
+```
+
+- **保存**：`PUT /api/settings/kb-meta/default-read-policies`（后端会强制 `allow_owner=true`）
+
+### 6.5 管理后台：特殊知识库文档（只读展示 share_scope）
+
+- **路径**：`GET /api/settings/kb-meta/special-docs`
+- **说明**：
+  - `special_collections` 用于展示“特殊知识库”的中文名称/类型
+  - `share_scope` 仅用于展示 Multi* 的共享范围（部门/项目），不在后台修改
+  - Multi* 默认不会返回 `allow_all=true`；CompanyPublic 默认会显示 `allow_all=true`
+
+```json
+{
+  "items": [
+    {
+      "doc_id": "ud_xxx",
+      "title": "doc_multi_proj",
+      "special_collections": [
+        { "collection_id": "c_multi_project_public_1", "label": "多项目公共库", "space_type": "MultiProjectPublic" }
+      ],
+      "share_scope": { "kinds": ["MultiProjectPublic"], "department_ids": [], "project_ids": ["proj2", "proj3"] },
+      "acl": {}
+    }
+  ]
+}
+```
+
+---
+
+## 7. Docling Sidecar（内网，`docker/docling-sidecar`，不对外暴露）
+
+仅供 **backend** 在 `DOCLING_MODE=http` 时调用，**不**作为前端或公网 API。
+
+### 7.1 健康检查
+
+- **路径**：`GET /health`
+- **响应示例**：
+
+```json
+{
+  "ok": true,
+  "docling_version": "Docling CLI version x.y.z"
+}
+```
+
+### 7.2 解析（multipart 上传）
+
+- **路径**：`POST /convert`
+- **请求**：`multipart/form-data`，字段名 `file`，内容为待解析文件（与 Docling 支持的格式一致，如 PDF）。
+- **成功响应**：`application/json`
+
+```json
+{
+  "markdown": "# 由 Docling 导出的 Markdown 全文",
+  "document": {},
+  "docling_version": "Docling CLI version x.y.z"
+}
+```
+
+- **字段说明**：
+  - `markdown`：与本地 `docling --to md` 等价的文本。
+  - `document`：与本地 `docling --to json` 等价的结构化对象（JSON 可序列化）。
+  - `docling_version`：sidecar 内 Docling CLI 版本信息（可选）。
+
+- **错误**：HTTP 4xx/5xx，`detail` 为可读错误信息；超时返回 504。
+
+**backend 侧约定**：将 `DOCLING_HTTP_BASE_URL` 设为 sidecar 根地址（如 `http://docling:8080`），由 [backend/services/docling_runner.py](backend/services/docling_runner.py) 请求 `POST {base}/convert` 并写入 `archive/full.md`、`archive/full.json`。
