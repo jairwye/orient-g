@@ -14,6 +14,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
+  # GitHub Actions 将逐步默认 Node 24；提前对齐，避免 checkout/buildx 等 action 在 Node 20 上告警
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build-and-push:

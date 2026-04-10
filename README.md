@@ -83,15 +83,6 @@ copy .env.example .env
 └── README.md
 ```
 
-## 股权全景：展示与资料包
-
-- **展示与数据表下载**：前端 `/equity`（按 snapshot 进入工作台/列表/对比，并下载 `entities.csv` 等导出表）。
-- **资料包上传**：`bundle.zip` 在 **财务后台** `/finance` 上传，与 `/equity` 使用同一 `snapshot` 名称即可对齐数据批次。
-- **本地打成 zip**：在项目根目录执行 `python scripts/pack_equity_bundle.py --targets <你的targets.csv> -o bundle.zip`（可选 `--entities`、`--edges`），再将 `bundle.zip` 上传财务后台。
-- **本地从天眼查拉数并生成 bundle**（目录 `tools/tyc-playwright` 默认不入库，见 `.gitignore`）：准备好 `targets.csv` 后在该目录执行 `npm run bundle-from-targets -- --input <targets.csv> --out <输出目录>`，产物中含 `bundle.zip`；说明见该目录下 `README.md`（若本机无此目录需自行保留副本）。
-- **资料包来源**：由本地流程整理生成；与具体站点相关的自动化脚本**默认不入库**（见根目录 `.gitignore`）。
-- **可选**：在 Cursor 中安装通用 **Playwright MCP**（`@playwright/mcp`）便于本地调试浏览器，说明见 `docs/playwright-mcp-cursor.md`。
-
 ## 生产部署
 
 服务器上以 **docker-compose.yml** 方式运行，仅监听内网 IP。首次部署可在服务器上执行 `docker compose up -d`；若使用 Portainer 等工具，可上传 `docker-compose.yml` 并配置环境变量后一键部署。

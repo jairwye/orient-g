@@ -32,12 +32,14 @@ export default function PdfKnowledgePage() {
   }, [sp]);
 
   useEffect(() => {
-    const taskId = sp.get("task_id");
-    if (!taskId) return;
+    const rawTaskId = sp.get("task_id");
+    if (!rawTaskId) return;
+    // 嵌套 async 闭包内 TS 不会保留对 sp.get 结果的收窄，单独绑定为 string 避免 encodeURIComponent 报 null
+    const taskIdFromQuery: string = rawTaskId;
     let stop = false;
     async function loadOnce() {
       try {
-        const res = await fetch(`/api/knowledge/bigpdf/tasks/${encodeURIComponent(taskId)}`, {
+        const res = await fetch(`/api/knowledge/bigpdf/tasks/${encodeURIComponent(taskIdFromQuery)}`, {
           credentials: "include",
           headers: getAuthHeaders(),
         });

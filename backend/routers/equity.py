@@ -537,7 +537,8 @@ async def admin_import_bundle_zip(
                         VALUES
                           (:id, :s, :name, :t, :cc, :p, :c, :d, :ind, :st, :l, :so, :ov, :raw)
                         ON CONFLICT (id) DO UPDATE
-                        SET name=EXCLUDED.name,
+                        SET snapshot_name=EXCLUDED.snapshot_name,
+                            name=EXCLUDED.name,
                             entity_type=EXCLUDED.entity_type,
                             credit_code=EXCLUDED.credit_code,
                             province=EXCLUDED.province,
@@ -1505,7 +1506,8 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
                     VALUES
                       (:id, :s, :name, :t, :cc, :p, :c, :d, :ind, :st, :ed, :l, :so, :ov, :url, :raw)
                     ON CONFLICT (id) DO UPDATE
-                    SET name=EXCLUDED.name,
+                    SET snapshot_name=EXCLUDED.snapshot_name,
+                        name=EXCLUDED.name,
                         entity_type=EXCLUDED.entity_type,
                         credit_code=EXCLUDED.credit_code,
                         province=EXCLUDED.province,
@@ -1554,7 +1556,8 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
                     VALUES
                       (:id, :s, :f, :t, :hp, :hpt, :sp, :sd, :ca)
                     ON CONFLICT (id) DO UPDATE
-                    SET from_entity_id=EXCLUDED.from_entity_id,
+                    SET snapshot_name=EXCLUDED.snapshot_name,
+                        from_entity_id=EXCLUDED.from_entity_id,
                         to_entity_id=EXCLUDED.to_entity_id,
                         hold_pct=EXCLUDED.hold_pct,
                         hold_pct_text=EXCLUDED.hold_pct_text,
@@ -1588,7 +1591,8 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
                     VALUES
                       (:id, :s, :eid, :name, :cc, :alias, :key, :notes)
                     ON CONFLICT (id) DO UPDATE
-                    SET entity_id=EXCLUDED.entity_id,
+                    SET snapshot_name=EXCLUDED.snapshot_name,
+                        entity_id=EXCLUDED.entity_id,
                         name=EXCLUDED.name,
                         credit_code=EXCLUDED.credit_code,
                         alias=EXCLUDED.alias,
