@@ -8,6 +8,7 @@ from io import BytesIO
 import zipfile
 from datetime import datetime
 from typing import Any
+from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -17,6 +18,27 @@ from backend.database import get_db
 from backend.geo_cn import city_display_label, normalize_geo, province_display_label
 
 router = APIRouter()
+
+DEBUG_LOG_PATH = Path("debug-6b39de.log")
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, data: dict):
+    # NDJSON append; avoid secrets/PII
+    try:
+        import json as _json, time as _time
+
+        payload = {
+            "sessionId": "6b39de",
+            "runId": "pre-fix",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(_time.time() * 1000),
+        }
+        DEBUG_LOG_PATH.open("a", encoding="utf-8").write(_json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _now_iso() -> str:
@@ -504,14 +526,48 @@ async def admin_import_bundle_zip(
       - 优先使用 *_entity_id；若缺失则尝试用 name 在当前 snapshot 内匹配主体
     """
     raw = await file.read()
+    _dbg(
+        "Z0",
+        "backend/routers/equity.py:admin_import_bundle_zip",
+        "bundle upload received",
+        {"snapshot_name": snapshot_name, "filename": file.filename, "size_bytes": len(raw)},
+    )
     try:
         zf = zipfile.ZipFile(BytesIO(raw))
     except Exception as e:
+        _dbg(
+            "Z0",
+            "backend/routers/equity.py:admin_import_bundle_zip",
+            "invalid zip",
+            {"err": str(e), "filename": file.filename, "size_bytes": len(raw)},
+        )
         raise HTTPException(status_code=400, detail=f"invalid zip: {e}")
+
+    infos = [i.filename for i in zf.infolist() if not i.is_dir()]
+    _dbg(
+        "Z1",
+        "backend/routers/equity.py:admin_import_bundle_zip",
+        "zip file list",
+        {"count": len(infos), "files": infos[:50]},
+    )
 
     targets_text = _read_zip_member_text(zf, "targets.csv")
     entities_text = _read_zip_member_text(zf, "entities.csv")
     edges_text = _read_zip_member_text(zf, "equity_edges.csv")
+
+    _dbg(
+        "Z1",
+        "backend/routers/equity.py:admin_import_bundle_zip",
+        "zip members matched",
+        {
+            "has_targets": bool(targets_text),
+            "has_entities": bool(entities_text),
+            "has_edges": bool(edges_text),
+            "targets_head": (targets_text.splitlines()[:2] if targets_text else None),
+            "entities_head": (entities_text.splitlines()[:2] if entities_text else None),
+            "edges_head": (edges_text.splitlines()[:2] if edges_text else None),
+        },
+    )
 
     if not any([targets_text, entities_text, edges_text]):
         raise HTTPException(status_code=400, detail="zip missing targets.csv/entities.csv/equity_edges.csv")
@@ -521,7 +577,8 @@ async def admin_import_bundle_zip(
     inserted_edges = 0
     created_entities = 0
 
-    with get_db() as db:
+    try:
+        with get_db() as db:
         db.execute(
             text(
                 """
@@ -746,6 +803,22 @@ async def admin_import_bundle_zip(
                     },
                 )
                 inserted_edges += 1
+    except HTTPException:
+        raise
+    except Exception as e:
+        _dbg(
+            "Z2",
+            "backend/routers/equity.py:admin_import_bundle_zip",
+            "unhandled exception during import",
+            {
+                "err": repr(e),
+                "snapshot_name": snapshot_name,
+                "has_targets": bool(targets_text),
+                "has_entities": bool(entities_text),
+                "has_edges": bool(edges_text),
+            },
+        )
+        raise HTTPException(status_code=500, detail="internal error while importing bundle-zip")
 
     return {
         "ok": True,
