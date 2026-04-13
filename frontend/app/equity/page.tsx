@@ -667,6 +667,14 @@ export default function EquityEntryPage() {
 
   const hexbins = useMemo<HexBin[]>(() => {
     // Hexbin：在投影后的屏幕坐标系里分箱
+    if (!mapModel.paths.length) {
+      // #region agent log
+      debugLog("run1", "H6", "equity/page.tsx:hexbin-disabled-no-geo", "hexbin disabled because geo paths are unavailable", {
+        pointCount: points.length,
+      });
+      // #endregion
+      return [];
+    }
     if (!points.length) return [];
     const size = 18; // hex 半径（像素，越大越平滑）
 
@@ -968,6 +976,14 @@ export default function EquityEntryPage() {
             onMouseLeave={handleMapMouseUp}
             style={{ cursor: isMapPanning ? "grabbing" : "grab" }}
           >
+            {!mapModel.paths.length ? (
+              <img
+                src="/maps/china.svg"
+                alt="China map fallback"
+                className="absolute inset-0 h-full w-full object-contain opacity-80"
+                draggable={false}
+              />
+            ) : null}
             <svg
               className="absolute inset-0 h-full w-full"
               viewBox={`0 0 ${mapModel.W} ${mapModel.H}`}
