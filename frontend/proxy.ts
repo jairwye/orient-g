@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const CANONICAL_FINANCE_PATH = "/finance";
-const BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "http://localhost:8000";
+const RAW_BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "http://127.0.0.1:8000";
+const BACKEND_BASE = RAW_BACKEND_BASE.replace("://localhost", "://127.0.0.1");
 
 /** 内存缓存，避免每次请求都请求后端（导致页面切换慢）；TTL 5 秒，保存路径后最多等 5 秒生效 */
 let cachedPath: string | null = null;

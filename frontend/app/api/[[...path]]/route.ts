@@ -2,8 +2,10 @@
  * 将 /api/* 代理到后端，并转发全部请求头（含 Authorization），
  * 以便关闭标签页后仅靠 sessionStorage 的 token 不再存在、重新开页需登录。
  */
-// 本地开发用 API_URL 或默认 localhost:8000；Docker 中 compose 传 API_BASE_SERVER
-const BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "http://localhost:8000";
+// 本地开发用 API_URL 或默认 127.0.0.1:8000；Docker 中 compose 传 API_BASE_SERVER
+const RAW_BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "http://127.0.0.1:8000";
+// 避免 Node fetch 在 localhost 解析到 ::1 而后端仅监听 IPv4 导致 502
+const BACKEND_BASE = RAW_BACKEND_BASE.replace("://localhost", "://127.0.0.1");
 
 function buildBackendUrl(path: string[], search: string): string {
   const pathPart = path.length ? `/${path.join("/")}` : "";
@@ -54,7 +56,21 @@ async function proxy(
   const url = new URL(request.url);
   const backendUrl = buildBackendUrl(path, url.search);
   const headers = new Headers(request.headers);
-  headers.delete("host");
+  // 移除 hop-by-hop 与易导致 Node fetch 失败的头
+  for (const h of [
+    "host",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "expect",
+  ]) {
+    headers.delete(h);
+  }
   // 显式转发鉴权相关头，避免在部分环境下被丢弃导致 /me 返回 401
   const authz = request.headers.get("Authorization");
   if (authz) headers.set("Authorization", authz);
@@ -65,9 +81,17 @@ async function proxy(
     headers,
     cache: "no-store",
   };
-  if (method !== "GET" && method !== "HEAD" && request.body) {
-    init.body = request.body;
-    (init as RequestInit & { duplex?: string }).duplex = "half"; // Node fetch 要求流式 body 时设置
+  if (method !== "GET" && method !== "HEAD") {
+    const contentType = request.headers.get("content-type") || "";
+    if (contentType.toLowerCase().includes("multipart/form-data")) {
+      // Next/Undici 在某些环境下转发 multipart 流会出现 fetch failed，这里改为 buffer 转发更稳
+      const ab = await request.arrayBuffer();
+      init.body = Buffer.from(ab);
+      headers.delete("content-length");
+    } else if (request.body) {
+      init.body = request.body;
+      (init as RequestInit & { duplex?: string }).duplex = "half"; // Node fetch 要求流式 body 时设置
+    }
   }
   try {
     const res = await fetch(backendUrl, init);
