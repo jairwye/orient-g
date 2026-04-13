@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getAuthHeaders } from "../lib/auth";
+import { useEquitySnapshotName } from "../lib/equitySnapshot";
 
 type TargetItem = {
   id: string;
@@ -18,10 +19,8 @@ type TargetsResponse = {
   items: TargetItem[];
 };
 
-const DEFAULT_SNAPSHOT = "2026-04-08_run1";
-
 export default function TargetsPage() {
-  const [snapshotName, setSnapshotName] = useState(DEFAULT_SNAPSHOT);
+  const { snapshotName, setSnapshotName } = useEquitySnapshotName("");
   const [q, setQ] = useState("");
   const [data, setData] = useState<TargetsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -31,6 +30,14 @@ export default function TargetsPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    if (!snapshotName.trim()) {
+      setLoading(false);
+      setData(null);
+      setError(null);
+      return () => {
+        cancelled = true;
+      };
+    }
     fetch(`/api/equity/targets?snapshot_name=${encodeURIComponent(snapshotName)}`, {
       cache: "no-store",
       credentials: "include",
@@ -59,6 +66,39 @@ export default function TargetsPage() {
   }, [snapshotName]);
 
   const items = data?.items || [];
+
+  // #region agent log
+  useEffect(() => {
+    const list = data?.items ?? [];
+    const countDups = (vals: string[]) => {
+      const m = new Map<string, number>();
+      for (const k of vals) m.set(k, (m.get(k) || 0) + 1);
+      return [...m.entries()].filter(([, c]) => c > 1);
+    };
+    const idDups = countDups(list.map((x) => String(x.id || "")));
+    const entDups = countDups(list.map((x) => String(x.entity_id || "")));
+    if (!idDups.length && !entDups.length) return;
+    fetch("http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6b39de" },
+      body: JSON.stringify({
+        sessionId: "6b39de",
+        runId: "pre-fix",
+        hypothesisId: "D",
+        location: "frontend/app/targets/page.tsx:items",
+        message: "duplicate id or entity_id in targets table rows",
+        data: {
+          idDupSample: idDups.slice(0, 15),
+          entityDupSample: entDups.slice(0, 15),
+          rowCount: list.length,
+          key3334757718AsId: list.filter((x) => String(x.id) === "3334757718").length,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }, [data]);
+  // #endregion
+
   const filtered = useMemo(() => {
     const qq = q.trim();
     if (!qq) return items;

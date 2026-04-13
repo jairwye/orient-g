@@ -383,3 +383,18 @@
 - **错误**：HTTP 4xx/5xx，`detail` 为可读错误信息；超时返回 504。
 
 **backend 侧约定**：将 `DOCLING_HTTP_BASE_URL` 设为 sidecar 根地址（如 `http://docling:8080`），由 [backend/services/docling_runner.py](backend/services/docling_runner.py) 请求 `POST {base}/convert` 并写入 `archive/full.md`、`archive/full.json`。
+
+---
+
+## 8. 股权全景（实验性，前缀 `/api/equity`）
+
+> **说明**：供内网 `/equity` 及分析/对比/目标等页使用；**为临时增加能力，后续可能移除**。详细路径与参数以实现为准，此处仅列主要只读接口。
+
+- **最新快照**：`GET /api/equity/snapshots/latest`
+- **目标主体列表**：`GET /api/equity/targets`（可选查询参数以实现为准）
+- **地理聚合**：`GET /api/equity/targets/geo`、`GET /api/equity/entities/geo`
+- **实体检索与详情**：`GET /api/equity/entities/search`、`GET /api/equity/entities/{entity_id}`
+- **图谱**：`GET /api/equity/graph/ownership`、`GET /api/equity/graph/panorama`
+- **分析**：`GET /api/equity/analysis/summary`、`GET /api/equity/analysis/compare`
+- **导出**：`GET /api/equity/export/subgraph`、`GET /api/equity/export/csv`
+- **管理导入**（内网后台/运维）：`POST /api/equity/admin/import*` 系列（CSV/压缩包/天眼导出等，详见实现与 README）

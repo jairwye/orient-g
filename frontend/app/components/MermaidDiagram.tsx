@@ -16,7 +16,16 @@ export function MermaidDiagram({ chart, id }: { chart: string; id: string }) {
     mermaid.initialize({
       startOnLoad: false,
       theme: "dark",
-      flowchart: { curve: "basis", htmlLabels: true, padding: 12 },
+      // 默认 50000：股权全景等大 flowchart 易触发「maximum text size in diagram exceeded」
+      maxTextSize: 2_000_000,
+      // 默认 500：合并上下游后边数易超限（与 flowchart.maxEdges 二选一有效即可）
+      maxEdges: 15000,
+      flowchart: {
+        curve: "basis",
+        htmlLabels: true,
+        padding: 12,
+        maxEdges: 15000,
+      },
       themeVariables: {
         fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial",
         fontSize: "18px",

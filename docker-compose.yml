@@ -1,5 +1,5 @@
 # Orient-G（财务信息内网）- 生产环境仅内网部署
-# 使用方式：在 Portainer 中上传本文件并配置环境变量，或服务器上 docker compose pull && docker compose up -d
+# 使用方式：在 Portainer 中上传本文件并配置环境变量；更新镜像建议按服务 pull（见 README），勿对仅本地构建的 docling 执行 pull
 # backend/frontend 镜像来自 ghcr.io，可在 .env 中设置 BACKEND_IMAGE、FRONTEND_IMAGE 覆盖
 # 反向代理与业务服务应只绑定内网 IP（见规划文档第三节）
 
@@ -21,7 +21,10 @@ services:
       retries: 5
 
   # Docling：CPU 解析侧车；生产环境 GPU 预留给 Ollama，本服务不申请 GPU
+  # image + pull_policy: never：避免 docker compose pull 将短名镜像当成 docker.io/library/* 去拉取（本地 build 即可）
   docling:
+    image: ${DOCLING_IMAGE:-orientg-docling-sidecar:local}
+    pull_policy: never
     build:
       context: docker/docling-sidecar
       dockerfile: Dockerfile

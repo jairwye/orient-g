@@ -58,5 +58,6 @@ def test_equity_panorama_smoke_import_and_query():
     r = client.get("/api/equity/analysis/summary", params={"snapshot_name": snapshot})
     assert r.status_code == 200, r.text
     dist = r.json().get("distributions") or {}
+    assert "city" in dist
     assert "province" in dist
 

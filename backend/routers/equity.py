@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import uuid
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from io import BytesIO
 import zipfile
@@ -13,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import bindparam, text
 
 from backend.database import get_db
+from backend.geo_cn import city_display_label, normalize_geo, province_display_label
 
 router = APIRouter()
 
@@ -24,6 +26,81 @@ def _now_iso() -> str:
 def _csv_get(row: dict[str, Any], key: str) -> str:
     v = row.get(key)
     return str(v).strip() if v is not None else ""
+
+
+def _upsert_equity_target(
+    db: Any,
+    *,
+    snapshot_name: str,
+    entity_id: str,
+    name: str,
+    credit_code: Any,
+    alias: Any,
+    is_key: bool,
+    notes: Any,
+) -> None:
+    """
+    同一 snapshot 下每个 entity_id 只保留一条 target：已存在则合并（is_key 取或、名称取更长者）。
+    """
+    row = db.execute(
+        text(
+            """
+            SELECT id, is_key, name
+            FROM equity_targets
+            WHERE snapshot_name = :s AND entity_id = :eid
+            LIMIT 1
+            """
+        ),
+        {"s": snapshot_name, "eid": entity_id},
+    ).fetchone()
+    if row:
+        tid = str(row[0])
+        old_key = bool(row[1])
+        old_name = str(row[2] or "")
+        merged_key = old_key or is_key
+        merged_name = name.strip() if len(name.strip()) >= len(old_name.strip()) else old_name
+        db.execute(
+            text(
+                """
+                UPDATE equity_targets
+                SET name = :name,
+                    is_key = :ik,
+                    credit_code = COALESCE(:cc, credit_code),
+                    alias = COALESCE(:alias, alias),
+                    notes = COALESCE(:notes, notes)
+                WHERE id = :tid
+                """
+            ),
+            {
+                "tid": tid,
+                "name": merged_name,
+                "ik": merged_key,
+                "cc": credit_code,
+                "alias": alias,
+                "notes": notes,
+            },
+        )
+        return
+    db.execute(
+        text(
+            """
+            INSERT INTO equity_targets
+              (id, snapshot_name, entity_id, name, credit_code, alias, is_key, notes)
+            VALUES
+              (:id, :s, :eid, :name, :cc, :alias, :key, :notes)
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "s": snapshot_name,
+            "eid": entity_id,
+            "name": name,
+            "cc": credit_code,
+            "alias": alias,
+            "key": is_key,
+            "notes": notes,
+        },
+    )
 
 
 def _read_zip_member_text(zf: zipfile.ZipFile, member_name: str) -> str | None:
@@ -422,7 +499,7 @@ async def admin_import_bundle_zip(
 
     CSV 字段建议：
     - targets.csv: name, credit_code?, alias?, is_key?, notes?, province?, city?（后两者会写入 entity）
-    - entities.csv: id?, name, entity_type?, credit_code?, province?, city?, district?, industry?, status?, is_listed?, is_state_owned?, is_overseas?
+    - entities.csv: id?, name, entity_type?, credit_code?, province?, city?, district?, reg_location?, industry?, status?, is_listed?, is_state_owned?, is_overseas?
     - equity_edges.csv: from_name?, to_name?, from_entity_id?, to_entity_id?, hold_pct?, hold_pct_text?
       - 优先使用 *_entity_id；若缺失则尝试用 name 在当前 snapshot 内匹配主体
     """
@@ -512,12 +589,27 @@ async def admin_import_bundle_zip(
                 province = _csv_get(r, "province") or None
                 city = _csv_get(r, "city") or None
                 district = _csv_get(r, "district") or None
+                reg_location = _csv_get(r, "reg_location") or None
                 industry = _csv_get(r, "industry") or None
                 status = _csv_get(r, "status") or None
                 raw_in = _csv_get(r, "raw_source_json") or _csv_get(r, "profile_json") or ""
                 is_listed = _csv_get(r, "is_listed").lower()
                 is_state_owned = _csv_get(r, "is_state_owned").lower()
                 is_overseas = _csv_get(r, "is_overseas").lower()
+
+                if reg_location and (not city or not province or not district):
+                    p2, c2, d2 = normalize_geo(
+                        reg_location,
+                        city or "",
+                        district or "",
+                        hint_province=province,
+                    )
+                    if not province and p2:
+                        province = p2
+                    if not city and c2:
+                        city = c2
+                    if not district and d2:
+                        district = d2
 
                 def _to_bool(x: str) -> bool | None:
                     if not x:
@@ -532,10 +624,10 @@ async def admin_import_bundle_zip(
                     text(
                         """
                         INSERT INTO equity_entities
-                          (id, snapshot_name, name, entity_type, credit_code, province, city, district,
+                          (id, snapshot_name, name, entity_type, credit_code, province, city, district, reg_location,
                            industry, status, is_listed, is_state_owned, is_overseas, raw_source_json)
                         VALUES
-                          (:id, :s, :name, :t, :cc, :p, :c, :d, :ind, :st, :l, :so, :ov, :raw)
+                          (:id, :s, :name, :t, :cc, :p, :c, :d, :rl, :ind, :st, :l, :so, :ov, :raw)
                         ON CONFLICT (id) DO UPDATE
                         SET snapshot_name=EXCLUDED.snapshot_name,
                             name=EXCLUDED.name,
@@ -544,6 +636,7 @@ async def admin_import_bundle_zip(
                             province=EXCLUDED.province,
                             city=EXCLUDED.city,
                             district=EXCLUDED.district,
+                            reg_location=EXCLUDED.reg_location,
                             industry=EXCLUDED.industry,
                             status=EXCLUDED.status,
                             is_listed=EXCLUDED.is_listed,
@@ -561,6 +654,7 @@ async def admin_import_bundle_zip(
                         "p": province,
                         "c": city,
                         "d": district,
+                        "rl": reg_location,
                         "ind": industry,
                         "st": status,
                         "l": _to_bool(is_listed),
@@ -602,26 +696,15 @@ async def admin_import_bundle_zip(
                         {"s": snapshot_name, "id": eid, "p": province, "c": city},
                     )
 
-                db.execute(
-                    text(
-                        """
-                        INSERT INTO equity_targets
-                          (id, snapshot_name, entity_id, name, credit_code, alias, is_key, notes)
-                        VALUES
-                          (:id, :s, :eid, :name, :cc, :alias, :key, :notes)
-                        ON CONFLICT (id) DO NOTHING
-                        """
-                    ),
-                    {
-                        "id": str(uuid.uuid4()),
-                        "s": snapshot_name,
-                        "eid": eid,
-                        "name": name,
-                        "cc": credit_code,
-                        "alias": alias,
-                        "key": is_key,
-                        "notes": notes,
-                    },
+                _upsert_equity_target(
+                    db,
+                    snapshot_name=snapshot_name,
+                    entity_id=eid,
+                    name=name,
+                    credit_code=credit_code,
+                    alias=alias,
+                    is_key=is_key,
+                    notes=notes,
                 )
                 inserted_targets += 1
 
@@ -830,10 +913,11 @@ def targets(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
         rows = db.execute(
             text(
                 """
-                SELECT id, entity_id, name, credit_code, alias, is_key
+                SELECT DISTINCT ON (entity_id)
+                  id, entity_id, name, credit_code, alias, is_key
                 FROM equity_targets
                 WHERE snapshot_name = :s
-                ORDER BY is_key DESC, name ASC
+                ORDER BY entity_id, is_key DESC, name ASC
                 """
             ),
             {"s": snapshot_name},
@@ -854,6 +938,133 @@ def targets(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
     }
 
 
+def _graph_geo_for_api(province: Any, city: Any, reg_location: Any, name: str) -> dict[str, Any]:
+    """图谱/地图 API：返回展示用省、市（含注册地推断 + 公司名弱提示）。"""
+    nm = str(name or "")
+    rp = str(province or "").strip()
+    rc = str(city or "").strip()
+    rr_raw = reg_location if reg_location is not None else ""
+    rr = str(rr_raw).strip()
+    dp = province_display_label(rp or None, rr or None, company_name=nm)
+    dc = city_display_label(rc or None, rr or None, rp or None, company_name=nm)
+    return {"province": dp, "city": dc, "reg_location": rr_raw}
+
+
+def _apply_display_geo_to_graph_nodes(nodes: list[dict[str, Any]]) -> None:
+    for n in nodes:
+        g = n.get("geo") or {}
+        n["geo"] = _graph_geo_for_api(g.get("province"), g.get("city"), g.get("reg_location"), str(n.get("name") or ""))
+
+
+def _snapshot_target_entity_ids(snapshot_name: str) -> set[str]:
+    with get_db() as db:
+        rows = db.execute(
+            text("SELECT entity_id FROM equity_targets WHERE snapshot_name = :s"),
+            {"s": snapshot_name},
+        ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def _merge_two_graph_nodes(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    out = dict(a)
+    if len(str(b.get("name") or "")) > len(str(out.get("name") or "")):
+        out["name"] = b.get("name")
+    cc_a = str(out.get("credit_code") or "").strip()
+    cc_b = str(b.get("credit_code") or "").strip()
+    out["credit_code"] = cc_a or cc_b or out.get("credit_code")
+    out["entity_type"] = out.get("entity_type") or b.get("entity_type")
+    g0 = dict(out.get("geo") or {})
+    g1 = dict(b.get("geo") or {})
+    for k in ("province", "city", "reg_location"):
+        v0 = str(g0.get(k) or "").strip()
+        v1 = str(g1.get(k) or "").strip()
+        if not v0 and v1:
+            g0[k] = g1[k]
+    out["geo"] = g0
+    if not str(out.get("industry") or "").strip() and str(b.get("industry") or "").strip():
+        out["industry"] = b.get("industry")
+    t0 = dict(out.get("tags") or {})
+    t1 = dict(b.get("tags") or {})
+    t0["is_target"] = bool(t0.get("is_target")) or bool(t1.get("is_target"))
+    t0["is_key_target"] = bool(t0.get("is_key_target")) or bool(t1.get("is_key_target"))
+    out["tags"] = t0
+    return out
+
+
+def _dedupe_graph_by_credit_code(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    preferred_entity_id: str,
+    target_entity_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    同一统一社会信用代码在图谱里可能对应多个天眼 id；合并为单一节点并重写边，避免全景图重复。
+    """
+    by_cc: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    no_cc: list[dict[str, Any]] = []
+    for n in nodes:
+        cc = str(n.get("credit_code") or "").strip()
+        if not cc:
+            no_cc.append(n)
+        else:
+            by_cc[cc].append(n)
+
+    id_remap: dict[str, str] = {}
+    merged: dict[str, dict[str, Any]] = {}
+
+    for n in no_cc:
+        nid = str(n["id"])
+        id_remap[nid] = nid
+        merged[nid] = n
+
+    for _cc, group in by_cc.items():
+        ids = [str(x["id"]) for x in group]
+        if len(group) == 1:
+            nid = ids[0]
+            id_remap[nid] = nid
+            merged[nid] = group[0]
+            continue
+        canon = preferred_entity_id if preferred_entity_id in ids else ""
+        if not canon:
+            for tid in target_entity_ids:
+                if tid in ids:
+                    canon = tid
+                    break
+        if not canon:
+            canon = min(ids)
+        base = next(x for x in group if str(x["id"]) == canon)
+        acc = dict(base)
+        for x in group:
+            if str(x["id"]) == canon:
+                continue
+            acc = _merge_two_graph_nodes(acc, x)
+        acc["id"] = canon
+        for oid in ids:
+            id_remap[oid] = canon
+        merged[canon] = acc
+
+    new_edges: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for e in edges:
+        fid = id_remap.get(str(e["from"]), str(e["from"]))
+        tid = id_remap.get(str(e["to"]), str(e["to"]))
+        if fid == tid:
+            continue
+        hp = e.get("hold_pct_text")
+        hpk = str(hp) if hp is not None else ""
+        hpn = str(e.get("hold_pct") if e.get("hold_pct") is not None else "")
+        key = (fid, tid, hpk, hpn)
+        if key in seen:
+            continue
+        seen.add(key)
+        ne = dict(e)
+        ne["from"] = fid
+        ne["to"] = tid
+        new_edges.append(ne)
+    return list(merged.values()), new_edges
+
+
 @router.get("/targets/geo")
 def targets_geo(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
     """
@@ -865,15 +1076,15 @@ def targets_geo(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]
         rows = db.execute(
             text(
                 """
-                SELECT
+                SELECT DISTINCT ON (t.entity_id)
                   t.id, t.entity_id, t.name, t.credit_code, t.alias, t.is_key,
-                  e.province, e.city
+                  e.province, e.city, e.reg_location
                 FROM equity_targets t
                 JOIN equity_entities e
                   ON e.snapshot_name = t.snapshot_name
                  AND e.id = t.entity_id
                 WHERE t.snapshot_name = :s
-                ORDER BY t.is_key DESC, t.name ASC
+                ORDER BY t.entity_id, t.is_key DESC, t.name ASC
                 """
             ),
             {"s": snapshot_name},
@@ -888,7 +1099,7 @@ def targets_geo(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]
                 "credit_code": r[3],
                 "alias": r[4],
                 "is_key": bool(r[5]),
-                "geo": {"province": r[6], "city": r[7]},
+                "geo": _graph_geo_for_api(r[6], r[7], r[8], str(r[2])),
             }
             for r in rows
         ],
@@ -903,19 +1114,30 @@ def entities_geo(
 ) -> dict[str, Any]:
     """
     全量主体（含地理信息），用于 equity 地图散点（每家公司一个点）。
-    - 从 equity_entities 读取 province/city
+    - 从 equity_entities 读取 province/city/reg_location（按市落点优先）
     - LEFT JOIN equity_targets 以标记 is_target/is_key_target
     """
-    where_geo = "" if include_unknown else "AND (e.province IS NOT NULL OR e.city IS NOT NULL)"
+    where_geo = (
+        ""
+        if include_unknown
+        else (
+            "AND (COALESCE(TRIM(e.province), '') <> '' OR COALESCE(TRIM(e.city), '') <> '' "
+            "OR COALESCE(TRIM(e.reg_location), '') <> '')"
+        )
+    )
     sql = f"""
       SELECT
-        e.id, e.name, e.entity_type, e.credit_code, e.province, e.city,
+        e.id, e.name, e.entity_type, e.credit_code, e.province, e.city, e.reg_location,
         COALESCE(t.is_key, false) AS is_key_target,
         CASE WHEN t.entity_id IS NULL THEN false ELSE true END AS is_target
       FROM equity_entities e
-      LEFT JOIN equity_targets t
-        ON t.snapshot_name = e.snapshot_name
-       AND t.entity_id = e.id
+      LEFT JOIN (
+        SELECT DISTINCT ON (entity_id)
+          entity_id, is_key
+        FROM equity_targets
+        WHERE snapshot_name = :s
+        ORDER BY entity_id, is_key DESC
+      ) t ON t.entity_id = e.id
       WHERE e.snapshot_name = :s
       {where_geo}
       ORDER BY
@@ -933,9 +1155,9 @@ def entities_geo(
                 "name": str(r[1]),
                 "entity_type": str(r[2]),
                 "credit_code": r[3],
-                "geo": {"province": r[4], "city": r[5]},
-                "is_target": bool(r[7]),
-                "is_key_target": bool(r[6]),
+                "geo": _graph_geo_for_api(r[4], r[5], r[6], str(r[1])),
+                "is_target": bool(r[8]),
+                "is_key_target": bool(r[7]),
             }
             for r in rows
         ],
@@ -987,7 +1209,7 @@ def entity_detail(entity_id: str, snapshot_name: str = Query(..., min_length=1))
             text(
                 """
                 SELECT id, name, credit_code, entity_type,
-                       province, city, district,
+                       province, city, district, reg_location,
                        industry, status,
                        is_listed, is_state_owned, is_overseas
                 FROM equity_entities
@@ -1003,10 +1225,10 @@ def entity_detail(entity_id: str, snapshot_name: str = Query(..., min_length=1))
         "name": str(row[1]),
         "credit_code": row[2],
         "entity_type": str(row[3]),
-        "geo": {"province": row[4], "city": row[5], "district": row[6]},
-        "industry": row[7],
-        "status": row[8],
-        "tags": {"is_listed": row[9], "is_state_owned": row[10], "is_overseas": row[11]},
+        "geo": {"province": row[4], "city": row[5], "district": row[6], "reg_location": row[7]},
+        "industry": row[8],
+        "status": row[9],
+        "tags": {"is_listed": row[10], "is_state_owned": row[11], "is_overseas": row[12]},
     }
 
 
@@ -1043,7 +1265,7 @@ def graph_ownership(
             r = db.execute(
                 text(
                     """
-                    SELECT id, name, entity_type, credit_code, province, city, industry,
+                    SELECT id, name, entity_type, credit_code, province, city, reg_location, industry,
                            is_listed, is_state_owned, is_overseas
                     FROM equity_entities
                     WHERE snapshot_name=:s AND id=:id
@@ -1058,9 +1280,9 @@ def graph_ownership(
             "name": str(r[1]),
             "entity_type": str(r[2]),
             "credit_code": r[3],
-            "tags": {"is_listed": r[7], "is_state_owned": r[8], "is_overseas": r[9]},
-            "geo": {"province": r[4], "city": r[5]},
-            "industry": r[6],
+            "tags": {"is_listed": r[8], "is_state_owned": r[9], "is_overseas": r[10]},
+            "geo": {"province": r[4], "city": r[5], "reg_location": r[6]},
+            "industry": r[7],
         }
 
     _load_entity(target_entity_id)
@@ -1143,6 +1365,15 @@ def graph_ownership(
             break
         frontier = next_frontier
 
+    targ_ids = _snapshot_target_entity_ids(snapshot_name)
+    dn, de = _dedupe_graph_by_credit_code(
+        list(nodes.values()),
+        edges,
+        preferred_entity_id=target_entity_id,
+        target_entity_ids=targ_ids,
+    )
+    _apply_display_geo_to_graph_nodes(dn)
+
     return {
         "snapshot": {"name": snapshot_name},
         "params": {
@@ -1151,11 +1382,11 @@ def graph_ownership(
             "max_depth": max_depth,
             "max_nodes": max_nodes,
         },
-        "nodes": list(nodes.values()),
-        "edges": edges,
+        "nodes": dn,
+        "edges": de,
         "stats": {
-            "node_count": len(nodes),
-            "edge_count": len(edges),
+            "node_count": len(dn),
+            "edge_count": len(de),
             "depth_max": depth_max,
             "truncated": truncated,
             "truncate_reason": truncate_reason,
@@ -1195,9 +1426,10 @@ def graph_panorama(
         trows = db.execute(
             text(
                 """
-                SELECT entity_id, is_key
+                SELECT DISTINCT ON (entity_id) entity_id, is_key
                 FROM equity_targets
-                WHERE snapshot_name=:s
+                WHERE snapshot_name = :s
+                ORDER BY entity_id, is_key DESC
                 """
             ),
             {"s": snapshot_name},
@@ -1228,14 +1460,23 @@ def graph_panorama(
     truncate_reason = down.get("stats", {}).get("truncate_reason") or up.get("stats", {}).get("truncate_reason")
     depth_max = max(int(down.get("stats", {}).get("depth_max") or 0), int(up.get("stats", {}).get("depth_max") or 0))
 
+    targ_ids = set(target_map.keys())
+    dn, de = _dedupe_graph_by_credit_code(
+        list(nodes_by_id.values()),
+        list(edges_by_id.values()),
+        preferred_entity_id=target_entity_id,
+        target_entity_ids=targ_ids,
+    )
+    _apply_display_geo_to_graph_nodes(dn)
+
     return {
         "snapshot": {"name": snapshot_name},
         "params": {"min_pct": min_pct, "max_depth": max_depth, "max_nodes": max_nodes},
-        "nodes": list(nodes_by_id.values()),
-        "edges": list(edges_by_id.values()),
+        "nodes": dn,
+        "edges": de,
         "stats": {
-            "node_count": len(nodes_by_id),
-            "edge_count": len(edges_by_id),
+            "node_count": len(dn),
+            "edge_count": len(de),
             "depth_max": depth_max,
             "truncated": truncated,
             "truncate_reason": truncate_reason,
@@ -1246,14 +1487,12 @@ def graph_panorama(
 @router.get("/analysis/summary")
 def analysis_summary(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
     with get_db() as db:
-        prov_rows = db.execute(
+        geo_rows = db.execute(
             text(
                 """
-                SELECT COALESCE(province, '未知') AS k, COUNT(*) AS c
+                SELECT TRIM(COALESCE(city, '')), COALESCE(reg_location, ''), TRIM(COALESCE(province, '')), COALESCE(name, '')
                 FROM equity_entities
                 WHERE snapshot_name = :s
-                GROUP BY COALESCE(province, '未知')
-                ORDER BY c DESC
                 """
             ),
             {"s": snapshot_name},
@@ -1270,10 +1509,23 @@ def analysis_summary(snapshot_name: str = Query(..., min_length=1)) -> dict[str,
             ),
             {"s": snapshot_name},
         ).fetchall()
+
+    city_ctr: Counter[str] = Counter()
+    prov_ctr: Counter[str] = Counter()
+    for cy, rl, pr, nm in geo_rows:
+        cl = city_display_label(cy or None, rl or None, pr or None, company_name=str(nm or ""))
+        city_ctr[cl if cl else "未知"] += 1
+        pl = province_display_label(pr or None, rl or None, company_name=str(nm or ""))
+        prov_ctr[pl if pl else "未知"] += 1
+
+    city_sorted = dict(sorted(city_ctr.items(), key=lambda x: (-x[1], x[0])))
+    prov_sorted = dict(sorted(prov_ctr.items(), key=lambda x: (-x[1], x[0])))
+
     return {
         "snapshot": {"name": snapshot_name},
         "distributions": {
-            "province": {str(r[0]): int(r[1]) for r in prov_rows},
+            "city": city_sorted,
+            "province": prov_sorted,
             "entity_type": {str(r[0]): int(r[1]) for r in type_rows},
         },
     }
@@ -1378,7 +1630,7 @@ def export_csv(
             rows = db.execute(
                 text(
                     """
-                    SELECT snapshot_name, id, name, entity_type, credit_code, province, city, district,
+                    SELECT snapshot_name, id, name, entity_type, credit_code, province, city, district, reg_location,
                            industry, status, established_date, is_listed, is_state_owned, is_overseas,
                            source_url, raw_source_json
                     FROM equity_entities
@@ -1397,6 +1649,7 @@ def export_csv(
                 "province",
                 "city",
                 "district",
+                "reg_location",
                 "industry",
                 "status",
                 "established_date",
@@ -1410,10 +1663,11 @@ def export_csv(
             rows = db.execute(
                 text(
                     """
-                    SELECT snapshot_name, id, entity_id, name, credit_code, alias, is_key, notes
+                    SELECT DISTINCT ON (entity_id)
+                      snapshot_name, id, entity_id, name, credit_code, alias, is_key, notes
                     FROM equity_targets
-                    WHERE snapshot_name=:s
-                    ORDER BY is_key DESC, name ASC
+                    WHERE snapshot_name = :s
+                    ORDER BY entity_id, is_key DESC, name ASC
                     """
                 ),
                 {"s": snapshot_name},
@@ -1496,15 +1750,32 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(e, dict):
                 continue
             eid = str(e.get("id") or "").strip() or str(uuid.uuid4())
+            p_ent = e.get("province")
+            c_ent = e.get("city")
+            d_ent = e.get("district")
+            rl_ent = e.get("reg_location")
+            if rl_ent and (not c_ent or not p_ent or not d_ent):
+                p2, c2, d2 = normalize_geo(
+                    str(rl_ent),
+                    str(c_ent or ""),
+                    str(d_ent or ""),
+                    hint_province=p_ent,
+                )
+                if not p_ent and p2:
+                    p_ent = p2
+                if not c_ent and c2:
+                    c_ent = c2
+                if not d_ent and d2:
+                    d_ent = d2
             db.execute(
                 text(
                     """
                     INSERT INTO equity_entities
-                      (id, snapshot_name, name, entity_type, credit_code, province, city, district,
+                      (id, snapshot_name, name, entity_type, credit_code, province, city, district, reg_location,
                        industry, status, established_date, is_listed, is_state_owned, is_overseas,
                        source_url, raw_source_json)
                     VALUES
-                      (:id, :s, :name, :t, :cc, :p, :c, :d, :ind, :st, :ed, :l, :so, :ov, :url, :raw)
+                      (:id, :s, :name, :t, :cc, :p, :c, :d, :rl, :ind, :st, :ed, :l, :so, :ov, :url, :raw)
                     ON CONFLICT (id) DO UPDATE
                     SET snapshot_name=EXCLUDED.snapshot_name,
                         name=EXCLUDED.name,
@@ -1513,6 +1784,7 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
                         province=EXCLUDED.province,
                         city=EXCLUDED.city,
                         district=EXCLUDED.district,
+                        reg_location=EXCLUDED.reg_location,
                         industry=EXCLUDED.industry,
                         status=EXCLUDED.status,
                         established_date=EXCLUDED.established_date,
@@ -1529,9 +1801,10 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
                     "name": str(e.get("name") or "").strip(),
                     "t": str(e.get("entity_type") or "company").strip(),
                     "cc": e.get("credit_code"),
-                    "p": e.get("province"),
-                    "c": e.get("city"),
-                    "d": e.get("district"),
+                    "p": p_ent,
+                    "c": c_ent,
+                    "d": d_ent,
+                    "rl": rl_ent,
                     "ind": e.get("industry"),
                     "st": e.get("status"),
                     "ed": e.get("established_date"),
@@ -1582,34 +1855,18 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
         for t in targets:
             if not isinstance(t, dict):
                 continue
-            tid = str(t.get("id") or "").strip() or str(uuid.uuid4())
-            db.execute(
-                text(
-                    """
-                    INSERT INTO equity_targets
-                      (id, snapshot_name, entity_id, name, credit_code, alias, is_key, notes)
-                    VALUES
-                      (:id, :s, :eid, :name, :cc, :alias, :key, :notes)
-                    ON CONFLICT (id) DO UPDATE
-                    SET snapshot_name=EXCLUDED.snapshot_name,
-                        entity_id=EXCLUDED.entity_id,
-                        name=EXCLUDED.name,
-                        credit_code=EXCLUDED.credit_code,
-                        alias=EXCLUDED.alias,
-                        is_key=EXCLUDED.is_key,
-                        notes=EXCLUDED.notes
-                    """
-                ),
-                {
-                    "id": tid,
-                    "s": snapshot_name,
-                    "eid": str(t.get("entity_id") or "").strip(),
-                    "name": str(t.get("name") or "").strip(),
-                    "cc": t.get("credit_code"),
-                    "alias": t.get("alias"),
-                    "key": bool(t.get("is_key") or False),
-                    "notes": t.get("notes"),
-                },
+            eid_t = str(t.get("entity_id") or "").strip()
+            if not eid_t:
+                continue
+            _upsert_equity_target(
+                db,
+                snapshot_name=snapshot_name,
+                entity_id=eid_t,
+                name=str(t.get("name") or "").strip(),
+                credit_code=t.get("credit_code"),
+                alias=t.get("alias"),
+                is_key=bool(t.get("is_key") or False),
+                notes=t.get("notes"),
             )
 
     return {"ok": True, "snapshot_name": snapshot_name, "entities": len(entities), "edges": len(edges), "targets": len(targets)}

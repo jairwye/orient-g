@@ -888,6 +888,25 @@ def init_kb_vector_tables() -> None:
     logger.info("kb_doc_chunk_embeddings table ready (dim=%s)", dim)
 
 
+def init_equity_schema_patches() -> None:
+    """
+    股权表增量列。表不存在（尚未导入过 equity）时单条 ALTER 会失败，忽略即可。
+    """
+    patches = [
+        "ALTER TABLE equity_entities ADD COLUMN IF NOT EXISTS reg_location TEXT",
+    ]
+    try:
+        with engine.connect() as conn:
+            for sql in patches:
+                try:
+                    conn.execute(text(sql))
+                except Exception as e:
+                    logger.debug("equity schema patch skipped: %s", e)
+            conn.commit()
+    except Exception as e:
+        logger.debug("init_equity_schema_patches: %s", e)
+
+
 @contextmanager
 def get_db() -> Generator[Session, None, None]:
     session = SessionLocal()

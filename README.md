@@ -89,12 +89,44 @@ copy .env.example .env
 
 **Caddy 相关**：反向代理 Caddy 通过卷挂载使用项目根目录的 `Caddyfile`，因此**必须在包含 Caddyfile 的目录下执行** `docker compose`（推荐：先克隆仓库，再在项目根目录执行）。若仅用 Portainer 粘贴 compose 而不克隆仓库，需在宿主机某路径（如 `/opt/mgmt-web/`）放置 `Caddyfile`，并在 compose 中把 `./Caddyfile` 改为该绝对路径。
 
+**更新业务镜像（`docker compose pull`）**：`docling` 在 compose 中为**本地 build** 镜像，且配置了 `pull_policy: never`，**不应**从任何 registry 拉取；无仓库前缀的短名若被误 pull，会被解析为 `docker.io/library/...`，既不存在又易触发镜像站限流。日常只更新后端/前端等 registry 镜像时，在 compose 所在目录执行：
+
+```bash
+docker compose pull db backend frontend caddy
+```
+
+需要更新 Ollama 时再单独执行（镜像较大，可与上面拆开、错峰执行，减轻镜像站 429）：
+
+```bash
+docker compose pull ollama
+```
+
+若仍使用整栈 `docker compose pull`，在含本仓库 `docker-compose.yml` 的前提下，`docling` 会被跳过拉取；**勿**为仅存在于本机的 tag 单独配置成「无 registry 前缀的 `image:` 且不带 `pull_policy: never`」，否则 `pull` 会去 Docker Hub/镜像站并报错。
+
+**Docker 守护进程经 HTTP 代理拉镜像（如 nihomo）**：`docker compose pull` 由 **dockerd** 出站，仅在 shell 里 `export http_proxy` **通常无效**。若要让拉镜像走本机 nihomo，需在 nihomo 中开启 **mixed（或 HTTP）入站端口**（常见为 `7890`），并为 systemd 管理的 Docker 服务注入代理环境变量，例如 Linux 下：
+
+1. 创建目录：`/etc/systemd/system/docker.service.d/`
+2. 新建 `proxy.conf`（端口按本机 nihomo 实际 mixed 端口修改）：
+
+```ini
+[Service]
+Environment="HTTP_PROXY=http://127.0.0.1:7890"
+Environment="HTTPS_PROXY=http://127.0.0.1:7890"
+Environment="NO_PROXY=localhost,127.0.0.1,::1"
+```
+
+`NO_PROXY` 中可按需加入内网 registry 主机名，避免内网镜像误走代理。
+
+3. 执行：`sudo systemctl daemon-reload && sudo systemctl restart docker`
+
+之后在同一台机器上执行的 `docker pull` / `docker compose pull` 会由守护进程经代理访问外网 registry。代理可缓解部分网络问题；若镜像站仍返回 **429 Too Many Requests**，可配合 **Docker Hub 登录**（`docker login`）、换镜像源或错峰分服务拉取。
+
 **Docling sidecar 镜像单独构建**（`docker/docling-sidecar/Dockerfile` 的构建上下文为该目录本身，勿在子目录内使用错误的 `COPY` 路径）：
 
 - 在仓库根目录：`docker build -f docker/docling-sidecar/Dockerfile -t orientg-docling-sidecar:temp docker/docling-sidecar`
 - 或进入目录后：`cd docker/docling-sidecar && docker build -t orientg-docling-sidecar:temp .`
 
-Compose 中 `docling` 服务已配置 `build.context: docker/docling-sidecar`，`docker compose build docling` 与上述等价。
+Compose 中 `docling` 服务已配置 `build.context: docker/docling-sidecar`、默认 `image: orientg-docling-sidecar:local` 与 **`pull_policy: never`**（避免误从 registry 拉取）。`docker compose build docling` 会将构建结果打为该镜像名；若你沿用 README 下方的 `-t orientg-docling-sidecar:temp`，在 `.env` 中设置 `DOCLING_IMAGE=orientg-docling-sidecar:temp` 与手工 tag 对齐即可。
 
 Sidecar Dockerfile 与 [Docling 官方镜像](https://github.com/docling-project/docling/blob/main/Dockerfile) 对齐思路：基础镜像为 **`python:3.12-slim-bookworm`**、`pip` 使用 **`--extra-index-url https://download.pytorch.org/whl/cpu`**、环境变量 `HF_HOME`/`TORCH_HOME`/`OMP_NUM_THREADS`。构建参数 **`SKIP_MODEL_DOWNLOAD` 默认为 `1`**：默认**不**执行 `docling-tools models download`（避免构建期访问 Hugging Face；首次解析时再由运行时拉取或挂载缓存）。若需与官方一致把模型打进镜像，构建时传 **`--build-arg SKIP_MODEL_DOWNLOAD=0`**（需联网；镜像更大）。并与 **生产环境 GPU 由 Ollama 独占** 的约定一致：`docling` 服务不申请 GPU，文档解析走 CPU。
 
@@ -178,7 +210,8 @@ docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
 - 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`、`/knowledge`（知识库展位）、`/utils`（实用工具，含流程文档 `/utils/process-doc`、大 PDF 生知识库、「数据解析」等）。其中「数据解析」入口当前沿用路径 `/utils/excel-kanban`，目标是：用户上传电子表，通过 LLM + 工具（Prompt/MCP 风格工具/Skills 等）对表格数据进行解析，生成可视化看板、整理为更符合逻辑和条理的表格视图，并完成信息归纳、专业评价与风险识别。财务后台默认路径为 `/admin`，可在后台页面修改。
-- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.2.0**：知识库文档管理/权限模型、文档同步等见 CHANGELOG。
+- **股权全景（实验）**：`/equity` 及关联分析页用于内网导入后的公司股权架构与地理等可视化；**为临时增加能力，后续可能移除**，接口与页面行为以当前版本为准、不作为长期对外契约。
+- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.2.1**：含股权全景实验能力、部署与文档同步等见 CHANGELOG。
 
 ## 知识库（权限/共享）验收说明
 

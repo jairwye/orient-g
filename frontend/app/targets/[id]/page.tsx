@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../../lib/auth";
+import { useEquitySnapshotName } from "../../lib/equitySnapshot";
 import { MermaidDiagram } from "../../components/MermaidDiagram";
 
 type GraphNode = {
@@ -11,7 +13,7 @@ type GraphNode = {
   entity_type: string;
   credit_code?: string | null;
   tags?: Record<string, any>;
-  geo?: { province?: string | null; city?: string | null };
+  geo?: { province?: string | null; city?: string | null; reg_location?: string | null };
   industry?: string | null;
 };
 
@@ -39,6 +41,8 @@ type PanoramaResponse = {
   edges: GraphEdge[];
   stats: { node_count: number; edge_count: number; depth_max: number; truncated: boolean; truncate_reason: string | null };
 };
+
+type TargetListItem = { entity_id: string; name: string; is_key: boolean };
 
 function mergePanoramaFromOwnership(up: GraphResponse, down: GraphResponse): PanoramaResponse {
   const nodesById = new Map<string, GraphNode>();
@@ -71,9 +75,11 @@ function mergePanoramaFromOwnership(up: GraphResponse, down: GraphResponse): Pan
 export default function TargetDetailPage() {
   const params = useParams<{ id: string }>();
   const search = useSearchParams();
+  const router = useRouter();
 
   const entityId = String(params?.id || "");
-  const [snapshotName, setSnapshotName] = useState(search.get("snapshot_name") || "2026-04-08_run1");
+  const fromQs = search.get("snapshot_name")?.trim() ?? "";
+  const { snapshotName, setSnapshotName } = useEquitySnapshotName(fromQs);
   const [direction, setDirection] = useState<"up" | "down">((search.get("direction") as any) === "up" ? "up" : "down");
   const [minPct, setMinPct] = useState(Number(search.get("min_pct") || 0));
   const [maxDepth, setMaxDepth] = useState(Number(search.get("max_depth") || 10));
@@ -85,6 +91,7 @@ export default function TargetDetailPage() {
   const [focusTargetPaths, setFocusTargetPaths] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [targetsList, setTargetsList] = useState<TargetListItem[]>([]);
 
   const qs = useMemo(() => {
     const u = new URLSearchParams();
@@ -98,7 +105,39 @@ export default function TargetDetailPage() {
   }, [snapshotName, entityId, direction, minPct, maxDepth, maxNodes]);
 
   useEffect(() => {
+    if (!snapshotName.trim()) {
+      setTargetsList([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/equity/targets?snapshot_name=${encodeURIComponent(snapshotName)}`, {
+      cache: "no-store",
+      credentials: "include",
+      headers: getAuthHeaders(),
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text());
+        return r.json() as Promise<{ items?: TargetListItem[] }>;
+      })
+      .then((d) => {
+        if (!cancelled) setTargetsList(d.items ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setTargetsList([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshotName]);
+
+  useEffect(() => {
     if (!entityId) return;
+    if (!snapshotName.trim()) {
+      setLoading(false);
+      setData(null);
+      setPanorama(null);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -260,7 +299,10 @@ export default function TargetDetailPage() {
 
     const safe = (s: string) => String(s || "").replaceAll("\"", "'");
     const labelOf = (n: GraphNode) => {
-      const geo = n.geo?.province ? `${n.geo.province}${n.geo.city ? `/${n.geo.city}` : ""}` : "";
+      const g = n.geo;
+      let geo = "";
+      if (g?.city) geo = g.province ? `${g.city}（${g.province}）` : g.city;
+      else if (g?.province) geo = g.province;
       const isKey = Boolean((n.tags as any)?.is_key_target);
       const isTarget = Boolean((n.tags as any)?.is_target);
       const prefix = isKey ? "【标的★】" : isTarget ? "【标的】" : "";
@@ -293,6 +335,12 @@ export default function TargetDetailPage() {
     if (panorama.stats?.truncated) {
       lines.push(`Note[\"已截断：${safe(panorama.stats.truncate_reason || "未知原因")}\" ]`);
     }
+    // 与经营数据页图表「当期」一致的亮蓝底，突出本页标的公司（当前 entityId）
+    const centerMermaidId = `N_${entityId.replaceAll("-", "_")}`;
+    if (nodes.some((n) => n.id === entityId)) {
+      lines.push("classDef equityTarget fill:#2563eb,stroke:#60a5fa,color:#ffffff");
+      lines.push(`class ${centerMermaidId} equityTarget`);
+    }
     return lines.join("\n");
   }, [panorama, focusTargetPaths, entityId]);
 
@@ -303,84 +351,120 @@ export default function TargetDetailPage() {
     return n?.name || entityId;
   }, [data, entityId]);
 
+  const targetOptions = useMemo(() => {
+    const items = [...targetsList];
+    if (entityId && !items.some((t) => t.entity_id === entityId)) {
+      items.unshift({ entity_id: entityId, name: titleName || entityId, is_key: false });
+    }
+    return items;
+  }, [targetsList, entityId, titleName]);
+
+  function hrefForTarget(targetId: string) {
+    const u = new URLSearchParams();
+    u.set("snapshot_name", snapshotName);
+    u.set("min_pct", String(minPct));
+    u.set("max_depth", String(maxDepth));
+    u.set("max_nodes", String(maxNodes));
+    u.set("direction", direction);
+    return `/targets/${encodeURIComponent(targetId)}?${u.toString()}`;
+  }
+
+  const seg = "rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors";
+  const segOn = "bg-zinc-100 text-zinc-900";
+  const segOff = "bg-zinc-950 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200";
+
   return (
-    <div className="p-6 md:p-8">
-        <div className="mb-5">
-          <h1 className="text-xl font-semibold text-zinc-100">公司全景：{titleName}</h1>
-          <div className="mt-1 text-xs text-zinc-500">
-            snapshot：{snapshotName} · nodes：{data?.stats?.node_count ?? "—"} · edges：{data?.stats?.edge_count ?? "—"}
+    <div className="p-4 md:p-8">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight text-zinc-100">公司全景：{titleName}</h1>
+            <div className="mt-1 text-xs text-zinc-500">
+              子图 nodes {data?.stats?.node_count ?? "—"} · edges {data?.stats?.edge_count ?? "—"}
+              {snapshotName ? ` · 批次 ${snapshotName}` : ""}
+            </div>
           </div>
+          <Link
+            href="/equity"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-zinc-700/90 bg-zinc-900/80 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-600 hover:bg-zinc-800 hover:text-zinc-100"
+          >
+            <span className="text-zinc-500" aria-hidden>
+              ←
+            </span>
+            股权全景
+          </Link>
         </div>
 
-        <div className="mb-4 grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 md:grid-cols-2 lg:grid-cols-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-400">snapshot</span>
-            <input
-              value={snapshotName}
-              onChange={(e) => setSnapshotName(e.target.value)}
-              className="h-9 w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-zinc-700"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-400">方向</span>
-            <div className="flex overflow-hidden rounded-md border border-zinc-800">
-              <button
-                type="button"
-                onClick={() => setDirection("up")}
-                className={"px-3 py-2 text-xs " + (direction === "up" ? "bg-zinc-100 text-zinc-900" : "bg-zinc-950 text-zinc-300")}
-              >
-                上游
-              </button>
-              <button
-                type="button"
-                onClick={() => setDirection("down")}
-                className={"px-3 py-2 text-xs " + (direction === "down" ? "bg-zinc-100 text-zinc-900" : "bg-zinc-950 text-zinc-300")}
-              >
-                下游
-              </button>
+        <div className="mb-4 rounded-xl border border-zinc-800/90 bg-gradient-to-b from-zinc-900/60 to-zinc-950/80 p-3 shadow-sm md:p-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
+            <div className="flex min-w-0 flex-1 flex-col gap-2.5 sm:flex-row sm:items-stretch sm:gap-3">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 sm:max-w-xs">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">数据批次</span>
+                <input
+                  value={snapshotName}
+                  onChange={(e) => setSnapshotName(e.target.value)}
+                  placeholder="snapshot 名称"
+                  className="h-8 w-full rounded-lg border border-zinc-700/80 bg-zinc-950 px-2.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none ring-zinc-600 focus:border-blue-500/60 focus:ring-1"
+                />
+              </label>
+              <label className="flex min-w-0 flex-[1.4] flex-col gap-1">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">标的公司</span>
+                <select
+                  className="h-8 w-full min-w-0 cursor-pointer rounded-lg border border-zinc-700/80 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-blue-500/60 focus:ring-1"
+                  value={snapshotName.trim() ? entityId : ""}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (next && next !== entityId) router.push(hrefForTarget(next));
+                  }}
+                  disabled={!snapshotName.trim()}
+                  title="切换为另一标的公司的全景架构图"
+                >
+                  {!snapshotName.trim() ? (
+                    <option value="">请先填写批次</option>
+                  ) : targetOptions.length === 0 ? (
+                    <option value={entityId}>{titleName || entityId}</option>
+                  ) : (
+                    targetOptions.map((t) => (
+                      <option key={t.entity_id} value={t.entity_id}>
+                        {(t.is_key ? "★ " : "") + t.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800/70 pt-3 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
+              <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">方向</span>
+              <div className="inline-flex overflow-hidden rounded-lg border border-zinc-800 p-0.5">
+                <button type="button" onClick={() => setDirection("up")} className={`${seg} ${direction === "up" ? segOn : segOff}`}>
+                  上游
+                </button>
+                <button type="button" onClick={() => setDirection("down")} className={`${seg} ${direction === "down" ? segOn : segOff}`}>
+                  下游
+                </button>
+              </div>
+              <span className="ml-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">视图</span>
+              <div className="inline-flex overflow-hidden rounded-lg border border-zinc-800 p-0.5">
+                <button type="button" onClick={() => setViewMode("panorama")} className={`${seg} ${viewMode === "panorama" ? segOn : segOff}`}>
+                  全景
+                </button>
+                <button type="button" onClick={() => setViewMode("single")} className={`${seg} ${viewMode === "single" ? segOn : segOff}`}>
+                  单向
+                </button>
+              </div>
+              <span className="ml-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">聚焦</span>
+              <div className="inline-flex overflow-hidden rounded-lg border border-zinc-800 p-0.5">
+                <button type="button" onClick={() => setFocusTargetPaths(true)} className={`${seg} ${focusTargetPaths ? segOn : segOff}`}>
+                  连标路径
+                </button>
+                <button type="button" onClick={() => setFocusTargetPaths(false)} className={`${seg} ${!focusTargetPaths ? segOn : segOff}`}>
+                  全量
+                </button>
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-400">视图</span>
-            <div className="flex overflow-hidden rounded-md border border-zinc-800">
-              <button
-                type="button"
-                onClick={() => setViewMode("panorama")}
-                className={"px-3 py-2 text-xs " + (viewMode === "panorama" ? "bg-zinc-100 text-zinc-900" : "bg-zinc-950 text-zinc-300")}
-              >
-                全景架构图
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("single")}
-                className={"px-3 py-2 text-xs " + (viewMode === "single" ? "bg-zinc-100 text-zinc-900" : "bg-zinc-950 text-zinc-300")}
-              >
-                单向预览
-              </button>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-400">聚焦</span>
-            <div className="flex overflow-hidden rounded-md border border-zinc-800">
-              <button
-                type="button"
-                onClick={() => setFocusTargetPaths(true)}
-                className={"px-3 py-2 text-xs " + (focusTargetPaths ? "bg-zinc-100 text-zinc-900" : "bg-zinc-950 text-zinc-300")}
-              >
-                连接标的路径
-              </button>
-              <button
-                type="button"
-                onClick={() => setFocusTargetPaths(false)}
-                className={"px-3 py-2 text-xs " + (!focusTargetPaths ? "bg-zinc-100 text-zinc-900" : "bg-zinc-950 text-zinc-300")}
-              >
-                全量
-              </button>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <div className="mb-1 text-[10px] text-zinc-500">min_pct</div>
+          <div className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-2 border-t border-zinc-800/50 pt-3">
+            <label className="flex items-center gap-1.5">
+              <span className="text-[10px] text-zinc-500">min_pct</span>
               <input
                 type="number"
                 step="0.05"
@@ -388,31 +472,31 @@ export default function TargetDetailPage() {
                 max="1"
                 value={minPct}
                 onChange={(e) => setMinPct(Number(e.target.value))}
-                className="h-9 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 text-sm text-zinc-100 outline-none focus:border-zinc-700"
+                className="h-8 w-20 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-zinc-600"
               />
-            </div>
-            <div>
-              <div className="mb-1 text-[10px] text-zinc-500">max_depth</div>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-[10px] text-zinc-500">depth</span>
               <input
                 type="number"
                 min="1"
                 max="10"
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Number(e.target.value))}
-                className="h-9 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 text-sm text-zinc-100 outline-none focus:border-zinc-700"
+                className="h-8 w-16 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-zinc-600"
               />
-            </div>
-            <div>
-              <div className="mb-1 text-[10px] text-zinc-500">max_nodes</div>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-[10px] text-zinc-500">nodes</span>
               <input
                 type="number"
                 min="50"
                 max="5000"
                 value={maxNodes}
                 onChange={(e) => setMaxNodes(Number(e.target.value))}
-                className="h-9 w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 text-sm text-zinc-100 outline-none focus:border-zinc-700"
+                className="h-8 w-20 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-zinc-600"
               />
-            </div>
+            </label>
           </div>
         </div>
 
@@ -434,6 +518,8 @@ export default function TargetDetailPage() {
             <div className="mb-2 text-sm font-medium text-zinc-200">股权架构全景图（上游 + 下游）</div>
             <p className="mb-3 text-xs text-zinc-500">
               标记说明：<span className="text-zinc-200">★</span> 为标的公司（30 家），<span className="text-zinc-200">•</span> 为目标清单中的其它公司。
+              本页公司在图中以亮蓝底高亮，与经营数据页图表「当期」同色。
+              全景接口对上游、下游共用同一「depth」参数（见下方 depth，默认 10），不是「上 4 层、下 10 层」这种分别配置。
             </p>
             <MermaidDiagram chart={panoramaChart} id={`equity-panorama-${entityId}-${snapshotName}`} />
           </div>

@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getAuthHeaders } from "../lib/auth";
+import { useEquitySnapshotName } from "../lib/equitySnapshot";
 
 const DEFAULT_FINANCE_PATH = "/finance";
-const DEFAULT_EQUITY_SNAPSHOT = "2026-04-08_run1";
 
 type BundleImportResult = {
   ok: boolean;
@@ -20,7 +20,7 @@ export default function FinanceAdminPage() {
   const [month, setMonth] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [equitySnapshotName, setEquitySnapshotName] = useState(DEFAULT_EQUITY_SNAPSHOT);
+  const { snapshotName: equitySnapshotName, setSnapshotName: setEquitySnapshotName } = useEquitySnapshotName("");
   const [bundleFile, setBundleFile] = useState<File | null>(null);
   const [bundleImporting, setBundleImporting] = useState(false);
   const [bundleImportResult, setBundleImportResult] = useState<BundleImportResult | null>(null);

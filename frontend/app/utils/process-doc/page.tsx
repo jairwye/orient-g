@@ -66,7 +66,12 @@ function MermaidDiagram({ chart, id }: { chart: string; id: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
-    mermaid.initialize({ startOnLoad: false });
+    mermaid.initialize({
+      startOnLoad: false,
+      maxTextSize: 2_000_000,
+      maxEdges: 15000,
+      flowchart: { maxEdges: 15000 },
+    });
   }, []);
   useEffect(() => {
     if (!chart.trim()) {

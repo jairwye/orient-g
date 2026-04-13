@@ -3,19 +3,19 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getAuthHeaders } from "../lib/auth";
+import { useEquitySnapshotName } from "../lib/equitySnapshot";
 
 type SummaryResponse = {
   snapshot: { name: string };
   distributions: {
+    city: Record<string, number>;
     province: Record<string, number>;
     entity_type: Record<string, number>;
   };
 };
 
-const DEFAULT_SNAPSHOT = "2026-04-08_run1";
-
 export default function AnalysisDashboardPage() {
-  const [snapshotName, setSnapshotName] = useState(DEFAULT_SNAPSHOT);
+  const { snapshotName, setSnapshotName } = useEquitySnapshotName("");
   const [data, setData] = useState<SummaryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +24,14 @@ export default function AnalysisDashboardPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    if (!snapshotName.trim()) {
+      setLoading(false);
+      setData(null);
+      setError(null);
+      return () => {
+        cancelled = true;
+      };
+    }
     fetch(`/api/equity/analysis/summary?snapshot_name=${encodeURIComponent(snapshotName)}`, {
       cache: "no-store",
       credentials: "include",
@@ -51,8 +59,8 @@ export default function AnalysisDashboardPage() {
     };
   }, [snapshotName]);
 
-  const topProvinces = useMemo(() => {
-    const p = data?.distributions?.province || {};
+  const topCities = useMemo(() => {
+    const p = data?.distributions?.city || {};
     return Object.entries(p).sort((a, b) => b[1] - a[1]).slice(0, 12);
   }, [data]);
 
@@ -66,7 +74,7 @@ export default function AnalysisDashboardPage() {
         <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">股权全景工作台</h1>
-            <p className="mt-1 text-sm text-zinc-500">地区/类型分布与一键跳转到目标公司列表。</p>
+            <p className="mt-1 text-sm text-zinc-500">市级/类型分布与一键跳转到目标公司列表。</p>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400">snapshot</span>
@@ -89,29 +97,31 @@ export default function AnalysisDashboardPage() {
         {!loading && !error && data && (
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4">
-              <div className="mb-2 text-sm font-medium text-zinc-200">地区分布（Top 12）</div>
+              <div className="mb-2 text-sm font-medium text-zinc-200">市级分布（Top 12）</div>
               <div className="space-y-2">
-                {topProvinces.map(([k, v]) => (
+                {topCities.map(([k, v]) => (
                   <div key={k} className="flex items-center gap-3">
-                    <div className="w-20 truncate text-xs text-zinc-300">{k}</div>
+                    <div className="w-28 truncate text-xs text-zinc-300" title={k}>
+                      {k}
+                    </div>
                     <div className="flex-1">
                       <div className="h-2 overflow-hidden rounded bg-zinc-900">
                         <div
                           className="h-2 bg-zinc-200"
-                          style={{ width: `${Math.min(100, (v / Math.max(1, topProvinces[0]?.[1] || 1)) * 100)}%` }}
+                          style={{ width: `${Math.min(100, (v / Math.max(1, topCities[0]?.[1] || 1)) * 100)}%` }}
                         />
                       </div>
                     </div>
                     <div className="w-12 text-right text-xs text-zinc-400">{v}</div>
                     <Link
-                      href={`/targets?snapshot_name=${encodeURIComponent(snapshotName)}#province=${encodeURIComponent(k)}`}
+                      href={`/targets?snapshot_name=${encodeURIComponent(snapshotName)}#city=${encodeURIComponent(k)}`}
                       className="text-xs text-zinc-200 underline underline-offset-2 hover:text-white"
                     >
                       查看
                     </Link>
                   </div>
                 ))}
-                {topProvinces.length === 0 && <div className="text-sm text-zinc-500">暂无数据</div>}
+                {topCities.length === 0 && <div className="text-sm text-zinc-500">暂无数据</div>}
               </div>
             </div>
 
