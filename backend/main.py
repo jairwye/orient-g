@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 
 from backend.config import settings
 from backend.database import (
+    init_equity_tables,
     init_equity_schema_patches,
     init_exchange_rates_table,
     init_kb_acl_tables,
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
         init_kb_documents_tables()
         init_kb_audit_tables()
         init_kb_vector_tables()
+        init_equity_tables()
         init_equity_schema_patches()
         scheduler = BackgroundScheduler()
         scheduler.add_job(update_today_rate, "interval", hours=1)

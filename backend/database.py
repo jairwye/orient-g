@@ -907,6 +907,95 @@ def init_equity_schema_patches() -> None:
         logger.debug("init_equity_schema_patches: %s", e)
 
 
+def init_equity_tables() -> None:
+    """
+    初始化股权全景相关表（最小可运行结构）。
+
+    说明：
+    - 目前项目未使用 Alembic；因此采用“启动时 CREATE TABLE IF NOT EXISTS”的方式保证生产库可用。
+    - 表结构应与 backend/routers/equity.py 中的 SQL 保持一致（必要列必须存在）。
+    """
+    create_sql = [
+        """
+        CREATE TABLE IF NOT EXISTS equity_snapshots (
+            snapshot_name TEXT PRIMARY KEY,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS equity_entities (
+            id TEXT PRIMARY KEY,
+            snapshot_name TEXT NOT NULL,
+            name TEXT NOT NULL,
+            entity_type TEXT,
+            credit_code TEXT,
+            province TEXT,
+            city TEXT,
+            district TEXT,
+            reg_location TEXT,
+            industry TEXT,
+            status TEXT,
+            established_date TEXT,
+            is_listed BOOLEAN,
+            is_state_owned BOOLEAN,
+            is_overseas BOOLEAN,
+            source_url TEXT,
+            raw_source_json TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_equity_entities_snapshot_name_name
+        ON equity_entities (snapshot_name, name)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_equity_entities_snapshot_created_at
+        ON equity_entities (snapshot_name, created_at DESC)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS equity_targets (
+            id TEXT PRIMARY KEY,
+            snapshot_name TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            credit_code TEXT,
+            alias TEXT,
+            is_key BOOLEAN NOT NULL DEFAULT FALSE,
+            notes TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_equity_targets_snapshot_entity
+        ON equity_targets (snapshot_name, entity_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS equity_edges (
+            id TEXT PRIMARY KEY,
+            snapshot_name TEXT NOT NULL,
+            from_entity_id TEXT NOT NULL,
+            to_entity_id TEXT NOT NULL,
+            hold_pct DOUBLE PRECISION,
+            hold_pct_text TEXT,
+            source_platform TEXT,
+            source_doc TEXT,
+            collected_at TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_equity_edges_snapshot_from_to
+        ON equity_edges (snapshot_name, from_entity_id, to_entity_id)
+        """,
+    ]
+
+    with engine.connect() as conn:
+        for sql in create_sql:
+            conn.execute(text(sql))
+        conn.commit()
+    logger.info("equity tables ready")
+
+
 @contextmanager
 def get_db() -> Generator[Session, None, None]:
     session = SessionLocal()
