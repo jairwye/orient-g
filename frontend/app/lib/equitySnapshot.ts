@@ -5,6 +5,9 @@ import { getAuthHeaders } from "./auth";
 
 type LatestSnapshotResponse = { snapshot_name: string };
 
+/** 输入框 placeholder 示例（与 README / 导入约定一致） */
+export const DEFAULT_EQUITY_SNAPSHOT = "2026-04-08_run1";
+
 /**
  * 股权相关页共用：URL/调用方若已给出 snapshot 则沿用；否则拉取最新一批次。
  */

@@ -22,6 +22,26 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 BUSINESS_EXCEL_NAME = "business.xlsx"
+DEBUG_LOG_PATH = Path("debug-6b39de.log")
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, data: dict):
+    # NDJSON append; avoid secrets/PII
+    try:
+        import json, time
+
+        payload = {
+            "sessionId": "6b39de",
+            "runId": "pre-fix",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        DEBUG_LOG_PATH.open("a", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _excel_path() -> Path:
@@ -76,12 +96,24 @@ def _parse_excel(path: Path) -> dict:
 
     if not path.exists():
         logger.warning("经营数据 Excel 不存在: %s（当前 UPLOAD_DIR 解析为: %s）", path, path.parent)
+        _dbg(
+            "P0",
+            "backend/routers/business.py:_parse_excel",
+            "excel file missing",
+            {"path": str(path), "upload_dir": str(path.parent)},
+        )
         return _empty_overview()
 
     try:
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     except Exception as e:
         logger.warning("解析 Excel 失败（文件可能损坏或格式不符）: %s", e)
+        _dbg(
+            "P0",
+            "backend/routers/business.py:_parse_excel",
+            "openpyxl load failed",
+            {"path": str(path), "err": str(e)},
+        )
         return _empty_overview()
 
     result = _empty_overview()
@@ -91,6 +123,17 @@ def _parse_excel(path: Path) -> dict:
         return result
 
     ws = wb.worksheets[0]
+    try:
+        stat = path.stat()
+        _dbg(
+            "P0",
+            "backend/routers/business.py:_parse_excel",
+            "excel file stat",
+            {"path": str(path), "size_bytes": stat.st_size, "mtime_s": int(stat.st_mtime)},
+        )
+    except Exception:
+        pass
+
     rows = list(ws.iter_rows(min_row=1, max_row=60, max_col=14, values_only=True))
     wb.close()
 
@@ -230,6 +273,28 @@ def _parse_excel(path: Path) -> dict:
             result["flowCompare"]["labels"] = projs
             result["flowCompare"]["actual"] = actual if actual else [0] * len(projs)
             result["flowCompare"]["target"] = target if target else [0] * len(projs)
+
+            # debug: check two projects specifically + detect parse-to-0
+            watch = {"破天一剑", "惊天动地"}
+            idx = {name: k for k, name in enumerate(projs)}
+            watched = {}
+            for name in watch:
+                if name in idx:
+                    k = idx[name]
+                    watched[name] = {"i": k, "actual": (actual[k] if k < len(actual) else None), "target": (target[k] if k < len(target) else None)}
+                else:
+                    watched[name] = None
+            _dbg(
+                "P1",
+                "backend/routers/business.py:_parse_excel:block3",
+                "flowCompare parsed",
+                {
+                    "labels": projs,
+                    "actual": actual[: len(projs)],
+                    "target": target[: len(projs)],
+                    "watched": watched,
+                },
+            )
         break
 
     # 区块4：B=利润 且 C～L 为项目名（最多10项），下一行 B=本年累计，再下一行 B=去年/去年同期
@@ -283,6 +348,25 @@ def business_overview(request: Request):
     """
     _require_view_business_dashboard(request)
     data = _parse_excel(_excel_path())
+    try:
+        fc = data.get("flowCompare") or {}
+        labels = fc.get("labels") or []
+        actual = fc.get("actual") or []
+        key = {str(labels[i]): actual[i] if i < len(actual) else None for i in range(min(len(labels), len(actual)))}
+        _dbg(
+            "P2",
+            "backend/routers/business.py:business_overview",
+            "overview response flowCompare snapshot",
+            {
+                "labels_count": len(labels),
+                "has_破天一剑": "破天一剑" in key,
+                "has_惊天动地": "惊天动地" in key,
+                "破天一剑_actual": key.get("破天一剑"),
+                "惊天动地_actual": key.get("惊天动地"),
+            },
+        )
+    except Exception:
+        pass
     return JSONResponse(content=data, headers={"Cache-Control": "no-store, no-cache"})
 
 

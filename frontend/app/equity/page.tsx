@@ -152,6 +152,9 @@ function buildMapPointsFromGeoRows(
     .filter((x): x is MapPoint => Boolean(x));
 }
 
+/** 中国地图默认缩放（在 1.35 基础上再放大约 10% → 1.485） */
+const EQUITY_MAP_DEFAULT_SCALE = 1.485;
+
 export default function EquityEntryPage() {
   const { snapshotName, setSnapshotName } = useEquitySnapshotName("");
   const router = useRouter();
@@ -165,8 +168,7 @@ export default function EquityEntryPage() {
   const [panoramaLoading, setPanoramaLoading] = useState(false);
   const [panoramaError, setPanoramaError] = useState<string | null>(null);
 
-  // 默认稍微缩小一点，让全国轮廓 + 密度层更“完整入画”
-  const [mapScale, setMapScale] = useState(0.9);
+  const [mapScale, setMapScale] = useState(EQUITY_MAP_DEFAULT_SCALE);
   const [mapTx, setMapTx] = useState(0);
   const [mapTy, setMapTy] = useState(0);
   const [isMapPanning, setIsMapPanning] = useState(false);
@@ -182,60 +184,6 @@ export default function EquityEntryPage() {
     x: number;
     y: number;
   } | null>(null);
-
-  // #region agent log
-  useEffect(() => {
-    const keys = targets.map((t) => String(t.entity_id || ""));
-    const m = new Map<string, number>();
-    for (const k of keys) m.set(k, (m.get(k) || 0) + 1);
-    const dups = [...m.entries()].filter(([, c]) => c > 1);
-    if (!dups.length) return;
-    fetch("http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6b39de" },
-      body: JSON.stringify({
-        sessionId: "6b39de",
-        runId: "pre-fix",
-        hypothesisId: "B",
-        location: "frontend/app/equity/page.tsx:targets",
-        message: "duplicate entity_id in equity targets list (option keys)",
-        data: {
-          dupSample: dups.slice(0, 20),
-          total: keys.length,
-          key3334757718Count: keys.filter((k) => k === "3334757718").length,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [targets]);
-
-  useEffect(() => {
-    if (!clusterOpen) return;
-    const keys = clusterOpen.items.map((it) => String(it.entity_id || ""));
-    const m = new Map<string, number>();
-    for (const k of keys) m.set(k, (m.get(k) || 0) + 1);
-    const dups = [...m.entries()].filter(([, c]) => c > 1);
-    if (!dups.length) return;
-    fetch("http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6b39de" },
-      body: JSON.stringify({
-        sessionId: "6b39de",
-        runId: "pre-fix",
-        hypothesisId: "A",
-        location: "frontend/app/equity/page.tsx:clusterOpen",
-        message: "duplicate entity_id in map cluster panel (button keys)",
-        data: {
-          clusterKey: clusterOpen.key,
-          dupSample: dups.slice(0, 20),
-          total: keys.length,
-          key3334757718Count: keys.filter((k) => k === "3334757718").length,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [clusterOpen]);
-  // #endregion
 
   const links = useMemo(() => {
     const s = encodeURIComponent(snapshotName);
@@ -567,7 +515,7 @@ export default function EquityEntryPage() {
     if (didInitViewRef.current) return;
     if (!mapModel.paths.length) return;
     didInitViewRef.current = true;
-    setMapScale(0.9);
+    setMapScale(EQUITY_MAP_DEFAULT_SCALE);
     setMapTx(0);
     setMapTy(0);
   }, [mapModel.paths.length]);
@@ -829,7 +777,7 @@ export default function EquityEntryPage() {
                 type="button"
                 className="rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-900"
                 onClick={() => {
-                  setMapScale(0.9);
+                  setMapScale(EQUITY_MAP_DEFAULT_SCALE);
                   setMapTx(0);
                   setMapTy(0);
                   setClusterOpen(null);

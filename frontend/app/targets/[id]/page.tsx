@@ -6,6 +6,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../../lib/auth";
 import { useEquitySnapshotName } from "../../lib/equitySnapshot";
 import { MermaidDiagram } from "../../components/MermaidDiagram";
+import { formatEquityHoldPctDisplay } from "../../lib/formatEquityHoldPct";
 
 type GraphNode = {
   id: string;
@@ -81,14 +82,13 @@ export default function TargetDetailPage() {
   const fromQs = search.get("snapshot_name")?.trim() ?? "";
   const { snapshotName, setSnapshotName } = useEquitySnapshotName(fromQs);
   const [direction, setDirection] = useState<"up" | "down">((search.get("direction") as any) === "up" ? "up" : "down");
-  const [minPct, setMinPct] = useState(Number(search.get("min_pct") || 0));
-  const [maxDepth, setMaxDepth] = useState(Number(search.get("max_depth") || 10));
-  const [maxNodes, setMaxNodes] = useState(Number(search.get("max_nodes") || 5000));
+  // UI 收敛：不再展示/可配这些参数，但仍允许 URL 透传以兼容旧链接
+  const minPct = Number(search.get("min_pct") || 0);
+  const maxDepth = Number(search.get("max_depth") || 10);
+  const maxNodes = Number(search.get("max_nodes") || 5000);
 
   const [data, setData] = useState<GraphResponse | null>(null);
   const [panorama, setPanorama] = useState<PanoramaResponse | null>(null);
-  const [viewMode, setViewMode] = useState<"panorama" | "single">("panorama");
-  const [focusTargetPaths, setFocusTargetPaths] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [targetsList, setTargetsList] = useState<TargetListItem[]>([]);
@@ -212,13 +212,6 @@ export default function TargetDetailPage() {
     };
   }, [entityId, qs, snapshotName, entityId, minPct, maxDepth, maxNodes]);
 
-  useEffect(() => {
-    // 对“非标的主体”的全景，默认聚焦到与标的相连的路径，避免“毛线球”看不清
-    const me = panorama?.nodes?.find((n) => n.id === entityId);
-    const isTarget = Boolean((me?.tags as any)?.is_target) || Boolean((me?.tags as any)?.is_key_target);
-    if (!isTarget) setFocusTargetPaths(true);
-  }, [panorama, entityId]);
-
   function buildFocusedSubgraph(p: PanoramaResponse, centerId: string) {
     const nodes = p.nodes || [];
     const edges = p.edges || [];
@@ -292,7 +285,8 @@ export default function TargetDetailPage() {
     if (!panorama) return "";
     const rawNodes = panorama.nodes || [];
     const rawEdges = panorama.edges || [];
-    const focused = focusTargetPaths ? buildFocusedSubgraph(panorama, entityId) : { nodes: rawNodes, edges: rawEdges };
+    // UI 收敛：默认仅展示全量（不再提供“连标路径/全量”切换）
+    const focused = { nodes: rawNodes, edges: rawEdges };
     const nodes = focused.nodes || [];
     const edges = focused.edges || [];
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -326,10 +320,10 @@ export default function TargetDetailPage() {
       if (!f || !t) continue;
       const fromId = `N_${e.from.replaceAll("-", "_")}`;
       const toId = `N_${e.to.replaceAll("-", "_")}`;
-      const k = `${fromId}-->${toId}:${e.hold_pct_text || e.hold_pct || ""}`;
+      const lbl = formatEquityHoldPctDisplay(e.hold_pct, e.hold_pct_text);
+      const k = `${fromId}-->${toId}:${lbl}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      const lbl = e.hold_pct_text || (e.hold_pct != null ? `${e.hold_pct}%` : "");
       lines.push(lbl ? `${fromId} -->|\"${safe(lbl)}\"| ${toId}` : `${fromId} --> ${toId}`);
     }
     if (panorama.stats?.truncated) {
@@ -342,7 +336,7 @@ export default function TargetDetailPage() {
       lines.push(`class ${centerMermaidId} equityTarget`);
     }
     return lines.join("\n");
-  }, [panorama, focusTargetPaths, entityId]);
+  }, [panorama, entityId]);
 
   // (旧 fetch 已替换为 panorama + ownership 的组合请求)
 
@@ -443,60 +437,8 @@ export default function TargetDetailPage() {
                 </button>
               </div>
               <span className="ml-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">视图</span>
-              <div className="inline-flex overflow-hidden rounded-lg border border-zinc-800 p-0.5">
-                <button type="button" onClick={() => setViewMode("panorama")} className={`${seg} ${viewMode === "panorama" ? segOn : segOff}`}>
-                  全景
-                </button>
-                <button type="button" onClick={() => setViewMode("single")} className={`${seg} ${viewMode === "single" ? segOn : segOff}`}>
-                  单向
-                </button>
-              </div>
-              <span className="ml-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">聚焦</span>
-              <div className="inline-flex overflow-hidden rounded-lg border border-zinc-800 p-0.5">
-                <button type="button" onClick={() => setFocusTargetPaths(true)} className={`${seg} ${focusTargetPaths ? segOn : segOff}`}>
-                  连标路径
-                </button>
-                <button type="button" onClick={() => setFocusTargetPaths(false)} className={`${seg} ${!focusTargetPaths ? segOn : segOff}`}>
-                  全量
-                </button>
-              </div>
+              <span className="text-[11px] text-zinc-400">全量（固定）</span>
             </div>
-          </div>
-          <div className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-2 border-t border-zinc-800/50 pt-3">
-            <label className="flex items-center gap-1.5">
-              <span className="text-[10px] text-zinc-500">min_pct</span>
-              <input
-                type="number"
-                step="0.05"
-                min="0"
-                max="1"
-                value={minPct}
-                onChange={(e) => setMinPct(Number(e.target.value))}
-                className="h-8 w-20 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-zinc-600"
-              />
-            </label>
-            <label className="flex items-center gap-1.5">
-              <span className="text-[10px] text-zinc-500">depth</span>
-              <input
-                type="number"
-                min="1"
-                max="10"
-                value={maxDepth}
-                onChange={(e) => setMaxDepth(Number(e.target.value))}
-                className="h-8 w-16 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-zinc-600"
-              />
-            </label>
-            <label className="flex items-center gap-1.5">
-              <span className="text-[10px] text-zinc-500">nodes</span>
-              <input
-                type="number"
-                min="50"
-                max="5000"
-                value={maxNodes}
-                onChange={(e) => setMaxNodes(Number(e.target.value))}
-                className="h-8 w-20 rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-zinc-600"
-              />
-            </label>
           </div>
         </div>
 
@@ -513,83 +455,32 @@ export default function TargetDetailPage() {
           </div>
         )}
 
-        {!loading && !error && viewMode === "panorama" && panorama && (
+        {!loading && !error && panorama && (
           <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4">
             <div className="mb-2 text-sm font-medium text-zinc-200">股权架构全景图（上游 + 下游）</div>
             <p className="mb-3 text-xs text-zinc-500">
               标记说明：<span className="text-zinc-200">★</span> 为标的公司（30 家），<span className="text-zinc-200">•</span> 为目标清单中的其它公司。
               本页公司在图中以亮蓝底高亮，与经营数据页图表「当期」同色。
               全景接口对上游、下游共用同一「depth」参数（见下方 depth，默认 10），不是「上 4 层、下 10 层」这种分别配置。
+              架构图默认以蓝底标的公司为画面中心，并按字高约 10 磅与节点框大小综合放大；「全量」与「连标的路径」一致。边上持股比例为百分比、保留两位小数。其余节点可在画外，拖移查看。
             </p>
-            <MermaidDiagram chart={panoramaChart} id={`equity-panorama-${entityId}-${snapshotName}`} />
+            <MermaidDiagram
+              chart={panoramaChart}
+              id={`equity-panorama-${entityId}-${snapshotName}`}
+              initialFocusClassName="equityTarget"
+              initialFocusNodeId={`N_${entityId.replaceAll("-", "_")}`}
+              focusTargetFontPt={10}
+              initialFocusScale={2.55}
+            />
           </div>
         )}
-        {!loading && !error && viewMode === "panorama" && !panorama && (
+        {!loading && !error && !panorama && (
           <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
             未能生成全景图谱。你可以切换到“单向预览”，或稍后重试（常见原因：接口未重启、风控导致数据缺失、或超大图谱被截断）。
           </div>
         )}
 
-        {!loading && !error && viewMode === "single" && data && (
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4">
-              <div className="mb-2 text-sm font-medium text-zinc-200">快速预览（列表）</div>
-              <div className="max-h-[520px] overflow-auto">
-                <div className="text-xs text-zinc-400">节点</div>
-                <ul className="mt-1 space-y-1">
-                  {data.nodes.slice(0, 80).map((n) => (
-                    <li key={n.id} className="truncate text-xs text-zinc-300">
-                      {n.name} <span className="text-zinc-500">({n.entity_type})</span>
-                    </li>
-                  ))}
-                </ul>
-                {data.nodes.length > 80 && <div className="mt-2 text-xs text-zinc-500">仅展示前 80 个节点</div>}
-                <div className="mt-4 text-xs text-zinc-400">边</div>
-                <ul className="mt-1 space-y-1">
-                  {data.edges.slice(0, 80).map((e) => (
-                    <li key={e.id} className="truncate text-xs text-zinc-300">
-                      {e.from} → {e.to}{" "}
-                      <span className="text-zinc-500">{e.hold_pct_text || (e.hold_pct != null ? `${e.hold_pct}%` : "")}</span>
-                    </li>
-                  ))}
-                </ul>
-                {data.edges.length > 80 && <div className="mt-2 text-xs text-zinc-500">仅展示前 80 条边</div>}
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-4">
-              <div className="mb-2 text-sm font-medium text-zinc-200">导出</div>
-              <p className="text-xs text-zinc-500">导出当前参数下的子图复现包（JSON）。</p>
-              <a
-                href={`/api/equity/export/subgraph?${qs}`}
-                className="mt-3 inline-flex rounded-md bg-zinc-100 px-3 py-2 text-xs font-medium text-zinc-900 hover:bg-white"
-              >
-                下载子图复现包
-              </a>
-              <div className="mt-6 text-xs text-zinc-400">批次 CSV 下载</div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <a
-                  href={`/api/equity/export/csv?type=entities&snapshot_name=${encodeURIComponent(snapshotName)}`}
-                  className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-800"
-                >
-                  entities.csv
-                </a>
-                <a
-                  href={`/api/equity/export/csv?type=equity_edges&snapshot_name=${encodeURIComponent(snapshotName)}`}
-                  className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-800"
-                >
-                  equity_edges.csv
-                </a>
-                <a
-                  href={`/api/equity/export/csv?type=targets&snapshot_name=${encodeURIComponent(snapshotName)}`}
-                  className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-800"
-                >
-                  targets.csv
-                </a>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* 默认仅展示公司全景图，列表与导出区已移除，避免首屏干扰 */}
     </div>
   );
 }

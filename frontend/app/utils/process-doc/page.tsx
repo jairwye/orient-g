@@ -70,7 +70,6 @@ function MermaidDiagram({ chart, id }: { chart: string; id: string }) {
       startOnLoad: false,
       maxTextSize: 2_000_000,
       maxEdges: 15000,
-      flowchart: { maxEdges: 15000 },
     });
   }, []);
   useEffect(() => {

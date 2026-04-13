@@ -36,34 +36,6 @@ export default function ComparePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // #region agent log
-  useEffect(() => {
-    const sh = data?.overlap?.common_shareholders ?? [];
-    const keys = sh.map((x) => String(x.entity_id || ""));
-    const m = new Map<string, number>();
-    for (const k of keys) m.set(k, (m.get(k) || 0) + 1);
-    const dups = [...m.entries()].filter(([, c]) => c > 1);
-    if (!dups.length) return;
-    fetch("http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6b39de" },
-      body: JSON.stringify({
-        sessionId: "6b39de",
-        runId: "pre-fix",
-        hypothesisId: "C",
-        location: "frontend/app/compare/page.tsx:overlap",
-        message: "duplicate entity_id in common_shareholders list",
-        data: {
-          dupSample: dups.slice(0, 20),
-          total: keys.length,
-          key3334757718Count: keys.filter((k) => k === "3334757718").length,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [data]);
-  // #endregion
-
   useEffect(() => {
     let cancelled = false;
     if (!snapshotName.trim()) {

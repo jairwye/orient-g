@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getAuthHeaders } from "../lib/auth";
-import { useEquitySnapshotName } from "../lib/equitySnapshot";
+import { DEFAULT_EQUITY_SNAPSHOT, useEquitySnapshotName } from "../lib/equitySnapshot";
 
 const DEFAULT_FINANCE_PATH = "/finance";
 
