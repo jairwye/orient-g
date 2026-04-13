@@ -579,6 +579,12 @@ async def admin_import_bundle_zip(
 
     try:
         with get_db() as db:
+            _dbg(
+                "Z1",
+                "backend/routers/equity.py:admin_import_bundle_zip",
+                "db import start",
+                {"snapshot_name": snapshot_name},
+            )
             db.execute(
                 text(
                     """
@@ -633,176 +639,191 @@ async def admin_import_bundle_zip(
                 name_to_id[k] = eid
                 return eid
 
-        # 1) entities.csv
-        if entities_text:
-            rdr = csv.DictReader(io.StringIO(entities_text))
-            for r in rdr:
-                name = _csv_get(r, "name")
-                if not name:
-                    continue
-                eid = _csv_get(r, "id") or str(uuid.uuid4())
-                entity_type = _csv_get(r, "entity_type") or "company"
-                credit_code = _csv_get(r, "credit_code") or None
-                province = _csv_get(r, "province") or None
-                city = _csv_get(r, "city") or None
-                district = _csv_get(r, "district") or None
-                reg_location = _csv_get(r, "reg_location") or None
-                industry = _csv_get(r, "industry") or None
-                status = _csv_get(r, "status") or None
-                raw_in = _csv_get(r, "raw_source_json") or _csv_get(r, "profile_json") or ""
-                is_listed = _csv_get(r, "is_listed").lower()
-                is_state_owned = _csv_get(r, "is_state_owned").lower()
-                is_overseas = _csv_get(r, "is_overseas").lower()
+            # 1) entities.csv
+            if entities_text:
+                rdr = csv.DictReader(io.StringIO(entities_text))
+                for r in rdr:
+                    name = _csv_get(r, "name")
+                    if not name:
+                        continue
+                    eid = _csv_get(r, "id") or str(uuid.uuid4())
+                    entity_type = _csv_get(r, "entity_type") or "company"
+                    credit_code = _csv_get(r, "credit_code") or None
+                    province = _csv_get(r, "province") or None
+                    city = _csv_get(r, "city") or None
+                    district = _csv_get(r, "district") or None
+                    reg_location = _csv_get(r, "reg_location") or None
+                    industry = _csv_get(r, "industry") or None
+                    status = _csv_get(r, "status") or None
+                    raw_in = _csv_get(r, "raw_source_json") or _csv_get(r, "profile_json") or ""
+                    is_listed = _csv_get(r, "is_listed").lower()
+                    is_state_owned = _csv_get(r, "is_state_owned").lower()
+                    is_overseas = _csv_get(r, "is_overseas").lower()
 
-                if reg_location and (not city or not province or not district):
-                    p2, c2, d2 = normalize_geo(
-                        reg_location,
-                        city or "",
-                        district or "",
-                        hint_province=province,
-                    )
-                    if not province and p2:
-                        province = p2
-                    if not city and c2:
-                        city = c2
-                    if not district and d2:
-                        district = d2
+                    if reg_location and (not city or not province or not district):
+                        p2, c2, d2 = normalize_geo(
+                            reg_location,
+                            city or "",
+                            district or "",
+                            hint_province=province,
+                        )
+                        if not province and p2:
+                            province = p2
+                        if not city and c2:
+                            city = c2
+                        if not district and d2:
+                            district = d2
 
-                def _to_bool(x: str) -> bool | None:
-                    if not x:
+                    def _to_bool(x: str) -> bool | None:
+                        if not x:
+                            return None
+                        if x in {"1", "true", "yes", "y", "是"}:
+                            return True
+                        if x in {"0", "false", "no", "n", "否"}:
+                            return False
                         return None
-                    if x in {"1", "true", "yes", "y", "是"}:
-                        return True
-                    if x in {"0", "false", "no", "n", "否"}:
-                        return False
-                    return None
 
-                db.execute(
-                    text(
-                        """
-                        INSERT INTO equity_entities
-                          (id, snapshot_name, name, entity_type, credit_code, province, city, district, reg_location,
-                           industry, status, is_listed, is_state_owned, is_overseas, raw_source_json)
-                        VALUES
-                          (:id, :s, :name, :t, :cc, :p, :c, :d, :rl, :ind, :st, :l, :so, :ov, :raw)
-                        ON CONFLICT (id) DO UPDATE
-                        SET snapshot_name=EXCLUDED.snapshot_name,
-                            name=EXCLUDED.name,
-                            entity_type=EXCLUDED.entity_type,
-                            credit_code=EXCLUDED.credit_code,
-                            province=EXCLUDED.province,
-                            city=EXCLUDED.city,
-                            district=EXCLUDED.district,
-                            reg_location=EXCLUDED.reg_location,
-                            industry=EXCLUDED.industry,
-                            status=EXCLUDED.status,
-                            is_listed=EXCLUDED.is_listed,
-                            is_state_owned=EXCLUDED.is_state_owned,
-                            is_overseas=EXCLUDED.is_overseas,
-                            raw_source_json=EXCLUDED.raw_source_json
-                        """
-                    ),
-                    {
-                        "id": eid,
-                        "s": snapshot_name,
-                        "name": name,
-                        "t": entity_type,
-                        "cc": credit_code,
-                        "p": province,
-                        "c": city,
-                        "d": district,
-                        "rl": reg_location,
-                        "ind": industry,
-                        "st": status,
-                        "l": _to_bool(is_listed),
-                        "so": _to_bool(is_state_owned),
-                        "ov": _to_bool(is_overseas),
-                        "raw": raw_in if raw_in else json.dumps({"import": "bundle-zip"}, ensure_ascii=False),
-                    },
-                )
-                inserted_entities += 1
-                name_to_id[name] = eid
-
-        # 2) targets.csv
-        if targets_text:
-            rdr = csv.DictReader(io.StringIO(targets_text))
-            for r in rdr:
-                name = _csv_get(r, "name")
-                if not name:
-                    continue
-                credit_code = _csv_get(r, "credit_code") or None
-                alias = _csv_get(r, "alias") or None
-                notes = _csv_get(r, "notes") or None
-                is_key_raw = _csv_get(r, "is_key").lower()
-                is_key = is_key_raw in {"1", "true", "yes", "y", "是"}
-                province = _csv_get(r, "province") or None
-                city = _csv_get(r, "city") or None
-
-                eid = _get_or_create_entity_id(name)
-                # 尝试把 province/city 回填到 entity（若 entity 缺失）
-                if province or city:
                     db.execute(
                         text(
                             """
-                            UPDATE equity_entities
-                            SET province = COALESCE(province, :p),
-                                city = COALESCE(city, :c)
-                            WHERE snapshot_name=:s AND id=:id
+                            INSERT INTO equity_entities
+                              (id, snapshot_name, name, entity_type, credit_code, province, city, district, reg_location,
+                               industry, status, is_listed, is_state_owned, is_overseas, raw_source_json)
+                            VALUES
+                              (:id, :s, :name, :t, :cc, :p, :c, :d, :rl, :ind, :st, :l, :so, :ov, :raw)
+                            ON CONFLICT (id) DO UPDATE
+                            SET snapshot_name=EXCLUDED.snapshot_name,
+                                name=EXCLUDED.name,
+                                entity_type=EXCLUDED.entity_type,
+                                credit_code=EXCLUDED.credit_code,
+                                province=EXCLUDED.province,
+                                city=EXCLUDED.city,
+                                district=EXCLUDED.district,
+                                reg_location=EXCLUDED.reg_location,
+                                industry=EXCLUDED.industry,
+                                status=EXCLUDED.status,
+                                is_listed=EXCLUDED.is_listed,
+                                is_state_owned=EXCLUDED.is_state_owned,
+                                is_overseas=EXCLUDED.is_overseas,
+                                raw_source_json=EXCLUDED.raw_source_json
                             """
                         ),
-                        {"s": snapshot_name, "id": eid, "p": province, "c": city},
+                        {
+                            "id": eid,
+                            "s": snapshot_name,
+                            "name": name,
+                            "t": entity_type,
+                            "cc": credit_code,
+                            "p": province,
+                            "c": city,
+                            "d": district,
+                            "rl": reg_location,
+                            "ind": industry,
+                            "st": status,
+                            "l": _to_bool(is_listed),
+                            "so": _to_bool(is_state_owned),
+                            "ov": _to_bool(is_overseas),
+                            "raw": raw_in if raw_in else json.dumps({"import": "bundle-zip"}, ensure_ascii=False),
+                        },
                     )
+                    inserted_entities += 1
+                    name_to_id[name] = eid
 
-                _upsert_equity_target(
-                    db,
-                    snapshot_name=snapshot_name,
-                    entity_id=eid,
-                    name=name,
-                    credit_code=credit_code,
-                    alias=alias,
-                    is_key=is_key,
-                    notes=notes,
-                )
-                inserted_targets += 1
+            # 2) targets.csv
+            if targets_text:
+                rdr = csv.DictReader(io.StringIO(targets_text))
+                for r in rdr:
+                    name = _csv_get(r, "name")
+                    if not name:
+                        continue
+                    credit_code = _csv_get(r, "credit_code") or None
+                    alias = _csv_get(r, "alias") or None
+                    notes = _csv_get(r, "notes") or None
+                    is_key_raw = _csv_get(r, "is_key").lower()
+                    is_key = is_key_raw in {"1", "true", "yes", "y", "是"}
+                    province = _csv_get(r, "province") or None
+                    city = _csv_get(r, "city") or None
 
-        # 3) equity_edges.csv
-        if edges_text:
-            rdr = csv.DictReader(io.StringIO(edges_text))
-            for r in rdr:
-                from_eid = _csv_get(r, "from_entity_id")
-                to_eid = _csv_get(r, "to_entity_id")
-                if not from_eid:
-                    from_name = _csv_get(r, "from_name")
-                    from_eid = _get_or_create_entity_id(from_name)
-                if not to_eid:
-                    to_name = _csv_get(r, "to_name")
-                    to_eid = _get_or_create_entity_id(to_name)
-                if not from_eid or not to_eid:
-                    continue
+                    eid = _get_or_create_entity_id(name)
+                    # 尝试把 province/city 回填到 entity（若 entity 缺失）
+                    if province or city:
+                        db.execute(
+                            text(
+                                """
+                                UPDATE equity_entities
+                                SET province = COALESCE(province, :p),
+                                    city = COALESCE(city, :c)
+                                WHERE snapshot_name=:s AND id=:id
+                                """
+                            ),
+                            {"s": snapshot_name, "id": eid, "p": province, "c": city},
+                        )
 
-                hp = _parse_float(_csv_get(r, "hold_pct"))
-                hpt = _csv_get(r, "hold_pct_text") or None
-                db.execute(
-                    text(
-                        """
-                        INSERT INTO equity_edges
-                          (id, snapshot_name, from_entity_id, to_entity_id, hold_pct, hold_pct_text, source_platform)
-                        VALUES
-                          (:id, :s, :f, :t, :hp, :hpt, :src)
-                        ON CONFLICT (id) DO NOTHING
-                        """
-                    ),
-                    {
-                        "id": str(uuid.uuid4()),
-                        "s": snapshot_name,
-                        "f": from_eid,
-                        "t": to_eid,
-                        "hp": hp,
-                        "hpt": hpt,
-                        "src": "bundle",
+                    _upsert_equity_target(
+                        db,
+                        snapshot_name=snapshot_name,
+                        entity_id=eid,
+                        name=name,
+                        credit_code=credit_code,
+                        alias=alias,
+                        is_key=is_key,
+                        notes=notes,
+                    )
+                    inserted_targets += 1
+
+            # 3) equity_edges.csv
+            if edges_text:
+                rdr = csv.DictReader(io.StringIO(edges_text))
+                for r in rdr:
+                    from_eid = _csv_get(r, "from_entity_id")
+                    to_eid = _csv_get(r, "to_entity_id")
+                    if not from_eid:
+                        from_name = _csv_get(r, "from_name")
+                        from_eid = _get_or_create_entity_id(from_name)
+                    if not to_eid:
+                        to_name = _csv_get(r, "to_name")
+                        to_eid = _get_or_create_entity_id(to_name)
+                    if not from_eid or not to_eid:
+                        continue
+
+                    hp = _parse_float(_csv_get(r, "hold_pct"))
+                    hpt = _csv_get(r, "hold_pct_text") or None
+                    db.execute(
+                        text(
+                            """
+                            INSERT INTO equity_edges
+                              (id, snapshot_name, from_entity_id, to_entity_id, hold_pct, hold_pct_text, source_platform)
+                            VALUES
+                              (:id, :s, :f, :t, :hp, :hpt, :src)
+                            ON CONFLICT (id) DO NOTHING
+                            """
+                        ),
+                        {
+                            "id": str(uuid.uuid4()),
+                            "s": snapshot_name,
+                            "f": from_eid,
+                            "t": to_eid,
+                            "hp": hp,
+                            "hpt": hpt,
+                            "src": "bundle",
+                        },
+                    )
+                    inserted_edges += 1
+
+            _dbg(
+                "Z1",
+                "backend/routers/equity.py:admin_import_bundle_zip",
+                "db import done",
+                {
+                    "snapshot_name": snapshot_name,
+                    "inserted": {
+                        "entities": inserted_entities,
+                        "targets": inserted_targets,
+                        "edges": inserted_edges,
+                        "created_entities": created_entities,
                     },
-                )
-                inserted_edges += 1
+                },
+            )
     except HTTPException:
         raise
     except Exception as e:
