@@ -579,59 +579,59 @@ async def admin_import_bundle_zip(
 
     try:
         with get_db() as db:
-        db.execute(
-            text(
-                """
-                INSERT INTO equity_snapshots (snapshot_name)
-                VALUES (:s)
-                ON CONFLICT (snapshot_name) DO NOTHING
-                """
-            ),
-            {"s": snapshot_name},
-        )
-
-        # name -> entity_id cache
-        name_to_id: dict[str, str] = {}
-
-        def _get_or_create_entity_id(name: str) -> str:
-            nonlocal created_entities
-            k = (name or "").strip()
-            if not k:
-                return ""
-            if k in name_to_id:
-                return name_to_id[k]
-            r = db.execute(
-                text(
-                    """
-                    SELECT id
-                    FROM equity_entities
-                    WHERE snapshot_name=:s AND name=:n
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                    """
-                ),
-                {"s": snapshot_name, "n": k},
-            ).fetchone()
-            if r and r[0]:
-                eid = str(r[0])
-                name_to_id[k] = eid
-                return eid
-            eid = str(uuid.uuid4())
             db.execute(
                 text(
                     """
-                    INSERT INTO equity_entities
-                      (id, snapshot_name, name, entity_type, raw_source_json)
-                    VALUES
-                      (:id, :s, :name, 'company', :raw)
-                    ON CONFLICT (id) DO NOTHING
+                    INSERT INTO equity_snapshots (snapshot_name)
+                    VALUES (:s)
+                    ON CONFLICT (snapshot_name) DO NOTHING
                     """
                 ),
-                {"id": eid, "s": snapshot_name, "name": k, "raw": json.dumps({"import": "bundle-zip"}, ensure_ascii=False)},
+                {"s": snapshot_name},
             )
-            created_entities += 1
-            name_to_id[k] = eid
-            return eid
+
+            # name -> entity_id cache
+            name_to_id: dict[str, str] = {}
+
+            def _get_or_create_entity_id(name: str) -> str:
+                nonlocal created_entities
+                k = (name or "").strip()
+                if not k:
+                    return ""
+                if k in name_to_id:
+                    return name_to_id[k]
+                r = db.execute(
+                    text(
+                        """
+                        SELECT id
+                        FROM equity_entities
+                        WHERE snapshot_name=:s AND name=:n
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """
+                    ),
+                    {"s": snapshot_name, "n": k},
+                ).fetchone()
+                if r and r[0]:
+                    eid = str(r[0])
+                    name_to_id[k] = eid
+                    return eid
+                eid = str(uuid.uuid4())
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO equity_entities
+                          (id, snapshot_name, name, entity_type, raw_source_json)
+                        VALUES
+                          (:id, :s, :name, 'company', :raw)
+                        ON CONFLICT (id) DO NOTHING
+                        """
+                    ),
+                    {"id": eid, "s": snapshot_name, "name": k, "raw": json.dumps({"import": "bundle-zip"}, ensure_ascii=False)},
+                )
+                created_entities += 1
+                name_to_id[k] = eid
+                return eid
 
         # 1) entities.csv
         if entities_text:
