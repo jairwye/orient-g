@@ -7,6 +7,10 @@ const RAW_BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "
 // 避免 Node fetch 在 localhost 解析到 ::1 而后端仅监听 IPv4 导致 502
 const BACKEND_BASE = RAW_BACKEND_BASE.replace("://localhost", "://127.0.0.1");
 
+// #region agent log
+fetch('http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6378ff'},body:JSON.stringify({sessionId:'6378ff',runId:'pre-fix',hypothesisId:'A',location:'frontend/app/api/[[...path]]/route.ts:module',message:'proxy module loaded',data:{RAW_BACKEND_BASE:String(RAW_BACKEND_BASE||''),BACKEND_BASE:String(BACKEND_BASE||'')},timestamp:Date.now()})}).catch(()=>{});
+// #endregion
+
 function buildBackendUrl(path: string[], search: string): string {
   const pathPart = path.length ? `/${path.join("/")}` : "";
   return `${BACKEND_BASE}/api${pathPart}${search}`;
@@ -55,6 +59,9 @@ async function proxy(
   const path = params.path ?? [];
   const url = new URL(request.url);
   const backendUrl = buildBackendUrl(path, url.search);
+  // #region agent log
+  fetch('http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6378ff'},body:JSON.stringify({sessionId:'6378ff',runId:'pre-fix',hypothesisId:'A',location:'frontend/app/api/[[...path]]/route.ts:proxy',message:'proxy request',data:{method,String_url:String(request.url||''),backendUrl:String(backendUrl||''),contentType:String(request.headers.get('content-type')||''),hasBody:method!=='GET'&&method!=='HEAD'},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   const headers = new Headers(request.headers);
   // 移除 hop-by-hop 与易导致 Node fetch 失败的头
   for (const h of [
@@ -102,6 +109,10 @@ async function proxy(
       headers: resHeaders,
     });
   } catch (err) {
+    const e = err as any;
+    // #region agent log
+    fetch('http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6378ff'},body:JSON.stringify({sessionId:'6378ff',runId:'pre-fix',hypothesisId:'B',location:'frontend/app/api/[[...path]]/route.ts:catch',message:'proxy fetch failed',data:{method,backendUrl:String(backendUrl||''),errType:String(e?.name||typeof err),errMsg:String(e?.message||''),errCode:String(e?.code||''),stackHead:String(e?.stack||'').slice(0,800)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     // 后端不可达时返回 JSON 而非 HTML 错误页，避免前端把 HTML 当 JSON 解析导致登录态错乱
     return new Response(
       JSON.stringify({ detail: "后端服务不可用，请确认已启动" }),
