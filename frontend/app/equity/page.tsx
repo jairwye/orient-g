@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
 import { useEquitySnapshotName } from "../lib/equitySnapshot";
+import chinaGeoJsonLocal from "china-geojson/src/geojson/china.json";
 
 type EntityGeoItem = {
   entity_id: string;
@@ -392,38 +393,49 @@ export default function EquityEntryPage() {
     // #endregion
     // 真实底图：阿里 DataV GeoJSON（省级轮廓）
     if (!chinaGeo) {
-      const geoSources = ["/maps/100000_full.json", "https://geo.datav.aliyun.com/areas_v2/bound/100000_full.json"];
-      (async () => {
-        for (const src of geoSources) {
-          try {
-            const r = await fetch(src, { cache: "force-cache" });
-            // #region agent log
-            debugLog("run1", "H2", "equity/page.tsx:china-geo-response", "china geo response", {
-              ok: r.ok,
-              status: r.status,
-              url: src,
-            });
-            // #endregion
-            if (!r.ok) continue;
-            const d = (await r.json()) as ChinaGeoJSON;
-            // #region agent log
-            debugLog("run1", "H2", "equity/page.tsx:china-geo-success", "china geo loaded", {
-              source: src,
-              featureCount: Array.isArray(d?.features) ? d.features.length : -1,
-            });
-            // #endregion
-            if (!cancelled) setChinaGeo(d);
-            return;
-          } catch (e) {
-            // #region agent log
-            debugLog("run1", "H2", "equity/page.tsx:china-geo-error", "china geo load failed", {
-              source: src,
-              error: String((e as Error)?.message || e),
-            });
-            // #endregion
+      const localGeo = chinaGeoJsonLocal as ChinaGeoJSON;
+      if (Array.isArray(localGeo?.features) && localGeo.features.length > 0) {
+        // #region agent log
+        debugLog("run1", "H7", "equity/page.tsx:china-geo-local-package", "china geo loaded from npm package", {
+          source: "china-geojson/src/geojson/china.json",
+          featureCount: localGeo.features.length,
+        });
+        // #endregion
+        if (!cancelled) setChinaGeo(localGeo);
+      } else {
+        const geoSources = ["/maps/100000_full.json", "https://geo.datav.aliyun.com/areas_v2/bound/100000_full.json"];
+        (async () => {
+          for (const src of geoSources) {
+            try {
+              const r = await fetch(src, { cache: "force-cache" });
+              // #region agent log
+              debugLog("run1", "H2", "equity/page.tsx:china-geo-response", "china geo response", {
+                ok: r.ok,
+                status: r.status,
+                url: src,
+              });
+              // #endregion
+              if (!r.ok) continue;
+              const d = (await r.json()) as ChinaGeoJSON;
+              // #region agent log
+              debugLog("run1", "H2", "equity/page.tsx:china-geo-success", "china geo loaded", {
+                source: src,
+                featureCount: Array.isArray(d?.features) ? d.features.length : -1,
+              });
+              // #endregion
+              if (!cancelled) setChinaGeo(d);
+              return;
+            } catch (e) {
+              // #region agent log
+              debugLog("run1", "H2", "equity/page.tsx:china-geo-error", "china geo load failed", {
+                source: src,
+                error: String((e as Error)?.message || e),
+              });
+              // #endregion
+            }
           }
-        }
-      })();
+        })();
+      }
     }
     // 真实中心点：省/市/区县中心经纬度（用于圆点定位）
     if (!locRoot) {
