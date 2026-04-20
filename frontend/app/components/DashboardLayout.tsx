@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen, User, Wrench, BookOpen, Settings, MessageCircle, Network } from "lucide-react";
+import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen, User, Wrench, BookOpen, Settings, MessageCircle, Network, Trophy } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
 /** 经营数据（/）需 view_business_dashboard：管理层 或 管理员 或 部门=财务部，见规划 2.a */
@@ -14,9 +14,10 @@ const baseNavItems = [
   { href: "/policy-news", label: "新闻政策", icon: Newspaper },
   { href: "/exchange", label: "汇率趋势", icon: TrendingUp },
   { href: "/knowledge", label: "知识库", icon: BookOpen },
+  { href: "/contracts", label: "合同台账", icon: FileText },
   { href: "/equity", label: "股权全景", icon: Network },
   { href: "/utils", label: "实用工具", icon: Wrench },
-  { href: "/competitor", label: "竞品财报", icon: FileText },
+  { href: "/competitor", label: "竞品财报", icon: Trophy },
   { href: "/user", label: "用户管理", icon: User },
 ];
 

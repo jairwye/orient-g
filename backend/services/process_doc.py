@@ -12,6 +12,7 @@ import httpx
 
 from backend.config import settings
 from backend.services.ollama_guard import post_json_with_guard
+from backend.services.upstream_guard import assert_upstream_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ def _call_ollama(prompt: str, model: Optional[str] = None) -> str:
     base = (settings.ollama_url or "").rstrip("/")
     if not base:
         raise ValueError("Ollama 未配置，请在 .env 中设置 OLLAMA_URL")
+    assert_upstream_allowed(base, service_name="Ollama")
     url = f"{base}/api/generate"
     payload = {
         "model": model or getattr(settings, "ollama_model", None) or DEFAULT_MODEL,

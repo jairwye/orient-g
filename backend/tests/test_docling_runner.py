@@ -28,7 +28,12 @@ class TestResolveDoclingArgv(unittest.TestCase):
             py.write_text("", encoding="utf-8")
             with patch.object(dr.shutil, "which", return_value=None):
                 with patch.object(dr.sys, "executable", str(py.resolve())):
-                    self.assertEqual(dr.resolve_docling_argv(), [str((scripts / name).resolve())])
+                    # Windows: avoid console launcher / wrong interpreter; match resolve_docling_argv docstring.
+                    if sys.platform == "win32":
+                        want = [str(py.resolve()), "-m", "docling.cli.main"]
+                    else:
+                        want = [str((scripts / name).resolve())]
+                    self.assertEqual(dr.resolve_docling_argv(), want)
 
     def test_falls_back_to_python_m_docling(self):
         with tempfile.TemporaryDirectory() as td:

@@ -126,6 +126,10 @@ def _fetch_stream_page(
         filtered = [it for it in items if _item_belongs_to_stream(it, stream_id, label)]
         if len(filtered) != len(items):
             logger.debug("FreshRSS %s: filtered %d -> %d items", label, len(items), len(filtered))
+        # FreshRSS/GReader implementations vary: some may omit categories/directStreamIds fields.
+        # In that case, stream/contents already reflects the label stream; don't drop everything.
+        if not filtered and items:
+            return items, next_continuation
         return filtered, next_continuation
     except Exception as e:
         logger.warning("FreshRSS stream/contents %s failed: %s", label, e)
@@ -170,6 +174,25 @@ def _process_class(items: list[dict], max_items: int) -> list[dict]:
 
 def _normalize_item(item: dict) -> dict:
     """归一化为前端所需字段；content 为完整 HTML，summary 为截断摘要。"""
+    def _looks_like_image_url(url: str) -> bool:
+        """
+        Best-effort check: only treat obvious image URLs as thumbnails.
+        Some feeds put article links into enclosure/img tags; passing those into next/image
+        will crash the page with "Invalid src prop".
+        """
+        if not url:
+            return False
+        u = url.strip()
+        if not (u.startswith("http://") or u.startswith("https://") or u.startswith("//")):
+            return False
+        # Drop query/hash for extension check
+        base = u.split("#", 1)[0].split("?", 1)[0].lower()
+        exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".svg", ".awebp")
+        if base.endswith(exts):
+            return True
+        # Some CDNs omit extension but clearly serve images; keep conservative.
+        return False
+
     item_id = item.get("id") or ""
     title = (item.get("title") or "").strip()
     ts = _published_ts(item)
@@ -203,6 +226,8 @@ def _normalize_item(item: dict) -> dict:
             m = re.search(r'<img[^>]+data-src=["\']([^"\']+)["\']', raw_content)
         if m:
             thumbnail = m.group(1)
+    if thumbnail and not _looks_like_image_url(thumbnail):
+        thumbnail = ""
 
     return {
         "id": item_id,
@@ -251,6 +276,40 @@ def get_cached(category: Optional[str] = None) -> dict:
     """
     返回缓存。category 为 None 时返回所有分类；为 观点|新闻|AI 时只返回该分类。
     """
+    if not settings.freshrss_configured:
+        # 未配置时明确返回错误，避免前端误以为“真的没有新闻”
+        err = "FreshRSS 未配置（请在 .env 设置 FRESHRSS_API_URL / FRESHRSS_USER / FRESHRSS_API_PASSWORD）"
+        if category:
+            return {"categories": [category], "itemsByCategory": {category: []}, "lastSuccessAt": _last_success_at, "lastError": err}
+        categories = list(LABEL_TO_BUTTON.values())
+        return {"categories": categories, "itemsByCategory": {c: [] for c in categories}, "lastSuccessAt": _last_success_at, "lastError": err}
+
+    # 缓存空/过期则按需刷新（开发环境常见：scheduler 未跑、刚启动尚未拉取）
+    ttl = max(1, int(getattr(settings, "freshrss_cache_ttl_seconds", 600) or 600))
+    now = time.time()
+    if category:
+        updated_at = _cache.get(category, {}).get("updated_at") if isinstance(_cache.get(category), dict) else None
+        items = _cache.get(category, {}).get("items", []) if isinstance(_cache.get(category), dict) else []
+        stale = (not items) or (isinstance(updated_at, (int, float)) and now - float(updated_at) > ttl)
+    else:
+        # 任一分类为空或过期，都触发一次刷新（拉取本身会按 max_items 补足）
+        stale = False
+        for c in LABEL_TO_BUTTON.values():
+            data = _cache.get(c, {})
+            items = data.get("items", []) if isinstance(data, dict) else []
+            updated_at = data.get("updated_at") if isinstance(data, dict) else None
+            if not items:
+                stale = True
+                break
+            if isinstance(updated_at, (int, float)) and now - float(updated_at) > ttl:
+                stale = True
+                break
+    if stale:
+        try:
+            fetch_all()
+        except Exception as e:
+            logger.warning("FreshRSS on-demand fetch failed: %s", e)
+
     if category:
         data = _cache.get(category, {"items": [], "updated_at": None})
         return {"categories": [category], "itemsByCategory": {category: data["items"]}, "lastSuccessAt": _last_success_at, "lastError": _last_error}

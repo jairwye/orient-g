@@ -16,6 +16,14 @@ from backend.config import settings
 logger = logging.getLogger(__name__)
 Base = declarative_base()
 
+def _migration_mode() -> str:
+    return str(getattr(settings, "db_migration_mode", "legacy") or "legacy").strip().lower()
+
+def _should_manage_schema() -> bool:
+    # legacy: 启动时 CREATE/ALTER（现状）
+    # alembic: schema 由 alembic 显式迁移管理，启动时不再隐式改 schema
+    return _migration_mode() != "alembic"
+
 
 def _normalize_database_url(url: str) -> str:
     """去掉 path 中多余斜杠，避免 localhost:5432//mgmt_web 导致连接失败。"""
@@ -36,6 +44,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_exchange_rates_table() -> None:
     """若 exchange_rates 表不存在则创建。"""
+    if not _should_manage_schema():
+        return
     sql = """
     CREATE TABLE IF NOT EXISTS exchange_rates (
         date DATE PRIMARY KEY,
@@ -52,6 +62,8 @@ def init_exchange_rates_table() -> None:
 
 
 def init_kb_acl_tables() -> None:
+    if not _should_manage_schema():
+        return
     """
     初始化知识库 ACL（Project lead/member、private owner、resource->collection assignment）。
 
@@ -271,6 +283,8 @@ def init_kb_acl_tables() -> None:
 
 
 def init_user_permission_tables() -> None:
+    if not _should_manage_schema():
+        return
     """
     全 PG 用户权限主数据（用户、部门、项目、负责人关系）初始化。
     若 PG 中用户为空，则从 app_settings.json + fixtures 做一次迁移导入。
@@ -474,10 +488,51 @@ def init_user_permission_tables() -> None:
 
 
 def init_kb_documents_tables() -> None:
+    if not _should_manage_schema():
+        return
     """
     用户上传文档、RAG 包、知识库 kind 默认策略、多实体集合 scope、特殊文档 ACL。
     """
     create_sql = [
+        """
+        CREATE TABLE IF NOT EXISTS kb_folders (
+            folder_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            kind TEXT,
+            scope_json TEXT NOT NULL DEFAULT '{}',
+            owner_username TEXT,
+            created_by TEXT,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS kb_folder_collections (
+            tenant_id TEXT NOT NULL,
+            folder_id TEXT NOT NULL,
+            collection_id TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, folder_id, collection_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_kb_folder_collections_tenant_folder
+        ON kb_folder_collections (tenant_id, folder_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS kb_folder_resources (
+            tenant_id TEXT NOT NULL,
+            folder_id TEXT NOT NULL,
+            resource_type TEXT NOT NULL, -- 'doc' | 'table'
+            resource_id TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (tenant_id, folder_id, resource_type, resource_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_kb_folder_resources_tenant_resource
+        ON kb_folder_resources (tenant_id, resource_type, resource_id)
+        """,
         """
         CREATE TABLE IF NOT EXISTS kb_user_documents (
             doc_id TEXT PRIMARY KEY,
@@ -598,9 +653,39 @@ def init_kb_documents_tables() -> None:
             progress INTEGER NOT NULL DEFAULT 0,
             detail TEXT,
             result_package_id TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            queue_priority INTEGER NOT NULL DEFAULT 1,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            worker_id TEXT,
+            lease_until TIMESTAMP NULL,
+            heartbeat_at TIMESTAMP NULL,
+            started_at TIMESTAMP NULL,
+            finished_at TIMESTAMP NULL,
+            next_run_at TIMESTAMP NULL,
+            last_error TEXT,
+            dedupe_key TEXT,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS contract_ledger (
+            contract_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            owner_username TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            original_filename TEXT,
+            storage_path TEXT,
+            extracted_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_contract_ledger_tenant_created
+        ON contract_ledger (tenant_id, created_at DESC)
         """,
     ]
     with engine.connect() as conn:
@@ -610,6 +695,10 @@ def init_kb_documents_tables() -> None:
 
     # 轻量“迁移”：老表缺列时补齐（避免本地已有数据库无法启动）
     alter_sql = [
+        "ALTER TABLE kb_folders ADD COLUMN IF NOT EXISTS kind TEXT",
+        "ALTER TABLE kb_folders ADD COLUMN IF NOT EXISTS scope_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE kb_folders ADD COLUMN IF NOT EXISTS owner_username TEXT",
+        "ALTER TABLE kb_folders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
         "ALTER TABLE kb_user_documents ADD COLUMN IF NOT EXISTS doc_version TEXT",
         "ALTER TABLE kb_user_documents ADD COLUMN IF NOT EXISTS source_hash TEXT",
         "ALTER TABLE kb_user_documents ADD COLUMN IF NOT EXISTS parser_version TEXT",
@@ -620,6 +709,18 @@ def init_kb_documents_tables() -> None:
         "ALTER TABLE kb_table_instances ADD COLUMN IF NOT EXISTS columns_json TEXT",
         "ALTER TABLE kb_table_instances ADD COLUMN IF NOT EXISTS row_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE kb_table_instances ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS payload_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS queue_priority INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS worker_id TEXT",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS lease_until TIMESTAMP NULL",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMP NULL",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMP NULL",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP NULL",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMP NULL",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS last_error TEXT",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS dedupe_key TEXT",
     ]
     with engine.connect() as conn:
         for sql in alter_sql:
@@ -628,6 +729,22 @@ def init_kb_documents_tables() -> None:
             except Exception:
                 # 某些 PG 版本/权限下 IF NOT EXISTS 可能不生效；忽略以保证启动不中断
                 pass
+        conn.commit()
+
+    # kb_tasks 新增列补齐后再建索引，避免旧库缺列时启动失败
+    post_alter_index_sql = [
+        """
+        CREATE INDEX IF NOT EXISTS ix_kb_tasks_queue
+        ON kb_tasks (status, queue_priority, next_run_at, created_at)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_kb_tasks_dedupe
+        ON kb_tasks (tenant_id, dedupe_key)
+        """,
+    ]
+    with engine.connect() as conn:
+        for sql in post_alter_index_sql:
+            conn.execute(text(sql))
         conn.commit()
 
     # 修正历史数据：Multi* 文档不应默认 allow_all（全员）
@@ -713,6 +830,33 @@ def init_kb_documents_tables() -> None:
                     {"t": tenant_id, "c": cid, "k": kind, "j": sj},
                 )
             conn.commit()
+
+    # 预置文件夹：合同管理（v1.2.2.e）
+    # 说明：Folder 只是 collection 的分组；ACL 仍以 collection 为准。
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO kb_folders (folder_id, tenant_id, name, created_by)
+                VALUES ('f_contracts', :t, '合同管理', 'system')
+                ON CONFLICT (folder_id) DO UPDATE
+                SET name = EXCLUDED.name
+                """
+            ),
+            {"t": tenant_id},
+        )
+        # 将合同管理 folder 绑定到“合同管理”collection（fixtures 中定义）
+        conn.execute(
+            text(
+                """
+                INSERT INTO kb_folder_collections (tenant_id, folder_id, collection_id)
+                VALUES (:t, 'f_contracts', 'c_contracts_public_1')
+                ON CONFLICT (tenant_id, folder_id, collection_id) DO NOTHING
+                """
+            ),
+            {"t": tenant_id},
+        )
+        conn.commit()
 
     kinds = [
         "Private",
@@ -807,6 +951,8 @@ def init_kb_documents_tables() -> None:
 
 
 def init_kb_audit_tables() -> None:
+    if not _should_manage_schema():
+        return
     """
     知识库检索/回答审计事件（追加写）。
 
@@ -844,6 +990,8 @@ def init_kb_audit_tables() -> None:
 
 
 def init_kb_vector_tables() -> None:
+    if not _should_manage_schema():
+        return
     """
     向量检索（pgvector）最小表结构。
 
@@ -889,6 +1037,8 @@ def init_kb_vector_tables() -> None:
 
 
 def init_equity_schema_patches() -> None:
+    if not _should_manage_schema():
+        return
     """
     股权表增量列。表不存在（尚未导入过 equity）时单条 ALTER 会失败，忽略即可。
     """
@@ -908,6 +1058,8 @@ def init_equity_schema_patches() -> None:
 
 
 def init_equity_tables() -> None:
+    if not _should_manage_schema():
+        return
     """
     初始化股权全景相关表（最小可运行结构）。
 

@@ -22,9 +22,10 @@ from backend.database import (
     init_kb_vector_tables,
     init_user_permission_tables,
 )
-from backend.routers import auth, health, exchange, policy_news, business, competitor, settings as settings_router, process_doc, queue_stats, data_parse, knowledge, equity
+from backend.routers import auth, health, exchange, policy_news, business, competitor, settings as settings_router, process_doc, queue_stats, data_parse, knowledge, equity, ai_interaction, contracts
 from backend.services.exchange_rates import finalize_today_data, update_today_rate
 from backend.services.freshrss import fetch_all as freshrss_fetch_all
+from backend.services import kb_documents as kb_docs
 from backend.services.task_queue import start_worker, stop_worker
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         # task queue worker（大文档解析等后台任务）
         start_worker()
+        try:
+            kb_docs.recover_pending_document_tasks("tenant1")
+        except Exception as e:
+            logger.warning("recover pending uploaded documents failed: %s", e)
         # 首次拉取放后台，避免阻塞启动（历史补全可能需数分钟）
         def _run_initial_update():
             try:
@@ -116,4 +121,6 @@ app.include_router(process_doc.router, prefix="/api/process-doc", tags=["process
 app.include_router(queue_stats.router, prefix="/api/queue", tags=["queue"])
 app.include_router(data_parse.router, prefix="/api/data-parse", tags=["data-parse"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
+app.include_router(ai_interaction.router, prefix="/api/ai-interaction", tags=["ai-interaction"])
+app.include_router(contracts.router, prefix="/api/contracts", tags=["contracts"])
 app.include_router(equity.router, prefix="/api/equity", tags=["equity"])

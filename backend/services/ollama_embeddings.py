@@ -6,6 +6,7 @@ import httpx
 
 from backend.config import settings
 from backend.services.ollama_guard import post_json_with_guard
+from backend.services.upstream_guard import assert_upstream_allowed
 
 
 def embed_texts(texts: list[str], *, model: str | None = None, timeout_s: int = 60) -> list[list[float]]:
@@ -21,6 +22,7 @@ def embed_texts(texts: list[str], *, model: str | None = None, timeout_s: int = 
     base = (settings.ollama_url or "").strip().rstrip("/")
     if not base:
         raise RuntimeError("OLLAMA_URL 为空")
+    assert_upstream_allowed(base, service_name="Ollama")
     m = (model or settings.ollama_embed_model or "").strip()
     if not m:
         raise RuntimeError("ollama_embed_model 未配置")

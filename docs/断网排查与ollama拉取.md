@@ -93,3 +93,7 @@ grep -iE "oom|kill|oom_reaper|out of memory|error|fail|thermal|acpi|watchdog|reb
 | 以后用 tmux 跑 ollama pull | `tmux new -s ollama` → 在会话内执行 `docker exec -it ollama ollama pull ...`，断线后 `tmux attach -t ollama` |
 | 留意内存与稳定性 | 另开终端执行 `watch -n 2 'free -h; uptime'`，关注 available 与 swap |
 | 再次出现拉模型后连不上 | 能登录后立刻执行 `journalctl -b -1 -n 200 --no-pager > ~/last_boot_$(date +%Y%m%d_%H%M).log`，再在文件中搜索 oom/error/thermal 等关键字 |
+
+补充：如果你的症状更像 **DNS 解析抖动**（`systemd-resolved` 反复降级、`Total Timeouts` 增长、或 Docker 刷 `127.0.0.53 i/o timeout`），参考：
+
+- `docs/全局DoT稳定DNS（NetworkManager+systemd-resolved）.md`

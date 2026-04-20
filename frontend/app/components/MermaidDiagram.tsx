@@ -99,7 +99,7 @@ export function MermaidDiagram({
       themeVariables: {
         fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial",
         fontSize: "18px",
-      } as any,
+      },
     });
   }, []);
 

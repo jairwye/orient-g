@@ -7,22 +7,24 @@ from __future__ import annotations
 from typing import Any
 
 import jwt
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from backend.config import settings
 from backend.services.kb_acl_store import get_all_resource_assignments
 from backend.services import kb_documents as kb_docs
 from backend.services import kb_tasks
-from backend.services.bigpdf_tasks import prepare_task_input, process_bigpdf_task, stage_to_progress
+from backend.services.bigpdf_tasks import prepare_task_input, stage_to_progress
 from backend.services.knowledge_acl import compute_acl_scope, load_fixtures
 from backend.services.knowledge_pipeline import ask_knowledge
 from backend.services.knowledge_audit import write_event as audit_write_event
 from backend.services.task_queue import (
+    TASK_KIND_BIGPDF_PARSE,
+    enqueue_bigpdf_task,
+    enqueue_user_doc_task,
     Priority,
     submit,
     TASK_EMBED_AND_INDEX_REFRESH,
-    TASK_PDF_PARSE_DOCLING,
 )
 from backend.services.task_queue import get_stats as get_queue_stats
 from backend.services.online_rate_limiter import allow as rate_limit_allow
@@ -32,6 +34,21 @@ from backend.services.kb_vector_index import index_uploaded_document_task
 from backend.services.kb_vector_store import vector_enabled
 from backend.services.kb_tables import list_table_instances
 from fastapi.responses import Response
+from backend.services.kb_folders import (
+    bind_resource_to_folder,
+    create_folder,
+    delete_folder,
+    ensure_private_folder,
+    get_folder,
+    list_folder_resources,
+    list_folders,
+    set_folder_collections,
+    share_folder_to_kb_kind,
+    share_folder_scope,
+    unshare_folder_to_private,
+    upsert_folder,
+    backfill_uploaded_docs_to_private_folders,
+)
 
 router = APIRouter()
 ALGORITHM = "HS256"
@@ -72,8 +89,10 @@ def _get_username_from_request(request: Request) -> str | None:
 class OptionsResponse(BaseModel):
     collections: list[dict[str, Any]]
     tables: list[dict[str, Any]]
+    folders: list[dict[str, Any]]
     default_selected_collection_ids: list[str]
     default_selected_table_ids: list[str]
+    default_selected_folder_ids: list[str]
 
 
 @router.get("/options", response_model=OptionsResponse)
@@ -83,8 +102,10 @@ def knowledge_options(request: Request):
         return OptionsResponse(
             collections=[],
             tables=[],
+            folders=[],
             default_selected_collection_ids=[],
             default_selected_table_ids=[],
+            default_selected_folder_ids=[],
         )
 
     fixtures = load_fixtures()
@@ -121,6 +142,12 @@ def knowledge_options(request: Request):
             )
 
     uname = _get_username_from_request(request)
+    # folder-first：确保用户有默认私有文件夹（用于 UI 选择范围）
+    if uname:
+        try:
+            ensure_private_folder(tenant_id, username=uname)
+        except Exception:
+            pass
     for cid in sorted(allowed_col_ids):
         cs = str(cid)
         if cs.startswith("c_private_dyn_") and cs not in fixture_cids:
@@ -190,12 +217,334 @@ def knowledge_options(request: Request):
 
     default_table_ids = [t["table_id"] for t in tables_out][:3]
 
+    # folders（collection 分组）：仅返回“包含至少一个可见 collection”的 folder
+    folders_out: list[dict[str, Any]] = []
+    default_folder_ids: list[str] = []
+    try:
+        for f in list_folders(tenant_id):
+            cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
+            visible = [cid for cid in cids if cid in allowed_col_ids]
+            if not visible:
+                continue
+            folders_out.append(
+                {
+                    "folder_id": f.get("folder_id"),
+                    "name": f.get("name"),
+                    "collection_ids": visible,
+                }
+            )
+        # v1.2.2：不默认勾选 folder，避免误扩大范围；由用户选择
+        default_folder_ids = []
+    except Exception:
+        folders_out = []
+        default_folder_ids = []
+
     return OptionsResponse(
         collections=collections_out,
         tables=tables_out,
+        folders=folders_out,
         default_selected_collection_ids=default_collection_ids[:5],
         default_selected_table_ids=default_table_ids,
+        default_selected_folder_ids=default_folder_ids,
     )
+
+
+class FolderItem(BaseModel):
+    folder_id: str
+    name: str
+    kind: str | None = None
+    scope: dict[str, Any] = {}
+    owner_username: str | None = None
+    created_by: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    collection_ids: list[str] = []
+    resource_counts: dict[str, int] = {}
+
+
+@router.get("/folders")
+def kb_list_folders(request: Request):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    # folder 本身可见性：按 options 的 allowed_col_ids 过滤其 collection_ids；若 folder 无 collection 映射则仅 owner 可见
+    token = _get_token_from_request(request) or ""
+    scope = compute_acl_scope(token, fixtures=fixtures)
+    allowed_col_ids = set(scope["allowed_collection_ids"])
+    items: list[dict[str, Any]] = []
+    for f in list_folders(tenant_id):
+        cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
+        visible = [cid for cid in cids if cid in allowed_col_ids]
+        # private folder：允许 owner 看（即使 collection_ids 空）
+        if not visible:
+            if (str(f.get("owner_username") or "").strip() or "") != un:
+                continue
+        ff = dict(f)
+        ff["collection_ids"] = visible
+        items.append(ff)
+    return {"items": items}
+
+
+class CreateFolderBody(BaseModel):
+    name: str
+
+
+@router.post("/folders")
+def kb_create_folder(request: Request, body: CreateFolderBody):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    info = create_folder(tenant_id, name=body.name, created_by=un, kind="Private", scope={}, owner_username=un)
+    # 默认绑定动态私有 collection，保证 folder 可用于问答范围过滤
+    pcid = kb_docs.dynamic_private_collection_id(un)
+    set_folder_collections(tenant_id, folder_id=info["folder_id"], collection_ids=[pcid])
+    return {"ok": True, **info}
+
+
+class PatchFolderBody(BaseModel):
+    name: str | None = None
+
+
+@router.patch("/folders/{folder_id}")
+def kb_rename_folder(folder_id: str, request: Request, body: PatchFolderBody):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    new_name = (body.name or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="name required")
+    upsert_folder(
+        tenant_id,
+        folder_id=folder_id,
+        name=new_name,
+        created_by=None,
+        collection_ids=None,
+        kind=str(f.get("kind") or "").strip() or None,
+        scope=f.get("scope") or {},
+        owner_username=owner or None,
+    )
+    return {"ok": True}
+
+
+@router.delete("/folders/{folder_id}")
+def kb_delete_folder(folder_id: str, request: Request):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    ok = delete_folder(tenant_id, folder_id=folder_id)
+    return {"ok": bool(ok)}
+
+
+@router.get("/folders/{folder_id}/resources")
+def kb_folder_resources(folder_id: str, request: Request):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    # 可见性：若 folder 有 owner，则仅 owner；否则按其 collection_ids 是否在 allowed_col_ids
+    token = _get_token_from_request(request) or ""
+    scope = compute_acl_scope(token, fixtures=fixtures)
+    allowed_col_ids = set(scope["allowed_collection_ids"])
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not owner:
+        cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
+        if not any(cid in allowed_col_ids for cid in cids):
+            raise HTTPException(status_code=403, detail="forbidden")
+
+    resources = list_folder_resources(tenant_id, folder_id=folder_id)
+    # 目前先输出 doc 的基本信息（table 后续补齐）
+    doc_ids = [r["resource_id"] for r in resources if r.get("resource_type") == "doc" and str(r.get("resource_id") or "").strip()]
+    docs_map: dict[str, dict[str, Any]] = {}
+    if doc_ids:
+        from backend.database import get_db
+
+        with get_db() as db:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT doc_id, title, original_filename, size_bytes, status, last_error, created_at
+                    FROM kb_user_documents
+                    WHERE tenant_id=:t AND doc_id = ANY(:ids::text[])
+                    """
+                ),
+                {"t": tenant_id, "ids": doc_ids},
+            ).fetchall()
+        for r in rows:
+            did = str(r[0])
+            docs_map[did] = {
+                "doc_id": did,
+                "title": str(r[1] or ""),
+                "original_filename": str(r[2] or ""),
+                "size_bytes": int(r[3] or 0),
+                "status": str(r[4] or ""),
+                "last_error": str(r[5] or "") if r[5] else None,
+                "created_at": r[6].isoformat() if r[6] else None,
+            }
+    docs_out = [docs_map.get(did) for did in doc_ids if docs_map.get(did)]
+    return {"folder": f, "resources": resources, "docs": docs_out}
+
+
+class MoveResourcesBody(BaseModel):
+    target_folder_id: str
+    doc_ids: list[str] = []
+
+
+@router.post("/folders/{folder_id}/move-resources")
+def kb_move_folder_resources(folder_id: str, request: Request, body: MoveResourcesBody):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    src = get_folder(tenant_id, folder_id=folder_id)
+    dst = get_folder(tenant_id, folder_id=body.target_folder_id)
+    if not src or not dst:
+        raise HTTPException(status_code=404, detail="not found")
+    # 简化：仅允许 owner/created_by 操作私有 folder；共享 folder 的移动后续补细粒度
+    for f in (src, dst):
+        owner = str(f.get("owner_username") or "").strip()
+        if owner and owner != un:
+            raise HTTPException(status_code=403, detail="forbidden")
+    moved = 0
+    for did in [str(x).strip() for x in (body.doc_ids or []) if str(x).strip()]:
+        bind_resource_to_folder(tenant_id, folder_id=body.target_folder_id, resource_type="doc", resource_id=did)
+        moved += 1
+    return {"ok": True, "moved": moved}
+
+
+class ShareFolderBody(BaseModel):
+    kb_kind: str
+    department_ids: list[str] = []
+    project_ids: list[str] = []
+    company_public: bool = False
+
+
+@router.post("/folders/{folder_id}/share")
+def kb_share_folder(folder_id: str, request: Request, body: ShareFolderBody):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    # 共享：更新 folder_collections（folder-first 权威），并将 folder 内 doc assignment 覆盖为该集合（folder-only）
+    cids = share_folder_to_kb_kind(
+        tenant_id,
+        fixtures,
+        folder_id=folder_id,
+        kb_kind=body.kb_kind,
+        department_ids=list(body.department_ids or []),
+        project_ids=list(body.project_ids or []),
+        company_public=bool(body.company_public) or body.kb_kind == "CompanyPublic",
+    )
+    # 同步 folder 内文档的 resource→collection assignment
+    resources = list_folder_resources(tenant_id, folder_id=folder_id)
+    doc_ids = [r["resource_id"] for r in resources if r.get("resource_type") == "doc"]
+    for did in doc_ids:
+        from backend.services.kb_acl_store import set_resource_assignments
+
+        set_resource_assignments(tenant_id, resource_type="doc", resource_id=str(did), collection_ids=cids)
+    return {"ok": True, "collection_ids": cids, "doc_count": len(doc_ids)}
+
+
+class ShareFolderScopeBody(BaseModel):
+    target: str  # company|department|project
+    department_ids: list[str] = []
+    project_ids: list[str] = []
+
+
+@router.post("/folders/{folder_id}/share-scope")
+def kb_share_folder_scope(folder_id: str, request: Request, body: ShareFolderScopeBody):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    try:
+        cids = share_folder_scope(
+            tenant_id,
+            fixtures,
+            folder_id=folder_id,
+            target=body.target,
+            department_ids=list(body.department_ids or []),
+            project_ids=list(body.project_ids or []),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+
+    # 同步 folder 内文档的 resource→collection assignment（folder-only）
+    resources = list_folder_resources(tenant_id, folder_id=folder_id)
+    doc_ids = [r["resource_id"] for r in resources if r.get("resource_type") == "doc"]
+    from backend.services.kb_acl_store import set_resource_assignments
+
+    for did in doc_ids:
+        set_resource_assignments(tenant_id, resource_type="doc", resource_id=str(did), collection_ids=cids)
+    return {"ok": True, "collection_ids": cids, "doc_count": len(doc_ids)}
+
+
+@router.post("/folders/{folder_id}/unshare")
+def kb_unshare_folder(folder_id: str, request: Request):
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    try:
+        cids = unshare_folder_to_private(tenant_id, folder_id=folder_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+
+    resources = list_folder_resources(tenant_id, folder_id=folder_id)
+    doc_ids = [r["resource_id"] for r in resources if r.get("resource_type") == "doc"]
+    from backend.services.kb_acl_store import set_resource_assignments
+
+    for did in doc_ids:
+        set_resource_assignments(tenant_id, resource_type="doc", resource_id=str(did), collection_ids=cids)
+    return {"ok": True, "collection_ids": cids, "doc_count": len(doc_ids)}
 
 
 class AskBody(BaseModel):
@@ -344,6 +693,28 @@ def kb_admin_reindex(request: Request, body: ReindexBody):
     return {"ok": True, "accepted": accepted, "requested": len(doc_ids)}
 
 
+@router.post("/admin/folders/backfill")
+def kb_admin_backfill_folders(request: Request):
+    """
+    一次性回填：把历史用户上传文档绑定到“owner 的私有文件夹”。
+    仅回填 folder→resource 关系，不改文档内容。
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    u = get_user(un) or {}
+    roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
+    if "admin" not in roles and "管理层" not in roles:
+        raise HTTPException(status_code=403, detail="forbidden")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    try:
+        res = backfill_uploaded_docs_to_private_folders(tenant_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"ok": True, **res}
+
+
 @router.get("/meta/kb-kinds")
 def knowledge_kb_kinds(request: Request):
     if not _get_token_from_request(request):
@@ -369,11 +740,16 @@ def knowledge_my_documents(request: Request):
         raise HTTPException(status_code=401, detail="not authenticated")
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
-    return {"items": kb_docs.list_my_documents(tenant_id, un)}
+    items = kb_docs.list_my_documents(tenant_id, un)
+    return {"items": items}
 
 
 @router.post("/my-documents/upload")
-async def knowledge_upload_my_document(request: Request, file: UploadFile = File(...)):
+async def knowledge_upload_my_document(
+    request: Request,
+    file: UploadFile = File(...),
+    folder_id: str | None = Form(None),
+):
     un = _get_username_from_request(request)
     if not un:
         raise HTTPException(status_code=401, detail="not authenticated")
@@ -383,10 +759,29 @@ async def knowledge_upload_my_document(request: Request, file: UploadFile = File
     if len(raw) > 20 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件过大（最大 20MB）")
     try:
-        info = kb_docs.upload_user_document(tenant_id, un, filename=file.filename or "upload", raw=raw)
+        info = kb_docs.upload_user_document_async(tenant_id, un, filename=file.filename or "upload", raw=raw)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
-    return {"ok": True, **info}
+
+    did = str(info.get("doc_id") or "")
+    if not did:
+        raise HTTPException(status_code=500, detail="上传失败：缺少 doc_id")
+    ok, _ = enqueue_user_doc_task(tenant_id, un, did)
+    if not ok:
+        kb_docs.mark_document_failed(tenant_id, did, "队列已满，稍后重试")
+        raise HTTPException(status_code=503, detail="队列已满，请稍后重试")
+
+    # folder-first：若前端指定 folder_id，则绑定到该文件夹（覆盖默认私有文件夹绑定）
+    fid = (folder_id or "").strip()
+    if fid:
+        f = get_folder(tenant_id, folder_id=fid)
+        if not f:
+            raise HTTPException(status_code=404, detail="folder not found")
+        owner = str(f.get("owner_username") or "").strip()
+        if owner and owner != un:
+            raise HTTPException(status_code=403, detail="forbidden")
+        bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=str(info.get("doc_id") or ""))
+    return {"ok": True, **info, "queued": True}
 
 
 @router.delete("/my-documents/{doc_id}")
@@ -537,17 +932,9 @@ async def bigpdf_create_task(request: Request, file: UploadFile = File(...)):
     raw = await file.read()
     if len(raw) > 200 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件过大（最大 200MB）")
-    t = kb_tasks.create_task(tenant_id, un, kind="bigpdf", detail=file.filename or "upload")
+    t = kb_tasks.create_task(tenant_id, un, kind=TASK_KIND_BIGPDF_PARSE, detail=file.filename or "upload")
     prepare_task_input(tenant_id, t["task_id"], filename=file.filename or "upload.pdf", raw=raw)
-    ok = submit(
-        Priority.LOW,
-        process_bigpdf_task,
-        tenant_id,
-        t["task_id"],
-        un,
-        task_id=t["task_id"],
-        task_type=TASK_PDF_PARSE_DOCLING,
-    )
+    ok = enqueue_bigpdf_task(tenant_id, un, t["task_id"])
     if not ok:
         kb_tasks.update_task(tenant_id, t["task_id"], status="failed", stage="failed", progress=100, detail="队列已满，稍后重试")
         raise HTTPException(status_code=503, detail="队列已满，请稍后重试")
@@ -574,7 +961,7 @@ def bigpdf_list_my_tasks(request: Request, limit: int = 30):
         raise HTTPException(status_code=401, detail="not authenticated")
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
-    items = kb_tasks.list_my_tasks(tenant_id, un, kind="bigpdf", limit=limit)
+    items = kb_tasks.list_my_tasks(tenant_id, un, kind=TASK_KIND_BIGPDF_PARSE, limit=limit)
     return {"items": items}
 
 
@@ -594,16 +981,16 @@ def bigpdf_retry_task(task_id: str, request: Request):
         raise HTTPException(status_code=404, detail="task not found")
     # 仅允许本人重试
     # 这里 kb_tasks.get_task 不返回 owner_username；以“能提交任务的人 = token 用户”作为简化约束
-    kb_tasks.update_task(tenant_id, task_id, status="queued", stage="queued", progress=0, detail="retry requested")
-    ok = submit(
-        Priority.LOW,
-        process_bigpdf_task,
+    kb_tasks.update_task(
         tenant_id,
         task_id,
-        un,
-        task_id=task_id,
-        task_type=TASK_PDF_PARSE_DOCLING,
+        status="queued",
+        stage="queued",
+        progress=0,
+        detail="retry requested",
+        payload={"task_id": task_id, "owner_username": un},
     )
+    ok = enqueue_bigpdf_task(tenant_id, un, task_id)
     if not ok:
         kb_tasks.update_task(tenant_id, task_id, status="failed", stage="failed", progress=100, detail="队列已满，稍后重试")
         raise HTTPException(status_code=503, detail="队列已满，请稍后重试")

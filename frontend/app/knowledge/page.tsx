@@ -1,15 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
+import { KbInProgressBanner } from "../components/KbInProgressBanner";
+import { buildAiInteractionHref, writeKbScopeCapsule } from "../lib/kb_scope_capsule";
 
 type MyDoc = {
   doc_id: string;
   title: string;
   original_filename?: string;
   size_bytes?: number;
+  status?: string;
+  last_error?: string | null;
   created_at?: string | null;
   collection_ids?: string[];
+};
+
+type FolderItem = {
+  folder_id: string;
+  name: string;
+  kind?: string | null;
+  owner_username?: string | null;
+  collection_ids?: string[];
+  resource_counts?: Record<string, number>;
+};
+
+type FolderResourcesResponse = {
+  folder: FolderItem;
+  resources: Array<{ resource_type: string; resource_id: string; created_at?: string | null }>;
+  docs: Array<{ doc_id: string; title: string; original_filename?: string; size_bytes?: number; status?: string; last_error?: string | null; created_at?: string | null }>;
 };
 
 type RagPackage = {
@@ -36,8 +56,45 @@ type OptCol = {
   name?: string;
 };
 
+const BIG_PDF_SIZE_MB = 15;
+const BIG_PDF_PAGES = 60;
+
+function formatMb(bytes: number) {
+  return Math.round((bytes / 1024 / 1024) * 10) / 10;
+}
+
+function statusLabel(s?: string) {
+  const k = (s || "").toLowerCase();
+  if (k === "queued") return "排队中";
+  if (k === "parsing") return "解析中";
+  if (k === "active") return "已可用";
+  if (k === "failed") return "失败";
+  if (k === "packaged") return "打包中";
+  if (k === "parsed") return "已解析";
+  return s || "未知";
+}
+
+async function estimatePdfPages(file: File): Promise<number | null> {
+  try {
+    const buf = await file.arrayBuffer();
+    const text = new TextDecoder("latin1").decode(buf);
+    const pages = (text.match(/\/Type\s*\/Page\b/g) || []).length;
+    const pagesContainer = (text.match(/\/Type\s*\/Pages\b/g) || []).length;
+    const approx = Math.max(0, pages - pagesContainer);
+    return approx > 0 ? approx : null;
+  } catch {
+    return null;
+  }
+}
+
 function RagTaskProgress({ taskId }: { taskId: string }) {
-  const [task, setTask] = useState<{ status: string; stage: string; progress: number; detail?: string | null } | null>(null);
+  const [task, setTask] = useState<{
+    task_id?: string;
+    status: string;
+    stage: string;
+    progress: number;
+    detail?: string | null;
+  } | null>(null);
 
   useEffect(() => {
     let stop = false;
@@ -47,8 +104,16 @@ function RagTaskProgress({ taskId }: { taskId: string }) {
           credentials: "include",
           headers: getAuthHeaders(),
         });
-        const data = (await res.json().catch(() => ({}))) as any;
-        if (!stop && res.ok && data?.task_id) setTask(data);
+        const data = (await res.json().catch(() => ({}))) as Partial<{ task_id: string; status: string; stage: string; progress: number; detail?: string | null }>;
+        if (!stop && res.ok && typeof data.task_id === "string") {
+          setTask({
+            task_id: data.task_id,
+            status: String(data.status ?? ""),
+            stage: String(data.stage ?? ""),
+            progress: Number(data.progress ?? 0),
+            detail: typeof data.detail === "string" ? data.detail : null,
+          });
+        }
       } catch {
         // ignore
       }
@@ -80,31 +145,42 @@ function RagTaskProgress({ taskId }: { taskId: string }) {
 }
 
 export default function KnowledgePage() {
+  const sp = useSearchParams();
   const [myDocs, setMyDocs] = useState<MyDoc[]>([]);
   const [ragItems, setRagItems] = useState<RagPackage[]>([]);
   const [kbKinds, setKbKinds] = useState<KbKindItem[]>([]);
   const [collections, setCollections] = useState<OptCol[]>([]);
   const [me, setMe] = useState<MeOut | null>(null);
   const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [ragDetail, setRagDetail] = useState<any | null>(null);
+  const [msg, setMsg] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
+  const [ragDetail, setRagDetail] = useState<(Record<string, unknown> & { _preview?: unknown; _loading?: boolean; package_id?: string }) | null>(null);
   const [ragExportKind, setRagExportKind] = useState<"openwebui" | "cn_kb" | "standard">("cn_kb");
 
   const [shareDoc, setShareDoc] = useState<MyDoc | null>(null);
+  const [shareFolder, setShareFolder] = useState<FolderItem | null>(null);
   const [shareKind, setShareKind] = useState("");
   const [shareDepts, setShareDepts] = useState<string[]>([]);
   const [shareProjs, setShareProjs] = useState<string[]>([]);
   const [shareCompany, setShareCompany] = useState(false);
+  const [folderShareTarget, setFolderShareTarget] = useState<"company" | "department" | "project">("company");
+
+  const [folders, setFolders] = useState<FolderItem[]>([]);
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [folderDetail, setFolderDetail] = useState<FolderResourcesResponse | null>(null);
+  const [folderLoading, setFolderLoading] = useState(false);
+  const [folderUploadBusy, setFolderUploadBusy] = useState(false);
+  const folderFileInputRef = useRef<HTMLInputElement>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [meRes, docsRes, ragRes, kindsRes, optRes] = await Promise.all([
+      const [meRes, docsRes, ragRes, kindsRes, optRes, foldersRes] = await Promise.all([
         fetch("/api/auth/me", { credentials: "include", headers: getAuthHeaders() }),
         fetch("/api/knowledge/my-documents", { credentials: "include", headers: getAuthHeaders() }),
         fetch("/api/knowledge/rag-packages", { credentials: "include", headers: getAuthHeaders() }),
         fetch("/api/knowledge/meta/kb-kinds", { credentials: "include", headers: getAuthHeaders() }),
         fetch("/api/knowledge/options", { credentials: "include", headers: getAuthHeaders() }),
+        fetch("/api/knowledge/folders", { credentials: "include", headers: getAuthHeaders() }),
       ]);
       if (meRes.ok) setMe(await meRes.json());
       if (docsRes.ok) {
@@ -123,10 +199,50 @@ export default function KnowledgePage() {
         const o = await optRes.json();
         setCollections((o.collections ?? []) as OptCol[]);
       }
+      if (foldersRes.ok) {
+        const f = await foldersRes.json().catch(() => ({}));
+        const items = (f.items ?? []) as FolderItem[];
+        setFolders(items);
+        if (!activeFolderId && items.length) setActiveFolderId(items[0].folder_id);
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeFolderId]);
+
+  useEffect(() => {
+    const fid = (sp.get("folder_id") || "").trim();
+    if (!fid || !folders.length) return;
+    if (folders.some((f) => f.folder_id === fid)) setActiveFolderId(fid);
+  }, [sp, folders]);
+
+  const bringCurrentFolderToAi = () => {
+    if (!activeFolderId) return;
+    writeKbScopeCapsule({ folder_ids: [activeFolderId], collection_ids: [], table_ids: [] });
+    window.location.href = buildAiInteractionHref({ folder_ids: [activeFolderId] });
+  };
+
+  const loadFolderDetail = useCallback(
+    async (folderId: string) => {
+      if (!folderId) return;
+      setFolderLoading(true);
+      try {
+        const res = await fetch(`/api/knowledge/folders/${encodeURIComponent(folderId)}/resources`, {
+          credentials: "include",
+          headers: getAuthHeaders(),
+        });
+        const data = (await res.json().catch(() => ({}))) as Partial<FolderResourcesResponse> & { detail?: string };
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "加载失败");
+        setFolderDetail(data as FolderResourcesResponse);
+      } catch (e) {
+        setFolderDetail(null);
+        setMsg({ type: "error", text: e instanceof Error ? e.message : "加载失败" });
+      } finally {
+        setFolderLoading(false);
+      }
+    },
+    [setFolderDetail]
+  );
 
   const openRagDetail = async (pkg: RagPackage) => {
     // 切换包时先清掉旧内容，避免“展示错包的预览/sections”
@@ -140,7 +256,7 @@ export default function KnowledgePage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "加载失败");
-      setRagDetail((prev: any) => ({ ...(prev || {}), _preview: null, ...data }));
+      setRagDetail((prev) => ({ ...(prev || {}), _preview: null, ...(data as Record<string, unknown>) }));
     } catch (e) {
       setMsg({ type: "error", text: e instanceof Error ? e.message : "加载失败" });
     }
@@ -191,7 +307,7 @@ export default function KnowledgePage() {
       const res = await fetch(u.toString(), { credentials: "include", headers: getAuthHeaders() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "预览失败");
-      setRagDetail((prev: any) => ({ ...(prev || {}), _preview: data }));
+      setRagDetail((prev) => ({ ...(prev || {}), _preview: data }));
     } catch (e) {
       setMsg({ type: "error", text: e instanceof Error ? e.message : "预览失败" });
     }
@@ -232,6 +348,20 @@ export default function KnowledgePage() {
     loadAll();
   }, [loadAll]);
 
+  useEffect(() => {
+    if (activeFolderId) loadFolderDetail(activeFolderId);
+  }, [activeFolderId, loadFolderDetail]);
+
+  useEffect(() => {
+    if (!activeFolderId || !folderDetail?.docs?.length) return;
+    const hasRunning = folderDetail.docs.some((d) => ["queued", "parsing", "parsed", "packaged"].includes((d.status || "").toLowerCase()));
+    if (!hasRunning) return;
+    const timer = setInterval(() => {
+      loadFolderDetail(activeFolderId);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [activeFolderId, folderDetail, loadFolderDetail]);
+
   const departmentChoices = useMemo(() => {
     const s = new Set<string>();
     for (const c of collections) {
@@ -248,9 +378,11 @@ export default function KnowledgePage() {
     return Array.from(m.entries()).map(([project_id, name]) => ({ project_id, name }));
   }, [collections]);
 
-  const openShare = (d: MyDoc) => {
-    setShareDoc(d);
+  const openShareFolder = (f: FolderItem) => {
+    setShareFolder(f);
+    setShareDoc(null);
     setShareKind("");
+    setFolderShareTarget("company");
     const u = me;
     setShareDepts(u?.department ? [u.department] : []);
     setShareProjs((u?.projects ?? []).map((p) => p.project_id).filter(Boolean));
@@ -266,27 +398,61 @@ export default function KnowledgePage() {
   };
 
   const handleShareSave = async () => {
-    if (!shareDoc || !shareKind) return;
+    if (!shareDoc && !shareFolder) return;
     setMsg(null);
     try {
-      const res = await fetch(`/api/knowledge/my-documents/${encodeURIComponent(shareDoc.doc_id)}/share`, {
+      const isFolder = Boolean(shareFolder);
+      const url = isFolder
+        ? `/api/knowledge/folders/${encodeURIComponent(shareFolder!.folder_id)}/share-scope`
+        : `/api/knowledge/my-documents/${encodeURIComponent(shareDoc!.doc_id)}/share`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         credentials: "include",
-        body: JSON.stringify({
-          kb_kind: shareKind,
-          department_ids: shareDepts,
-          project_ids: shareProjs,
-          company_public: shareCompany,
-        }),
+        body: JSON.stringify(
+          isFolder
+            ? {
+                target: folderShareTarget,
+                department_ids: shareDepts,
+                project_ids: shareProjs,
+              }
+            : {
+                kb_kind: shareKind,
+                department_ids: shareDepts,
+                project_ids: shareProjs,
+                company_public: shareCompany,
+              }
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "共享失败");
-      setMsg({ type: "success", text: "已更新共享目标。" });
+      setMsg({ type: "success", text: isFolder ? "已更新文件夹共享目标。" : "已更新共享目标。" });
       setShareDoc(null);
+      setShareFolder(null);
       await loadAll();
+      if (activeFolderId) await loadFolderDetail(activeFolderId);
     } catch (e) {
       setMsg({ type: "error", text: e instanceof Error ? e.message : "共享失败" });
+    }
+  };
+
+  const unshareActiveFolder = async () => {
+    if (!folderDetail?.folder?.folder_id) return;
+    if (!confirm("确定取消共享并回到私有？（仅 owner 可见）")) return;
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/knowledge/folders/${encodeURIComponent(folderDetail.folder.folder_id)}/unshare`, {
+        method: "POST",
+        credentials: "include",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "取消共享失败");
+      setMsg({ type: "success", text: "已取消共享，文件夹已回到私有。" });
+      await loadAll();
+      if (activeFolderId) await loadFolderDetail(activeFolderId);
+    } catch (e) {
+      setMsg({ type: "error", text: e instanceof Error ? e.message : "取消共享失败" });
     }
   };
 
@@ -303,8 +469,154 @@ export default function KnowledgePage() {
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "删除失败");
       setMsg({ type: "success", text: "已删除。" });
       await loadAll();
+      if (activeFolderId) await loadFolderDetail(activeFolderId);
     } catch (e) {
       setMsg({ type: "error", text: e instanceof Error ? e.message : "删除失败" });
+    }
+  };
+
+  const createNewFolder = async () => {
+    const name = prompt("新建文件夹名称");
+    if (!name) return;
+    setMsg(null);
+    try {
+      const res = await fetch("/api/knowledge/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        credentials: "include",
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "创建失败");
+      setMsg({ type: "success", text: "已创建文件夹。" });
+      await loadAll();
+    } catch (e) {
+      setMsg({ type: "error", text: e instanceof Error ? e.message : "创建失败" });
+    }
+  };
+
+  const renameFolder = async (f: FolderItem) => {
+    const name = prompt("重命名文件夹", f.name || "");
+    if (!name) return;
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/knowledge/folders/${encodeURIComponent(f.folder_id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        credentials: "include",
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "重命名失败");
+      setMsg({ type: "success", text: "已重命名文件夹。" });
+      await loadAll();
+    } catch (e) {
+      setMsg({ type: "error", text: e instanceof Error ? e.message : "重命名失败" });
+    }
+  };
+
+  const deleteFolder = async (f: FolderItem) => {
+    if (!confirm(`确定删除文件夹「${f.name}」？（仅删除文件夹绑定关系）`)) return;
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/knowledge/folders/${encodeURIComponent(f.folder_id)}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "删除失败");
+      setMsg({ type: "success", text: "已删除文件夹。" });
+      setActiveFolderId(null);
+      setFolderDetail(null);
+      await loadAll();
+    } catch (e) {
+      setMsg({ type: "error", text: e instanceof Error ? e.message : "删除失败" });
+    }
+  };
+
+  const moveDocToFolder = async (docId: string, targetFolderId: string) => {
+    if (!activeFolderId || !targetFolderId || targetFolderId === activeFolderId) return;
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/knowledge/folders/${encodeURIComponent(activeFolderId)}/move-resources`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        credentials: "include",
+        body: JSON.stringify({ target_folder_id: targetFolderId, doc_ids: [docId] }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "移动失败");
+      setMsg({ type: "success", text: "已移动文档。" });
+      await loadAll();
+      await loadFolderDetail(activeFolderId);
+    } catch (e) {
+      setMsg({ type: "error", text: e instanceof Error ? e.message : "移动失败" });
+    }
+  };
+
+  const uploadToActiveFolder = async (file: File) => {
+    if (!activeFolderId) return;
+    setMsg(null);
+    setFolderUploadBusy(true);
+    try {
+      const sizeMb = formatMb(file.size);
+      const isPdf = (file.name || "").toLowerCase().endsWith(".pdf") || file.type === "application/pdf";
+      let pages: number | null = null;
+      if (isPdf && sizeMb <= BIG_PDF_SIZE_MB) {
+        pages = await estimatePdfPages(file);
+      }
+      const isBig = sizeMb > BIG_PDF_SIZE_MB || (pages !== null && pages > BIG_PDF_PAGES);
+      if (isPdf && isBig) {
+        const reasons: string[] = [];
+        if (sizeMb > BIG_PDF_SIZE_MB) reasons.push(`大小约 ${sizeMb}MB > ${BIG_PDF_SIZE_MB}MB`);
+        if (pages !== null && pages > BIG_PDF_PAGES) reasons.push(`页数约 ${pages} > ${BIG_PDF_PAGES}`);
+        const ok = confirm(`检测为大 PDF（${reasons.join("；") || "可能耗时较长"}）。是否跳转到「大 PDF 上传流程」？`);
+        if (ok) {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await fetch("/api/knowledge/bigpdf/tasks", {
+            method: "POST",
+            credentials: "include",
+            headers: getAuthHeaders(),
+            body: fd,
+          });
+          const data = (await res.json().catch(() => ({}))) as { detail?: string; task_id?: string };
+          if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "创建大文档任务失败");
+          const taskId = typeof data.task_id === "string" ? data.task_id : "";
+          if (!taskId) throw new Error("创建任务失败（缺少 task_id）");
+          const q = new URLSearchParams();
+          q.set("task_id", taskId);
+          q.set("from", "knowledge");
+          q.set("folder_id", activeFolderId);
+          q.set("name", file.name);
+          q.set("size_mb", String(sizeMb));
+          if (pages !== null) q.set("pages", String(pages));
+          window.location.href = `/utils/pdf-knowledge?${q.toString()}`;
+          return;
+        }
+        return;
+      }
+
+      setMsg({ type: "info", text: "文件已上传，正在后台排队解析入库（耗时较长可在列表查看状态）…" });
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("folder_id", activeFolderId);
+      const res = await fetch("/api/knowledge/my-documents/upload", {
+        method: "POST",
+        credentials: "include",
+        headers: getAuthHeaders(),
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "上传失败");
+      setMsg({ type: "success", text: "已上传到当前文件夹，后台正在解析入库。" });
+      await loadAll();
+      await loadFolderDetail(activeFolderId);
+    } catch (e) {
+      setMsg({ type: "error", text: e instanceof Error ? e.message : "上传失败" });
+    } finally {
+      setFolderUploadBusy(false);
     }
   };
 
@@ -315,53 +627,231 @@ export default function KnowledgePage() {
         <p className="mt-1 text-sm text-zinc-500">左侧管理您上传的文档（默认在私人知识库）；右侧查看大文档 RAG 包（docling 产物）。</p>
       </div>
 
+      <div className="mb-4">
+        <KbInProgressBanner />
+      </div>
+
       {msg && (
-        <p className={`mb-4 text-sm ${msg.type === "success" ? "text-emerald-400" : "text-red-400"}`}>{msg.text}</p>
+        <p
+          className={`mb-4 text-sm ${
+            msg.type === "success" ? "text-emerald-400" : msg.type === "info" ? "text-zinc-300" : "text-red-400"
+          }`}
+        >
+          {msg.text}
+        </p>
       )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <section className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
-          <h2 className="mb-2 text-lg font-medium text-zinc-200">我的知识库文档</h2>
-          <p className="mb-4 text-sm text-zinc-500">上传入口在「AI 互动」页；此处可删除或共享到其他知识库类型。</p>
-          {loading ? (
-            <p className="text-sm text-zinc-500">加载中…</p>
-          ) : myDocs.length === 0 ? (
-            <div className="flex min-h-[20vh] items-center justify-center rounded-lg border border-dashed border-zinc-700 text-zinc-500 text-sm">
-              暂无文档，请前往 AI 互动页上传。
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="mb-1 text-lg font-medium text-zinc-200">文件夹</h2>
+              <p className="text-sm text-zinc-500">知识库以文件夹组织；共享与移动都以文件夹为入口。</p>
             </div>
-          ) : (
-            <ul className="space-y-2">
-              {myDocs.map((d) => (
-                <li
-                  key={d.doc_id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-sm"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-zinc-200">{d.title}</div>
-                    <div className="text-xs text-zinc-500">
-                      {d.original_filename} · {(d.collection_ids ?? []).length} 个归属知识库
+            <button
+              type="button"
+              onClick={createNewFolder}
+              className="shrink-0 rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700"
+            >
+              新建文件夹
+            </button>
+          </div>
+
+          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/30 p-3">
+            <div className="mb-2 text-sm text-zinc-300">我的上传进度（全局）</div>
+            {myDocs.length === 0 ? (
+              <div className="text-xs text-zinc-500">暂无上传记录</div>
+            ) : (
+              <ul className="space-y-1">
+                {myDocs.slice(0, 6).map((d) => (
+                  <li key={`global-${d.doc_id}`} className="flex items-center justify-between gap-2 text-xs">
+                    <span className="truncate text-zinc-400">{d.original_filename || d.title}</span>
+                    <span
+                      className={`inline-flex rounded border px-1.5 py-0.5 ${
+                        (d.status || "").toLowerCase() === "active"
+                          ? "border-emerald-800/60 bg-emerald-900/20 text-emerald-300"
+                          : (d.status || "").toLowerCase() === "failed"
+                          ? "border-red-900/50 bg-red-900/20 text-red-300"
+                          : "border-zinc-700 bg-zinc-900 text-zinc-300"
+                      }`}
+                    >
+                      {statusLabel(d.status)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-[220px_1fr]">
+            <aside className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-2">
+              {loading ? (
+                <div className="p-2 text-sm text-zinc-500">加载中…</div>
+              ) : folders.length === 0 ? (
+                <div className="p-2 text-sm text-zinc-500">暂无文件夹</div>
+              ) : (
+                <div className="space-y-1">
+                  {folders.map((f) => (
+                    <button
+                      key={f.folder_id}
+                      type="button"
+                      onClick={() => setActiveFolderId(f.folder_id)}
+                      className={[
+                        "w-full text-left rounded-md border px-2 py-2",
+                        f.folder_id === activeFolderId ? "border-zinc-700 bg-zinc-900/60" : "border-zinc-900 bg-zinc-950/10 hover:bg-zinc-900/30",
+                      ].join(" ")}
+                    >
+                      <div className="truncate text-sm text-zinc-200">{f.name}</div>
+                      <div className="mt-0.5 text-xs text-zinc-500">
+                        文档 {f.resource_counts?.doc ?? 0}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </aside>
+
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3">
+              {!activeFolderId ? (
+                <div className="text-sm text-zinc-500">请选择一个文件夹</div>
+              ) : folderLoading ? (
+                <div className="text-sm text-zinc-500">加载文件夹内容…</div>
+              ) : !folderDetail ? (
+                <div className="text-sm text-zinc-500">暂无内容</div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm text-zinc-200">{folderDetail.folder?.name}</div>
+                      <div className="text-xs text-zinc-500 font-mono">{folderDetail.folder?.folder_id}</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        ref={folderFileInputRef}
+                        type="file"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = "";
+                          if (f) uploadToActiveFolder(f);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={folderUploadBusy}
+                        onClick={() => folderFileInputRef.current?.click()}
+                        className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+                      >
+                        {folderUploadBusy ? "上传中…" : "上传文档"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => renameFolder(folderDetail.folder)}
+                        className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
+                      >
+                        重命名
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openShareFolder(folderDetail.folder)}
+                        className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
+                      >
+                        共享
+                      </button>
+                      <button
+                        type="button"
+                        onClick={bringCurrentFolderToAi}
+                        className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
+                        title="将当前文件夹写入统一范围并打开 AI 互动"
+                      >
+                        带到 AI 互动
+                      </button>
+                      {folderDetail.folder?.kind && folderDetail.folder.kind !== "Private" ? (
+                        <button
+                          type="button"
+                          onClick={unshareActiveFolder}
+                          className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
+                        >
+                          取消共享
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => deleteFolder(folderDetail.folder)}
+                        className="rounded border border-red-900/50 bg-red-900/20 px-2 py-1 text-xs text-red-300 hover:bg-red-900/40"
+                      >
+                        删除文件夹
+                      </button>
                     </div>
                   </div>
-                  <div className="flex shrink-0 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openShare(d)}
-                      className="rounded border border-zinc-600 bg-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-600"
-                    >
-                      共享到
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(d.doc_id)}
-                      className="rounded border border-red-900/50 bg-red-900/20 px-2 py-1 text-xs text-red-300 hover:bg-red-900/40"
-                    >
-                      删除
-                    </button>
+
+                  <div className="mt-3">
+                    {folderDetail.docs.length === 0 ? (
+                      <div className="text-sm text-zinc-500">该文件夹暂无文档。你可以点击上方「上传文档」直接上传。</div>
+                    ) : (
+                      <ul className="space-y-2">
+                        {folderDetail.docs.map((d) => (
+                          <li key={d.doc_id} className="rounded-md border border-zinc-800 bg-zinc-900/30 px-3 py-2 text-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="truncate text-zinc-200">{d.title}</div>
+                                <div className="text-xs text-zinc-500">{d.original_filename}</div>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <span
+                                    className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] ${
+                                      (d.status || "").toLowerCase() === "active"
+                                        ? "border-emerald-800/60 bg-emerald-900/20 text-emerald-300"
+                                        : (d.status || "").toLowerCase() === "failed"
+                                        ? "border-red-900/50 bg-red-900/20 text-red-300"
+                                        : "border-zinc-700 bg-zinc-900 text-zinc-300"
+                                    }`}
+                                  >
+                                    {statusLabel(d.status)}
+                                  </span>
+                                  {(d.status || "").toLowerCase() === "failed" && d.last_error ? (
+                                    <span className="text-[11px] text-red-300 truncate max-w-[360px]" title={d.last_error}>
+                                      {d.last_error}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <select
+                                  className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    const target = e.target.value;
+                                    if (target) moveDocToFolder(d.doc_id, target);
+                                    e.currentTarget.value = "";
+                                  }}
+                                >
+                                  <option value="">移动到…</option>
+                                  {folders
+                                    .filter((f) => f.folder_id !== activeFolderId)
+                                    .map((f) => (
+                                      <option key={f.folder_id} value={f.folder_id}>
+                                        {f.name}
+                                      </option>
+                                    ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelete(d.doc_id)}
+                                  className="rounded border border-red-900/50 bg-red-900/20 px-2 py-1 text-xs text-red-300 hover:bg-red-900/40"
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                </>
+              )}
+            </div>
+          </div>
         </section>
 
         <section className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
@@ -443,7 +933,7 @@ export default function KnowledgePage() {
                   type="button"
                   onClick={() => {
                     setRagExportKind("openwebui");
-                    setRagDetail((prev: any) => ({ ...(prev || {}), _preview: null }));
+                    setRagDetail((prev) => ({ ...(prev || {}), _preview: null }));
                   }}
                   className={`rounded border px-2 py-1 text-xs ${
                     ragExportKind === "openwebui"
@@ -457,7 +947,7 @@ export default function KnowledgePage() {
                   type="button"
                   onClick={() => {
                     setRagExportKind("cn_kb");
-                    setRagDetail((prev: any) => ({ ...(prev || {}), _preview: null }));
+                    setRagDetail((prev) => ({ ...(prev || {}), _preview: null }));
                   }}
                   className={`rounded border px-2 py-1 text-xs ${
                     ragExportKind === "cn_kb"
@@ -471,7 +961,7 @@ export default function KnowledgePage() {
                   type="button"
                   onClick={() => {
                     setRagExportKind("standard");
-                    setRagDetail((prev: any) => ({ ...(prev || {}), _preview: null }));
+                    setRagDetail((prev) => ({ ...(prev || {}), _preview: null }));
                   }}
                   className={`rounded border px-2 py-1 text-xs ${
                     ragExportKind === "standard"
@@ -544,7 +1034,9 @@ export default function KnowledgePage() {
               {Array.isArray(ragDetail?.sections) && ragDetail.sections.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-zinc-500">sections：</span>
-                  {ragDetail.sections.slice(0, 10).map((s: any) => (
+                  {ragDetail.sections
+                    .slice(0, 10)
+                    .map((s: { filename: string; size_bytes?: number }) => (
                     <button
                       key={s.filename}
                       type="button"
@@ -578,7 +1070,7 @@ export default function KnowledgePage() {
                   </span>
                   <button
                     type="button"
-                    onClick={() => setRagDetail((prev: any) => ({ ...(prev || {}), _preview: null }))}
+                    onClick={() => setRagDetail((prev) => ({ ...(prev || {}), _preview: null }))}
                     className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
                   >
                     清除预览
@@ -615,74 +1107,131 @@ export default function KnowledgePage() {
         </div>
       )}
 
-      {shareDoc && (
+      {(shareDoc || shareFolder) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl">
-            <h3 className="text-lg font-medium text-zinc-100">共享文档</h3>
-            <p className="mt-1 text-sm text-zinc-500">{shareDoc.title}</p>
+            <h3 className="text-lg font-medium text-zinc-100">{shareFolder ? "共享文件夹" : "共享文档"}</h3>
+            <p className="mt-1 text-sm text-zinc-500">{shareFolder ? shareFolder.name : shareDoc?.title}</p>
             <div className="mt-4 space-y-3">
-              <div>
-                <label className="mb-1 block text-xs text-zinc-400">目标知识库类型</label>
-                <select
-                  value={shareKind}
-                  onChange={(e) => setShareKind(e.target.value)}
-                  className="w-full rounded border border-zinc-600 bg-zinc-800 px-2 py-2 text-sm text-zinc-200"
-                >
-                  <option value="">请选择</option>
-                  {kbKinds.map((k) => (
-                    <option key={k.kb_kind} value={k.kb_kind}>
-                      {k.label}（{k.kb_kind}）
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {(shareKind === "DeptPublic" || shareKind === "DeptLead") && (
-                <div>
-                  <div className="mb-1 text-xs text-zinc-400">部门（默认已选您所属部门，可增删）</div>
-                  <div className="flex flex-wrap gap-2">
-                    {departmentChoices.map((d) => (
-                      <label key={d} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
-                        <input type="checkbox" checked={shareDepts.includes(d)} onChange={() => toggleDept(d)} />
-                        {d}
+              {shareFolder ? (
+                <div className="space-y-3">
+                  <div>
+                    <div className="mb-1 block text-xs text-zinc-400">共享到</div>
+                    <div className="flex flex-wrap gap-3 text-sm text-zinc-200">
+                      <label className="flex items-center gap-2">
+                        <input type="radio" checked={folderShareTarget === "company"} onChange={() => setFolderShareTarget("company")} />
+                        公司
                       </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {(shareKind === "ProjectPublic" || shareKind === "ProjectLead") && (
-                <div>
-                  <div className="mb-1 text-xs text-zinc-400">项目（默认已选您参与项目，可增删）</div>
-                  <div className="flex flex-wrap gap-2">
-                    {projectChoices.map((p) => (
-                      <label key={p.project_id} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
-                        <input type="checkbox" checked={shareProjs.includes(p.project_id)} onChange={() => toggleProj(p.project_id)} />
-                        {p.name}
+                      <label className="flex items-center gap-2">
+                        <input type="radio" checked={folderShareTarget === "department"} onChange={() => setFolderShareTarget("department")} />
+                        部门
                       </label>
-                    ))}
+                      <label className="flex items-center gap-2">
+                        <input type="radio" checked={folderShareTarget === "project"} onChange={() => setFolderShareTarget("project")} />
+                        项目
+                      </label>
+                    </div>
                   </div>
+
+                  {folderShareTarget === "department" ? (
+                    <div>
+                      <div className="mb-1 text-xs text-zinc-400">部门（可多选）</div>
+                      <div className="flex flex-wrap gap-2">
+                        {departmentChoices.map((d) => (
+                          <label key={d} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
+                            <input type="checkbox" checked={shareDepts.includes(d)} onChange={() => toggleDept(d)} />
+                            {d}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {folderShareTarget === "project" ? (
+                    <div>
+                      <div className="mb-1 text-xs text-zinc-400">项目（可多选）</div>
+                      <div className="flex flex-wrap gap-2">
+                        {projectChoices.map((p) => (
+                          <label key={p.project_id} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
+                            <input type="checkbox" checked={shareProjs.includes(p.project_id)} onChange={() => toggleProj(p.project_id)} />
+                            {p.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="text-xs text-zinc-500">提示：共享以文件夹为单位，文件夹内所有文档权限一致。</div>
                 </div>
-              )}
-              {shareKind === "CompanyPublic" && (
-                <label className="flex items-center gap-2 text-sm text-zinc-300">
-                  <input type="checkbox" checked={shareCompany} onChange={(e) => setShareCompany(e.target.checked)} />
-                  同时发布到公司公共库
-                </label>
-              )}
-              {["MultiDeptPublic", "MultiDeptLead", "MultiProjectPublic", "MultiProjectLead"].includes(shareKind) && (
-                <p className="text-xs text-zinc-500">将共享到系统配置的多部门/多项目逻辑库（scope 由管理端维护）。</p>
+              ) : (
+                <>
+                  <div>
+                    <label className="mb-1 block text-xs text-zinc-400">目标知识库类型</label>
+                    <select
+                      value={shareKind}
+                      onChange={(e) => setShareKind(e.target.value)}
+                      className="w-full rounded border border-zinc-600 bg-zinc-800 px-2 py-2 text-sm text-zinc-200"
+                    >
+                      <option value="">请选择</option>
+                      {kbKinds.map((k) => (
+                        <option key={k.kb_kind} value={k.kb_kind}>
+                          {k.label}（{k.kb_kind}）
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {(shareKind === "DeptPublic" || shareKind === "DeptLead") && (
+                    <div>
+                      <div className="mb-1 text-xs text-zinc-400">部门（默认已选您所属部门，可增删）</div>
+                      <div className="flex flex-wrap gap-2">
+                        {departmentChoices.map((d) => (
+                          <label key={d} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
+                            <input type="checkbox" checked={shareDepts.includes(d)} onChange={() => toggleDept(d)} />
+                            {d}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {(shareKind === "ProjectPublic" || shareKind === "ProjectLead") && (
+                    <div>
+                      <div className="mb-1 text-xs text-zinc-400">项目（默认已选您参与项目，可增删）</div>
+                      <div className="flex flex-wrap gap-2">
+                        {projectChoices.map((p) => (
+                          <label key={p.project_id} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
+                            <input type="checkbox" checked={shareProjs.includes(p.project_id)} onChange={() => toggleProj(p.project_id)} />
+                            {p.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {shareKind === "CompanyPublic" && (
+                    <label className="flex items-center gap-2 text-sm text-zinc-300">
+                      <input type="checkbox" checked={shareCompany} onChange={(e) => setShareCompany(e.target.checked)} />
+                      同时发布到公司公共库
+                    </label>
+                  )}
+                  {["MultiDeptPublic", "MultiDeptLead", "MultiProjectPublic", "MultiProjectLead"].includes(shareKind) && (
+                    <p className="text-xs text-zinc-500">将共享到系统配置的多部门/多项目逻辑库（scope 由管理端维护）。</p>
+                  )}
+                </>
               )}
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setShareDoc(null)}
+                onClick={() => {
+                  setShareDoc(null);
+                  setShareFolder(null);
+                }}
                 className="rounded border border-zinc-600 px-3 py-1.5 text-sm text-zinc-300"
               >
                 取消
               </button>
               <button
                 type="button"
-                disabled={!shareKind}
+                disabled={shareFolder ? (folderShareTarget === "department" ? shareDepts.length === 0 : folderShareTarget === "project" ? shareProjs.length === 0 : false) : !shareKind}
                 onClick={handleShareSave}
                 className="rounded bg-zinc-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
               >

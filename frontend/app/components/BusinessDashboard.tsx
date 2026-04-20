@@ -156,44 +156,56 @@ export default function BusinessDashboard() {
   }, [loadOverview]);
 
   const stats = overview?.stats ?? DEFAULT_STATS;
-  const pt = overview?.profitTrend ?? { labels: [], currentYear: [], previousYear: [] };
-  const fc = overview?.flowCompare ?? { labels: [], actual: [], target: [] };
-  const pc = overview?.profitCompare ?? { labels: [], currentYear: [], lastYear: [] };
+  const pt = overview?.profitTrend;
+  const fc = overview?.flowCompare;
+  const pc = overview?.profitCompare;
 
   const profitTrendData = useMemo(
-    () =>
-      pt.labels.map((name, i) => {
-        const v = pt.currentYear[i] ?? 0;
+    () => {
+      const labels = pt?.labels ?? [];
+      const currentYear = pt?.currentYear ?? [];
+      const previousYear = pt?.previousYear ?? [];
+      return labels.map((name, i) => {
+        const v = currentYear[i] ?? 0;
         return {
           name,
-          往年: pt.previousYear[i] ?? 0,
+          往年: previousYear[i] ?? 0,
           本年_线: v,
           本年_面积: v,
         };
-      }),
+      });
+    },
     [pt]
   );
   const flowCompareData = useMemo(
-    () =>
-      fc.labels.map((name, i) => {
-        const 实际 = Number(fc.actual[i]) || 0;
-        const 目标 = Number(fc.target[i]) || 0;
+    () => {
+      const labels = fc?.labels ?? [];
+      const actual = fc?.actual ?? [];
+      const target = fc?.target ?? [];
+      return labels.map((name, i) => {
+        const 实际 = Number(actual[i]) || 0;
+        const 目标 = Number(target[i]) || 0;
         return {
           name,
           实际,
           目标,
           未完成: Math.max(0, 目标 - 实际),
         };
-      }),
+      });
+    },
     [fc]
   );
   const profitCompareData = useMemo(
-    () =>
-      pc.labels.map((name, i) => ({
+    () => {
+      const labels = pc?.labels ?? [];
+      const currentYear = pc?.currentYear ?? [];
+      const lastYear = pc?.lastYear ?? [];
+      return labels.map((name, i) => ({
         name,
-        本年: pc.currentYear[i] ?? 0,
-        去年: pc.lastYear[i] ?? 0,
-      })),
+        本年: currentYear[i] ?? 0,
+        去年: lastYear[i] ?? 0,
+      }));
+    },
     [pc]
   );
 
@@ -202,8 +214,8 @@ export default function BusinessDashboard() {
   const hasProfitCompare = profitCompareData.length > 0;
 
   const totalFlowTarget = useMemo(
-    () => fc.target.reduce((a, b) => a + b, 0),
-    [fc.target]
+    () => (fc?.target ?? []).reduce((a, b) => a + b, 0),
+    [fc]
   );
 
   return (

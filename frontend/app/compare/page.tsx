@@ -54,8 +54,9 @@ export default function ComparePage() {
         if (cancelled) return;
         const items = d?.items || [];
         setTargets(items);
-        if (!a && items[0]) setA(items[0].entity_id);
-        if (!b && items[1]) setB(items[1].entity_id);
+        // Avoid depending on stale `a`/`b` values inside this effect.
+        if (items[0]) setA((prev) => prev || items[0].entity_id);
+        if (items[1]) setB((prev) => prev || items[1].entity_id);
       })
       .catch(() => {
         if (cancelled) return;
@@ -64,7 +65,6 @@ export default function ComparePage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshotName]);
 
   const canCompare = a && b && a !== b;

@@ -174,8 +174,10 @@ function InlineTable({ spec }: { spec: { columns: string[]; rows: unknown[][] } 
 
 export default function ExcelKanbanPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [tableSchemas, setTableSchemas] = useState<TableSchema[]>([]);
-  const [tablesPreview, setTablesPreview] = useState<Record<string, TablePreview>>({});
+  // These are hydrated from session restore / uploads and used for future UI iteration.
+  // Keep as setters-only for now to avoid unused vars warnings.
+  const [, setTableSchemas] = useState<TableSchema[]>([]);
+  const [, setTablesPreview] = useState<Record<string, TablePreview>>({});
   const [kanbanConfig, setKanbanConfig] = useState<KanbanChart[]>([]);
   const [analysis, setAnalysis] = useState("");
   const [uploading, setUploading] = useState(false);

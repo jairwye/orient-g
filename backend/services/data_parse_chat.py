@@ -12,6 +12,7 @@ import httpx
 
 from backend.config import settings
 from backend.services.ollama_guard import post_json_with_guard
+from backend.services.upstream_guard import assert_upstream_allowed
 from backend.services.data_parse_session import (
     get_kanban_config,
     get_metrics,
@@ -56,6 +57,7 @@ def _ollama_base() -> str:
     base = (settings.ollama_url or "").rstrip("/")
     if not base:
         raise ValueError("Ollama 未配置，请在 .env 中设置 OLLAMA_URL")
+    assert_upstream_allowed(base, service_name="Ollama")
     return base
 
 

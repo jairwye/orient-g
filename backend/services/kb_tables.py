@@ -81,6 +81,8 @@ def create_table_instance_from_rows(
     cols = _columns_from_headers(headers or [])
     col_ids = [c["column_id"] for c in cols]
     row_count = 0
+    first_row_key: str | None = None
+    first_values: dict[str, Any] | None = None
 
     with get_db() as db:
         db.execute(
@@ -109,6 +111,9 @@ def create_table_instance_from_rows(
                 if i < len(r):
                     values[cid] = r[i]
             row_key = f"rk_{uuid.uuid4().hex}"
+            if first_row_key is None:
+                first_row_key = row_key
+                first_values = dict(values)
             db.execute(
                 text(
                     """
@@ -148,6 +153,8 @@ def create_table_instance_from_rows(
         "table_id": table_id,
         "row_count": row_count,
         "private_collection_id": private_collection_id,
+        "first_row_key": first_row_key,
+        "first_values": first_values or {},
     }
 
 

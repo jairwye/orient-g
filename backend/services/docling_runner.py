@@ -5,13 +5,14 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 from backend.config import settings
-
+from backend.services.upstream_guard import assert_upstream_allowed
 
 @dataclass(frozen=True)
 class DoclingResult:
@@ -126,13 +127,35 @@ def _convert_http(source_path: Path, output_dir: Path, timeout_s: int) -> Doclin
     base = (settings.docling_http_base_url or "").strip().rstrip("/")
     if not base:
         raise RuntimeError("DOCLING_MODE=http 但未配置 DOCLING_HTTP_BASE_URL")
+    assert_upstream_allowed(base, service_name="Docling")
     output_dir.mkdir(parents=True, exist_ok=True)
     url = f"{base}/convert"
-    with httpx.Client(timeout=timeout_s) as client:
-        with source_path.open("rb") as f:
-            r = client.post(url, files={"file": (source_path.name, f, "application/octet-stream")})
-        r.raise_for_status()
-        data = r.json()
+    read_timeout = max(1, int(getattr(settings, "docling_http_read_timeout_s", timeout_s) or timeout_s))
+    timeout = httpx.Timeout(
+        connect=max(1.0, float(getattr(settings, "docling_http_connect_timeout_s", 10))),
+        read=max(1.0, float(min(timeout_s, read_timeout))),
+        write=max(1.0, float(getattr(settings, "docling_http_write_timeout_s", 60))),
+        pool=max(1.0, float(getattr(settings, "docling_http_pool_timeout_s", 30))),
+    )
+    max_retries = max(0, int(getattr(settings, "docling_http_max_retries", 2)))
+    backoff = max(0.1, float(getattr(settings, "docling_http_retry_backoff_s", 1.5)))
+    last_exc: Exception | None = None
+    data: dict | None = None
+    for i in range(max_retries + 1):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                with source_path.open("rb") as f:
+                    r = client.post(url, files={"file": (source_path.name, f, "application/octet-stream")})
+                r.raise_for_status()
+                data = r.json()
+            break
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.HTTPStatusError) as e:
+            last_exc = e
+            if i >= max_retries:
+                break
+            time.sleep(backoff * (2**i))
+    if data is None:
+        raise RuntimeError(f"Docling HTTP 调用失败（重试后）: {last_exc}") from last_exc
     if not isinstance(data, dict):
         raise RuntimeError("Docling HTTP 响应不是 JSON 对象")
     md = data.get("markdown")

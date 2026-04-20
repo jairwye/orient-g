@@ -1,12 +1,15 @@
 {
   "name": "orient-g-frontend",
-  "version": "1.2.1",
+  "version": "1.2.1.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "npm run lint:strict",
+    "lint:strict": "eslint . --cache --cache-location .eslintcache --max-warnings 0",
+    "lint:fast": "eslint app --cache --cache-location .eslintcache",
+    "lint:quality": "eslint . --cache --cache-location .eslintcache --config eslint.quality.config.mjs"
   },
   "dependencies": {
     "china-geojson": "^1.0.0",

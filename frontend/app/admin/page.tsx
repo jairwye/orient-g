@@ -142,7 +142,7 @@ export default function AdminPage() {
   const [updatingRolesUser, setUpdatingRolesUser] = useState<string | null>(null);
 
   // KB ACL（rel_only）
-  const [kbDepartments, setKbDepartments] = useState<KBDepartmentItem[]>([]);
+  const [, setKbDepartments] = useState<KBDepartmentItem[]>([]);
   const [kbProjects, setKbProjects] = useState<KBProjectItem[]>([]);
   const [kbPrivateOwners, setKbPrivateOwners] = useState<KBPrivateOwnerItem[]>([]);
   const [kbResourceAssignments, setKbResourceAssignments] = useState<{ docs: KBDocAssignmentItem[]; tables: KBTableAssignmentItem[] }>({
@@ -226,9 +226,9 @@ export default function AdminPage() {
             special_collection_ids: Array.isArray(x.special_collection_ids)
               ? (x.special_collection_ids as string[]).map(String)
               : [],
-            special_collections: Array.isArray(x.special_collections) ? (x.special_collections as any) : undefined,
+            special_collections: Array.isArray(x.special_collections) ? (x.special_collections as Array<Record<string, unknown>>) : undefined,
             acl: normalizeKbReadPolicy(x.acl),
-            share_scope: (x.share_scope as any) || undefined,
+            share_scope: x.share_scope ? (x.share_scope as Record<string, unknown>) : undefined,
           }))
         );
       } catch {
@@ -241,9 +241,14 @@ export default function AdminPage() {
   const refreshKbAcl = async () => {
     if (!isAdmin) return;
     try {
-      const [defReadRes, specDocsRes] = await Promise.all([
+      const [defReadRes, specDocsRes, depsRes, projRes, ownersRes, assignsRes, privateOwnersRes] = await Promise.all([
         fetch("/api/settings/kb-meta/default-read-policies", { credentials: "include", headers: getAuthHeaders() }),
         fetch("/api/settings/kb-meta/special-docs", { credentials: "include", headers: getAuthHeaders() }),
+        fetch("/api/settings/kb-acl/departments", { credentials: "include", headers: getAuthHeaders() }),
+        fetch("/api/settings/kb-acl/projects", { credentials: "include", headers: getAuthHeaders() }),
+        fetch("/api/settings/kb-acl/resource-owners", { credentials: "include", headers: getAuthHeaders() }),
+        fetch("/api/settings/kb-acl/resource-assignments", { credentials: "include", headers: getAuthHeaders() }),
+        fetch("/api/settings/kb-acl/private-owners", { credentials: "include", headers: getAuthHeaders() }),
       ]);
       const defReadData = defReadRes.ok ? await defReadRes.json() : { items: [] };
       const specDocsData = specDocsRes.ok ? await specDocsRes.json() : { items: [] };
@@ -255,11 +260,33 @@ export default function AdminPage() {
           special_collection_ids: Array.isArray(x.special_collection_ids)
             ? (x.special_collection_ids as string[]).map(String)
             : [],
-          special_collections: Array.isArray(x.special_collections) ? (x.special_collections as any) : undefined,
+          special_collections: Array.isArray(x.special_collections) ? (x.special_collections as Array<Record<string, unknown>>) : undefined,
           acl: normalizeKbReadPolicy(x.acl),
-          share_scope: (x.share_scope as any) || undefined,
+          share_scope: x.share_scope ? (x.share_scope as Record<string, unknown>) : undefined,
         }))
       );
+
+      const depsData = depsRes.ok ? await depsRes.json() : { items: [] };
+      setKbDepartments(Array.isArray(depsData?.items) ? (depsData.items as KBDepartmentItem[]) : []);
+
+      const projData = projRes.ok ? await projRes.json() : { items: [] };
+      setKbProjects(Array.isArray(projData?.items) ? (projData.items as KBProjectItem[]) : []);
+
+      const ownersData = ownersRes.ok ? await ownersRes.json() : { docs: [], tables: [] };
+      setKbResourceOwners({
+        docs: Array.isArray(ownersData?.docs) ? (ownersData.docs as KBDocOwnerItem[]) : [],
+        tables: Array.isArray(ownersData?.tables) ? (ownersData.tables as KBTableOwnerItem[]) : [],
+      });
+
+      const assignsData = assignsRes.ok ? await assignsRes.json() : { docs: [], tables: [], collections: [] };
+      setKbResourceAssignments({
+        docs: Array.isArray(assignsData?.docs) ? (assignsData.docs as KBDocAssignmentItem[]) : [],
+        tables: Array.isArray(assignsData?.tables) ? (assignsData.tables as KBTableAssignmentItem[]) : [],
+      });
+      setKbCollections(Array.isArray(assignsData?.collections) ? (assignsData.collections as CollectionItem[]) : []);
+
+      const privData = privateOwnersRes.ok ? await privateOwnersRes.json() : { items: [] };
+      setKbPrivateOwners(Array.isArray(privData?.items) ? (privData.items as KBPrivateOwnerItem[]) : []);
     } catch {
       // ignore
     }
@@ -322,30 +349,6 @@ export default function AdminPage() {
     }
   };
 
-  const handleSaveDepartmentPolicy = async () => {
-    if (!isAdmin) return;
-    if (kbDepartments.length === 0) return;
-    setKbSaving(true);
-    setKbMessage(null);
-    try {
-      for (const d of kbDepartments) {
-        const r = await fetch(`/api/settings/kb-acl/departments/${encodeURIComponent(d.department_id)}/policy`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-          credentials: "include",
-          body: JSON.stringify({ allow_leads: d.policy.allow_leads, allow_members: d.policy.allow_members }),
-        });
-        if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.detail || "保存部门 policy 失败");
-      }
-      setKbMessage({ type: "success", text: "部门知识库 policy 已保存。" });
-      await refreshKbAcl();
-    } catch (e) {
-      setKbMessage({ type: "error", text: e instanceof Error ? e.message : "保存失败" });
-    } finally {
-      setKbSaving(false);
-    }
-  };
-
   const handleSaveResourceOwners = async () => {
     setKbSaving(true);
     setKbMessage(null);
@@ -398,11 +401,19 @@ export default function AdminPage() {
 
       // 手工覆盖（allow）叠加进来
       const readAllow = (readData.overrides || [])
-        .filter((x: any) => x?.effect === "allow" && x?.resource_type === "collection" && typeof x?.resource_id === "string")
-        .map((x: any) => x.resource_id as string);
+        .filter((x: unknown) => {
+          if (!x || typeof x !== "object") return false;
+          const o = x as { effect?: unknown; resource_type?: unknown; resource_id?: unknown };
+          return o.effect === "allow" && o.resource_type === "collection" && typeof o.resource_id === "string";
+        })
+        .map((x) => (x as { resource_id: string }).resource_id);
       const writeAllow = (writeData.overrides || [])
-        .filter((x: any) => x?.effect === "allow" && typeof x?.collection_id === "string")
-        .map((x: any) => x.collection_id as string);
+        .filter((x: unknown) => {
+          if (!x || typeof x !== "object") return false;
+          const o = x as { effect?: unknown; collection_id?: unknown };
+          return o.effect === "allow" && typeof o.collection_id === "string";
+        })
+        .map((x) => (x as { collection_id: string }).collection_id);
 
       setKbPermReadAllow(Array.from(new Set([...(defaultRead || []), ...(readAllow || [])])));
       setKbPermWriteAllow(Array.from(new Set([...(defaultWrite || []), ...(writeAllow || [])])));

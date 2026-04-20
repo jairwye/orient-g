@@ -54,7 +54,7 @@ type FetchStatus = { fetching: boolean; totalRecords: number; lastFilledDate: st
 export default function ExchangePage() {
   const [raw, setRaw] = useState<HistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState<FetchStatus | null>(null);
+  const [, setStatus] = useState<FetchStatus | null>(null);
   const [currency, setCurrency] = useState<"usd" | "eur" | "jpy">("usd");
   const [brushRange, setBrushRange] = useState<{ startIndex: number; endIndex: number } | null>(null);
   const [isPanning, setIsPanning] = useState(false);

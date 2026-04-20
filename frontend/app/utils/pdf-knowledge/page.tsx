@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../../lib/auth";
+import { buildAiInteractionHref, buildKnowledgeHref } from "../../lib/kb_scope_capsule";
 
 type BigPdfTask = {
   task_id: string;
@@ -28,7 +29,8 @@ export default function PdfKnowledgePage() {
     const sizeMb = sp.get("size_mb") || "";
     const pages = sp.get("pages") || "";
     const reason = sp.get("reason") || "";
-    return { from, name, sizeMb, pages, reason };
+    const folderId = (sp.get("folder_id") || "").trim();
+    return { from, name, sizeMb, pages, reason, folderId };
   }, [sp]);
 
   useEffect(() => {
@@ -94,7 +96,7 @@ export default function PdfKnowledgePage() {
         body: fd,
       });
       const data = (await res.json().catch(() => ({}))) as BigPdfTask & { detail?: string };
-      if (!res.ok) throw new Error(typeof (data as any).detail === "string" ? (data as any).detail : "创建任务失败");
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "创建任务失败");
       setTask(data);
       setMsg({ type: "success", text: "任务已创建，开始处理…" });
     } catch (e) {
@@ -117,15 +119,24 @@ export default function PdfKnowledgePage() {
       </div>
 
       <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
-        {info.name ? (
+        {info.name || info.folderId ? (
           <div className="mb-4 text-sm text-zinc-300">
-            <div className="text-zinc-200">已从「{info.from || "其他入口"}」跳转。</div>
-            <div className="mt-2 text-zinc-400">
-              文件：<span className="text-zinc-200">{info.name}</span>
-              {info.sizeMb ? <span className="ml-2">大小：{info.sizeMb}MB</span> : null}
-              {info.pages ? <span className="ml-2">页数：约 {info.pages}</span> : null}
-            </div>
-            {info.reason ? <div className="mt-2 text-zinc-400">判定原因：{info.reason}</div> : null}
+            {info.name ? (
+              <>
+                <div className="text-zinc-200">已从「{info.from || "其他入口"}」跳转。</div>
+                <div className="mt-2 text-zinc-400">
+                  文件：<span className="text-zinc-200">{info.name}</span>
+                  {info.sizeMb ? <span className="ml-2">大小：{info.sizeMb}MB</span> : null}
+                  {info.pages ? <span className="ml-2">页数：约 {info.pages}</span> : null}
+                </div>
+                {info.reason ? <div className="mt-2 text-zinc-400">判定原因：{info.reason}</div> : null}
+              </>
+            ) : null}
+            {info.folderId ? (
+              <div className={`text-xs text-zinc-400 ${info.name ? "mt-2" : ""}`}>
+                关联文件夹：<span className="font-mono text-zinc-200">{info.folderId}</span>（完成后可从知识库该文件夹继续管理）
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -180,10 +191,16 @@ export default function PdfKnowledgePage() {
         )}
 
         <div className="mt-4 flex flex-wrap gap-2">
-          <Link href="/knowledge" className="rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700">
+          <Link
+            href={buildKnowledgeHref(info.folderId || null)}
+            className="rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
+          >
             去知识库页查看 RAG 包
           </Link>
-          <Link href="/ai-interaction" className="rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700">
+          <Link
+            href={buildAiInteractionHref(info.folderId ? { folder_ids: [info.folderId] } : {})}
+            className="rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
+          >
             返回 AI 互动
           </Link>
         </div>

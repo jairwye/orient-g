@@ -24,14 +24,11 @@ from backend.services.kb_acl_store import (
     set_resource_assignments,
     set_resource_owner,
 )
+from backend.services.kb_collections import dynamic_private_collection_id, resolve_share_collection_ids
+from backend.services.kb_folders import bind_resource_to_folder, ensure_private_folder
 from backend.services.task_queue import Priority, submit, TASK_EMBED_AND_INDEX_REFRESH
 from backend.services.kb_vector_index import index_uploaded_document_task
 from backend.services.kb_vector_store import vector_enabled
-
-
-def dynamic_private_collection_id(username: str) -> str:
-    u = "".join(c if c.isalnum() or c in "_-" else "_" for c in (username or "").strip())
-    return f"c_private_dyn_{u}"
 
 
 def _kb_docs_root() -> Path:
@@ -136,12 +133,13 @@ def _chunk_text(text: str, max_len: int = 1200) -> list[str]:
     return chunks[:200]
 
 
-def upload_user_document(
+def _create_user_document_record(
     tenant_id: str,
     owner_username: str,
     *,
     filename: str,
     raw: bytes,
+    initial_status: str = "uploaded",
 ) -> dict[str, Any]:
     doc_id = f"ud_{uuid.uuid4().hex}"
     safe_name = Path(filename or "upload").name.replace("..", "_")
@@ -158,6 +156,7 @@ def upload_user_document(
     raw_name = "original.pdf" if ext == ".pdf" else f"original{ext or ''}".rstrip(".")
     raw_path = raw_dir / raw_name
     raw_path.write_bytes(raw)
+    source_hash = hashlib.sha256(raw).hexdigest()
 
     storage_rel = f"kb_user_documents/{tenant_id}/{doc_id}/raw/{raw_name}"
 
@@ -169,8 +168,8 @@ def upload_user_document(
             text(
                 """
                 INSERT INTO kb_user_documents
-                    (doc_id, tenant_id, owner_username, title, original_filename, storage_path, mime, size_bytes, status, doc_version, updated_at)
-                VALUES (:id, :tid, :owner, :title, :ofn, :sp, :mime, :sz, 'uploaded', 'v1', CURRENT_TIMESTAMP)
+                    (doc_id, tenant_id, owner_username, title, original_filename, storage_path, mime, size_bytes, status, doc_version, source_hash, updated_at)
+                VALUES (:id, :tid, :owner, :title, :ofn, :sp, :mime, :sz, :status, 'v1', :h, CURRENT_TIMESTAMP)
                 """
             ),
             {
@@ -182,28 +181,86 @@ def upload_user_document(
                 "sp": storage_rel,
                 "mime": "application/octet-stream",
                 "sz": len(raw),
+                "status": str(initial_status or "uploaded"),
+                "h": source_hash,
             },
         )
 
     set_private_owner(tenant_id, pcid, owner_username)
     set_resource_assignments(tenant_id, resource_type="doc", resource_id=doc_id, collection_ids=[pcid])
     set_resource_owner(tenant_id, resource_type="doc", resource_id=doc_id, owner_username=owner_username)
-
-    # 解析（Docling）-> archive/full.*
-    source_hash = hashlib.sha256(raw).hexdigest()
+    # folder-first：所有文档必须归入一个 folder（默认：用户私有 folder）
     try:
-        res = convert_to_md_and_json(raw_path, output_dir=archive_dir)
+        fid = ensure_private_folder(tenant_id, username=owner_username)
+        bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=doc_id)
+    except Exception:
+        # 不阻塞上传；若 DB 未迁移/无表则忽略，由回填脚本修复
+        pass
+
+    return {
+        "doc_id": doc_id,
+        "title": title,
+        "private_collection_id": pcid,
+        "safe_name": safe_name,
+        "raw_path": raw_path,
+        "source_hash": source_hash,
+        "storage_path": storage_rel,
+    }
+
+
+def _parse_and_package_document(
+    tenant_id: str,
+    owner_username: str,
+    *,
+    doc_id: str,
+    title: str,
+    safe_name: str,
+    raw_path: Path,
+    source_hash: str,
+    private_collection_id: str,
+) -> dict[str, Any]:
+    root = _doc_root(tenant_id, doc_id)
+    archive_dir = root / "archive"
+    kb_dir = root / "kb"
+    sections_dir = kb_dir / "sections"
+    for d in (archive_dir, sections_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(safe_name).suffix.lower()
+    text_like_exts = {".txt", ".md", ".csv", ".json", ".log", ".html", ".htm"}
+    parser_version = "docling"
+    try:
         full_md = archive_dir / "full.md"
         full_json = archive_dir / "full.json"
-        # 统一命名
-        if res.markdown_path != full_md:
-            if full_md.exists():
-                full_md.unlink(missing_ok=True)
-            shutil.move(str(res.markdown_path), str(full_md))
-        if res.json_path != full_json:
-            if full_json.exists():
-                full_json.unlink(missing_ok=True)
-            shutil.move(str(res.json_path), str(full_json))
+        # 文本类小文件不走 Docling，避免额外模型依赖/上游压力。
+        if ext in text_like_exts:
+            txt = _extract_text(safe_name, raw_path.read_bytes())
+            full_md.write_text(txt or "", encoding="utf-8")
+            full_json.write_text(
+                json.dumps(
+                    {
+                        "kind": "plain_text",
+                        "filename": safe_name,
+                        "length": len(txt or ""),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            parser_version = "builtin-text"
+        else:
+            res = convert_to_md_and_json(raw_path, output_dir=archive_dir)
+            # 统一命名
+            if res.markdown_path != full_md:
+                if full_md.exists():
+                    full_md.unlink(missing_ok=True)
+                shutil.move(str(res.markdown_path), str(full_md))
+            if res.json_path != full_json:
+                if full_json.exists():
+                    full_json.unlink(missing_ok=True)
+                shutil.move(str(res.json_path), str(full_json))
+            parser_version = res.docling_version or "docling"
 
         with get_db() as db:
             db.execute(
@@ -214,7 +271,7 @@ def upload_user_document(
                     WHERE tenant_id=:t AND doc_id=:d
                     """
                 ),
-                {"t": tenant_id, "d": doc_id, "h": source_hash, "pv": res.docling_version or "docling"},
+                {"t": tenant_id, "d": doc_id, "h": source_hash, "pv": parser_version},
             )
     except Exception as e:
         with get_db() as db:
@@ -248,7 +305,7 @@ def upload_user_document(
         "classification": "internal",
         "created_at": _now_iso(),
         "source_hash": source_hash,
-        "parser_version": (res.docling_version or "docling"),
+        "parser_version": parser_version,
         "section_count": len(section_items),
         "original_filename": safe_name,
         "raw_path": str(raw_path.relative_to(Path(settings.upload_dir).resolve())).replace("\\", "/"),
@@ -315,10 +372,173 @@ def upload_user_document(
     return {
         "doc_id": doc_id,
         "title": title,
-        "private_collection_id": pcid,
+        "private_collection_id": private_collection_id,
         "chunk_count": len(chunks),
         "status": "active",
     }
+
+
+def mark_document_failed(tenant_id: str, doc_id: str, detail: str) -> None:
+    with get_db() as db:
+        db.execute(
+            text(
+                """
+                UPDATE kb_user_documents
+                SET status='failed', updated_at=CURRENT_TIMESTAMP, last_error=:err
+                WHERE tenant_id=:t AND doc_id=:d
+                """
+            ),
+            {"t": tenant_id, "d": doc_id, "err": str(detail or "")[:4000]},
+        )
+
+
+def mark_document_status(tenant_id: str, doc_id: str, status: str, detail: str | None = None) -> None:
+    with get_db() as db:
+        db.execute(
+            text(
+                """
+                UPDATE kb_user_documents
+                SET status=:st, updated_at=CURRENT_TIMESTAMP, last_error=:err
+                WHERE tenant_id=:t AND doc_id=:d
+                """
+            ),
+            {
+                "t": tenant_id,
+                "d": doc_id,
+                "st": str(status or "queued"),
+                "err": (str(detail)[:4000] if detail else None),
+            },
+        )
+
+
+def recover_pending_document_tasks(tenant_id: str, *, limit: int = 200) -> dict[str, int]:
+    from backend.services.task_queue import enqueue_user_doc_task
+
+    rows = []
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT doc_id, owner_username
+                FROM kb_user_documents
+                WHERE tenant_id=:t AND status IN ('queued', 'parsing')
+                ORDER BY updated_at ASC
+                LIMIT :lim
+                """
+            ),
+            {"t": tenant_id, "lim": max(1, int(limit))},
+        ).fetchall()
+    accepted = 0
+    rejected = 0
+    for r in rows:
+        did = str(r[0] or "").strip()
+        owner = str(r[1] or "").strip()
+        if not did or not owner:
+            continue
+        ok, _ = enqueue_user_doc_task(tenant_id, owner, did)
+        if ok:
+            accepted += 1
+        else:
+            rejected += 1
+    return {"total": len(rows), "accepted": accepted, "rejected": rejected}
+
+
+def upload_user_document(
+    tenant_id: str,
+    owner_username: str,
+    *,
+    filename: str,
+    raw: bytes,
+) -> dict[str, Any]:
+    meta = _create_user_document_record(
+        tenant_id,
+        owner_username,
+        filename=filename,
+        raw=raw,
+        initial_status="uploaded",
+    )
+    return _parse_and_package_document(
+        tenant_id,
+        owner_username,
+        doc_id=str(meta["doc_id"]),
+        title=str(meta["title"]),
+        safe_name=str(meta["safe_name"]),
+        raw_path=Path(meta["raw_path"]),
+        source_hash=str(meta["source_hash"]),
+        private_collection_id=str(meta["private_collection_id"]),
+    )
+
+
+def upload_user_document_async(
+    tenant_id: str,
+    owner_username: str,
+    *,
+    filename: str,
+    raw: bytes,
+) -> dict[str, Any]:
+    meta = _create_user_document_record(
+        tenant_id,
+        owner_username,
+        filename=filename,
+        raw=raw,
+        initial_status="queued",
+    )
+    return {
+        "doc_id": str(meta["doc_id"]),
+        "title": str(meta["title"]),
+        "private_collection_id": str(meta["private_collection_id"]),
+        "chunk_count": 0,
+        "status": "queued",
+    }
+
+
+def process_uploaded_document_task(tenant_id: str, doc_id: str) -> None:
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                SELECT owner_username, title, original_filename, storage_path, source_hash
+                FROM kb_user_documents
+                WHERE tenant_id=:t AND doc_id=:d
+                """
+            ),
+            {"t": tenant_id, "d": doc_id},
+        ).fetchone()
+        if not row:
+            raise RuntimeError(f"document not found: {doc_id}")
+        db.execute(
+            text(
+                """
+                UPDATE kb_user_documents
+                SET status='parsing', updated_at=CURRENT_TIMESTAMP, last_error=NULL
+                WHERE tenant_id=:t AND doc_id=:d
+                """
+            ),
+            {"t": tenant_id, "d": doc_id},
+        )
+    owner_username = str(row[0] or "")
+    title = str(row[1] or doc_id)
+    safe_name = str(row[2] or "upload")
+    storage_path = str(row[3] or "").strip()
+    source_hash = str(row[4] or "").strip()
+    if not storage_path:
+        raise RuntimeError(f"missing storage_path for {doc_id}")
+    raw_path = Path(settings.upload_dir).resolve() / storage_path
+    if not raw_path.exists():
+        raise RuntimeError(f"raw file not found: {raw_path}")
+    if not source_hash:
+        source_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+    pcid = dynamic_private_collection_id(owner_username)
+    _parse_and_package_document(
+        tenant_id,
+        owner_username,
+        doc_id=doc_id,
+        title=title,
+        safe_name=safe_name,
+        raw_path=raw_path,
+        source_hash=source_hash,
+        private_collection_id=pcid,
+    )
 
 
 def list_my_documents(tenant_id: str, owner_username: str) -> list[dict[str, Any]]:
@@ -326,7 +546,7 @@ def list_my_documents(tenant_id: str, owner_username: str) -> list[dict[str, Any
         rows = db.execute(
             text(
                 """
-                SELECT doc_id, title, original_filename, size_bytes, status, created_at
+                SELECT doc_id, title, original_filename, size_bytes, status, created_at, last_error
                 FROM kb_user_documents
                 WHERE tenant_id = :tid AND owner_username = :owner
                 ORDER BY created_at DESC
@@ -345,6 +565,7 @@ def list_my_documents(tenant_id: str, owner_username: str) -> list[dict[str, Any
                 "size_bytes": int(r[3] or 0),
                 "status": str(r[4] or ""),
                 "created_at": r[5].isoformat() if r[5] else None,
+                "last_error": str(r[6] or "") if r[6] else None,
                 "collection_ids": cids,
             }
         )
@@ -367,6 +588,18 @@ def delete_user_document(tenant_id: str, owner_username: str, doc_id: str) -> bo
         db.execute(text("DELETE FROM kb_user_document_chunks WHERE doc_id=:d"), {"d": doc_id})
         db.execute(text("DELETE FROM kb_user_documents WHERE tenant_id=:t AND doc_id=:d"), {"t": tenant_id, "d": doc_id})
         db.execute(text("DELETE FROM kb_document_shares WHERE doc_id=:d"), {"d": doc_id})
+        try:
+            db.execute(
+                text(
+                    """
+                    DELETE FROM kb_folder_resources
+                    WHERE tenant_id=:t AND resource_type='doc' AND resource_id=:d
+                    """
+                ),
+                {"t": tenant_id, "d": doc_id},
+            )
+        except Exception:
+            pass
     set_resource_assignments(tenant_id, resource_type="doc", resource_id=doc_id, collection_ids=[])
     # 清理磁盘
     try:
@@ -466,81 +699,6 @@ def list_chunk_ids_for_doc(tenant_id: str, doc_id: str) -> list[str]:
             {"d": doc_id},
         ).fetchall()
     return [str(r[0]) for r in rows]
-
-
-def resolve_share_collection_ids(
-    fixtures: dict[str, Any],
-    tenant_id: str,
-    *,
-    kb_kind: str,
-    department_ids: list[str],
-    project_ids: list[str],
-    company_public: bool,
-) -> list[str]:
-    kind = (kb_kind or "").strip()
-    cols: list[str] = []
-    collections = fixtures.get("collections") or []
-
-    def dept_collections(dep: str) -> list[str]:
-        dep = (dep or "").strip()
-        out = []
-        for c in collections:
-            if c.get("type") != "department":
-                continue
-            if str(c.get("department_id") or "").strip() == dep:
-                out.append(str(c.get("collection_id")))
-        return out
-
-    def project_collections(pid: str) -> list[str]:
-        pid = (pid or "").strip()
-        out = []
-        for c in collections:
-            if c.get("type") != "project":
-                continue
-            if str(c.get("project_id") or "").strip() == pid:
-                out.append(str(c.get("collection_id")))
-        return out
-
-    if kind in {"DeptPublic", "DeptLead"}:
-        for d in department_ids or []:
-            cols.extend(dept_collections(d))
-    elif kind in {"ProjectPublic", "ProjectLead"}:
-        for p in project_ids or []:
-            cols.extend(project_collections(p))
-    elif kind == "CompanyPublic":
-        for c in collections:
-            if c.get("type") == "public" and str(c.get("space_type") or "") == "CompanyPublic":
-                cid = c.get("collection_id")
-                if cid:
-                    cols.append(str(cid))
-                break
-        if not cols:
-            for c in collections:
-                if c.get("type") == "public" and str(c.get("tenant_id") or "") == tenant_id:
-                    cols.append(str(c.get("collection_id")))
-                    break
-    elif kind == "MultiDeptPublic":
-        for c in collections:
-            if str(c.get("space_type") or "") == "MultiDeptPublic":
-                cols.append(str(c.get("collection_id")))
-                break
-    elif kind == "MultiDeptLead":
-        for c in collections:
-            if str(c.get("space_type") or "") == "MultiDeptLead":
-                cols.append(str(c.get("collection_id")))
-                break
-    elif kind == "MultiProjectPublic":
-        for c in collections:
-            if str(c.get("space_type") or "") == "MultiProjectPublic":
-                cols.append(str(c.get("collection_id")))
-                break
-    elif kind == "MultiProjectLead":
-        for c in collections:
-            if str(c.get("space_type") or "") == "MultiProjectLead":
-                cols.append(str(c.get("collection_id")))
-                break
-
-    return sorted(set([x for x in cols if x]))
 
 
 def share_document(

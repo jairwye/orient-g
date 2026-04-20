@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
@@ -51,7 +52,7 @@ type ChinaGeoJSON = {
   type: "FeatureCollection";
   features: Array<{
     type: "Feature";
-    properties?: Record<string, any>;
+    properties?: Record<string, unknown>;
     geometry:
       | { type: "Polygon"; coordinates: number[][][] }
       | { type: "MultiPolygon"; coordinates: number[][][][] };
@@ -127,19 +128,11 @@ function debugLog(
   message: string,
   data: Record<string, unknown>,
 ) {
-  fetch("http://127.0.0.1:7661/ingest/23552c26-aa5a-4956-8d58-0ca24af11a9c", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "8188b4" },
-    body: JSON.stringify({
-      sessionId: "8188b4",
-      runId,
-      hypothesisId,
-      location,
-      message,
-      data,
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
+  void runId;
+  void hypothesisId;
+  void location;
+  void message;
+  void data;
 }
 
 function stripCnSuffix(s: string) {
@@ -385,22 +378,18 @@ export default function EquityEntryPage() {
 
   useEffect(() => {
     let cancelled = false;
-    // #region agent log
     debugLog("run1", "H1", "equity/page.tsx:map-source-effect", "map source effect entered", {
       hasChinaGeo: Boolean(chinaGeo),
       hasLocRoot: Boolean(locRoot),
     });
-    // #endregion
     // 真实底图：阿里 DataV GeoJSON（省级轮廓）
     if (!chinaGeo) {
       const localGeo = chinaGeoJsonLocal as ChinaGeoJSON;
       if (Array.isArray(localGeo?.features) && localGeo.features.length > 0) {
-        // #region agent log
         debugLog("run1", "H7", "equity/page.tsx:china-geo-local-package", "china geo loaded from npm package", {
           source: "china-geojson/src/geojson/china.json",
           featureCount: localGeo.features.length,
         });
-        // #endregion
         if (!cancelled) setChinaGeo(localGeo);
       } else {
         const geoSources = ["/maps/100000_full.json", "https://geo.datav.aliyun.com/areas_v2/bound/100000_full.json"];
@@ -408,30 +397,24 @@ export default function EquityEntryPage() {
           for (const src of geoSources) {
             try {
               const r = await fetch(src, { cache: "force-cache" });
-              // #region agent log
               debugLog("run1", "H2", "equity/page.tsx:china-geo-response", "china geo response", {
                 ok: r.ok,
                 status: r.status,
                 url: src,
               });
-              // #endregion
               if (!r.ok) continue;
               const d = (await r.json()) as ChinaGeoJSON;
-              // #region agent log
               debugLog("run1", "H2", "equity/page.tsx:china-geo-success", "china geo loaded", {
                 source: src,
                 featureCount: Array.isArray(d?.features) ? d.features.length : -1,
               });
-              // #endregion
               if (!cancelled) setChinaGeo(d);
               return;
             } catch (e) {
-              // #region agent log
               debugLog("run1", "H2", "equity/page.tsx:china-geo-error", "china geo load failed", {
                 source: src,
                 error: String((e as Error)?.message || e),
               });
-              // #endregion
             }
           }
         })();
@@ -442,13 +425,11 @@ export default function EquityEntryPage() {
       const locationSource = "/maps/location.json";
       fetch(locationSource, { cache: "force-cache" })
         .then((r) => {
-          // #region agent log
           debugLog("run1", "H3", "equity/page.tsx:loc-root-response", "location root response", {
             ok: r.ok,
             status: r.status,
             url: locationSource,
           });
-          // #endregion
           return r;
         })
         .then(async (r) => {
@@ -456,24 +437,20 @@ export default function EquityEntryPage() {
           return (await r.json()) as LocationsRoot;
         })
         .then((d) => {
-          // #region agent log
           debugLog("run1", "H3", "equity/page.tsx:loc-root-success", "location root loaded", {
             source: locationSource,
             has100000: Boolean(d?.["100000"]),
             provinceChildren: Array.isArray(d?.["100000"]?.children) ? d["100000"].children.length : -1,
           });
-          // #endregion
           if (!cancelled) setLocRoot(d);
         })
         .catch((e) => {
           const fallback = buildProvinceOnlyLocRoot();
-          // #region agent log
           debugLog("run1", "H3", "equity/page.tsx:loc-root-fallback", "location root fallback to province centers", {
             source: "built-in-province-centers",
             error: String((e as Error)?.message || e),
             provinceChildren: fallback["100000"].children.length,
           });
-          // #endregion
           if (!cancelled) setLocRoot(fallback);
         });
     }
@@ -537,9 +514,9 @@ export default function EquityEntryPage() {
 
   function cubeRound(q: number, r: number) {
     // axial -> cube round -> axial int
-    let x = q;
-    let z = r;
-    let y = -x - z;
+    const x = q;
+    const z = r;
+    const y = -x - z;
     let rx = Math.round(x);
     let ry = Math.round(y);
     let rz = Math.round(z);
@@ -574,17 +551,15 @@ export default function EquityEntryPage() {
 
     const features = chinaGeo?.features || [];
     if (!features.length) {
-      // #region agent log
       debugLog("run1", "H4", "equity/page.tsx:map-model-empty-features", "map model has empty features", {
         hasChinaGeo: Boolean(chinaGeo),
         featureCount: 0,
       });
-      // #endregion
       return {
         W,
         H,
         paths: [] as string[],
-        projectPoint: (lng: number, lat: number) => ({ x: W / 2, y: H / 2 }),
+        projectPoint: () => ({ x: W / 2, y: H / 2 }),
       };
     }
 
@@ -619,7 +594,7 @@ export default function EquityEntryPage() {
         W,
         H,
         paths: [] as string[],
-        projectPoint: (lng: number, lat: number) => ({ x: W / 2, y: H / 2 }),
+        projectPoint: () => ({ x: W / 2, y: H / 2 }),
       };
     }
 
@@ -656,7 +631,6 @@ export default function EquityEntryPage() {
 
   useEffect(() => {
     const currentHeatmapMode = heatmapFocusTargetId.trim() ? "focus" : "all";
-    // #region agent log
     debugLog("run1", "H5", "equity/page.tsx:map-render-state", "map render state", {
       mapPathCount: mapModel.paths.length,
       pointCount: points.length,
@@ -664,7 +638,6 @@ export default function EquityEntryPage() {
       hasLocRoot: Boolean(locRoot),
       hasChinaGeo: Boolean(chinaGeo),
     });
-    // #endregion
   }, [mapModel.paths.length, points.length, heatmapFocusTargetId, locRoot, chinaGeo]);
 
   useEffect(() => {
@@ -680,11 +653,9 @@ export default function EquityEntryPage() {
   const hexbins = useMemo<HexBin[]>(() => {
     // Hexbin：在投影后的屏幕坐标系里分箱
     if (!mapModel.paths.length) {
-      // #region agent log
       debugLog("run1", "H6", "equity/page.tsx:hexbin-disabled-no-geo", "hexbin disabled because geo paths are unavailable", {
         pointCount: points.length,
       });
-      // #endregion
       return [];
     }
     if (!points.length) return [];
@@ -761,7 +732,7 @@ export default function EquityEntryPage() {
     // 稳定排序：大密度优先（便于 hover/点击）
     bins.sort((a, b) => b.weight - a.weight || b.count - a.count);
     return bins;
-  }, [points, mapModel, heatmapFocusTargetId]);
+  }, [points, mapModel]);
 
   const focusTargetLabel = useMemo(() => {
     const t = targets.find((x) => x.entity_id === heatmapFocusTargetId);
@@ -989,10 +960,12 @@ export default function EquityEntryPage() {
             style={{ cursor: isMapPanning ? "grabbing" : "grab" }}
           >
             {!mapModel.paths.length ? (
-              <img
+              <Image
                 src="/maps/china.svg"
                 alt="China map fallback"
                 className="absolute inset-0 h-full w-full object-contain opacity-80"
+                fill
+                sizes="100vw"
                 draggable={false}
               />
             ) : null}

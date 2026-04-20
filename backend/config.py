@@ -1,9 +1,15 @@
 from typing import Optional
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=[".env", "../.env"],
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     database_url: str = "postgresql://user:password@localhost:5432/mgmt_web"
     upload_dir: str = "./uploads"
     frontend_origin: str = "http://localhost:3000"
@@ -35,6 +41,13 @@ class Settings(BaseSettings):
     queue_max_size_low: int = 50
     # 在线请求降级阈值：当 high 队列堆积超过阈值时，在线路径直接降级/拒绝
     queue_degrade_high_threshold: int = 10
+    # 持久化队列：租约/心跳/回收
+    queue_worker_lease_seconds: int = 120
+    queue_worker_heartbeat_seconds: int = 15
+    queue_running_timeout_seconds: int = 300
+    queue_queued_timeout_seconds: int = 7200
+    queue_task_max_attempts: int = 3
+    queue_retry_backoff_seconds: int = 30
 
     # GPU/推理资源并发（用于本机 Ollama、向量嵌入等需要“重资源”的调用）
     gpu_max_concurrency: int = 1
@@ -71,11 +84,20 @@ class Settings(BaseSettings):
     docling_mode: str = "local"
     docling_http_base_url: Optional[str] = None
     docling_http_timeout_s: int = 600
+    docling_http_connect_timeout_s: int = 10
+    docling_http_read_timeout_s: int = 600
+    docling_http_write_timeout_s: int = 60
+    docling_http_pool_timeout_s: int = 30
+    docling_http_max_retries: int = 2
+    docling_http_retry_backoff_s: float = 1.5
+    # 上游地址保护：默认阻断“开发机误连生产 AI 服务”
+    ai_upstream_block_remote: bool = True
+    ai_upstream_allowed_hosts: str = "localhost,127.0.0.1,::1,ollama,docling,host.docker.internal"
 
-    class Config:
-        env_file = [".env", "../.env"]
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    # DB 迁移模式：
+    # - legacy：启动时自动建表/补列（现状）
+    # - alembic：schema 由 alembic 显式迁移管理（生产推荐）
+    db_migration_mode: str = "legacy"
 
 
 settings = Settings()

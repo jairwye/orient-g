@@ -65,13 +65,12 @@ export default function TargetsPage() {
     };
   }, [snapshotName]);
 
-  const items = data?.items || [];
-
   const filtered = useMemo(() => {
+    const items = data?.items || [];
     const qq = q.trim();
     if (!qq) return items;
     return items.filter((x) => x.name.includes(qq) || (x.credit_code || "").includes(qq) || (x.alias || "").includes(qq));
-  }, [items, q]);
+  }, [data?.items, q]);
 
   return (
     <div className="p-6 md:p-8">

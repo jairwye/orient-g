@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ClipboardList, FileText, LayoutGrid } from "lucide-react";
+import { KbInProgressBanner } from "../components/KbInProgressBanner";
 
 const tools = [
   {
@@ -28,6 +29,9 @@ export default function UtilsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">实用工具</h1>
         <p className="mt-1 text-sm text-zinc-500">流程文档、PDF 知识库、Excel 看板等实用 AI 工具入口。</p>
+      </div>
+      <div className="mb-4 max-w-3xl">
+        <KbInProgressBanner />
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {tools.map(({ href, label, description, icon: Icon }) => (

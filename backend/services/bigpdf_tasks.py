@@ -136,87 +136,77 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str) -> No
         update_task(tenant_id, task_id, status="failed", stage="failed", progress=100, detail="找不到任务原始文件")
         return
 
+    update_task(tenant_id, task_id, status="running", stage="parsing", progress=stage_to_progress("parsing"))
+    archive_dir = root / "archive"
+    res = convert_to_md_and_json(raw_path, output_dir=archive_dir)
+    full_md = archive_dir / "full.md"
+    full_json = archive_dir / "full.json"
+    if res.markdown_path != full_md:
+        if full_md.exists():
+            full_md.unlink(missing_ok=True)
+        shutil.move(str(res.markdown_path), str(full_md))
+    if res.json_path != full_json:
+        if full_json.exists():
+            full_json.unlink(missing_ok=True)
+        shutil.move(str(res.json_path), str(full_json))
+
+    update_task(tenant_id, task_id, status="running", stage="packaging", progress=stage_to_progress("packaging"))
+
+    kb_dir = root / "kb"
+    sections_dir = kb_dir / "sections"
+    sections_dir.mkdir(parents=True, exist_ok=True)
+    md_text = full_md.read_text(encoding="utf-8", errors="replace")
+    sections = _split_markdown_to_sections(md_text)
+    section_items: list[dict[str, Any]] = []
+    for idx, sec in enumerate(sections, start=1):
+        sid = f"s{idx:04d}"
+        fn = f"{sid}.md"
+        _write_text(sections_dir / fn, sec.get("text") or "")
+        section_items.append({"section_id": sid, "filename": fn, "title": sec.get("title") or sid})
+
+    package_id = f"rp_{uuid.uuid4().hex}"
+    # 2.c 约定：对外产物 manifest 至少包含 doc_id/doc_version/tenant_id/user_id/source_hash/parser_version/section_count
+    # 这里没有单独的 user-doc_id 概念，使用 package_id 作为 doc_id（稳定唯一），并保留 task_id 便于追溯。
+    source_hash = ""
     try:
-        update_task(tenant_id, task_id, status="running", stage="parsing", progress=stage_to_progress("parsing"))
-        archive_dir = root / "archive"
-        res = convert_to_md_and_json(raw_path, output_dir=archive_dir)
-        full_md = archive_dir / "full.md"
-        full_json = archive_dir / "full.json"
-        if res.markdown_path != full_md:
-            if full_md.exists():
-                full_md.unlink(missing_ok=True)
-            shutil.move(str(res.markdown_path), str(full_md))
-        if res.json_path != full_json:
-            if full_json.exists():
-                full_json.unlink(missing_ok=True)
-            shutil.move(str(res.json_path), str(full_json))
-
-        update_task(tenant_id, task_id, stage="packaging", progress=stage_to_progress("packaging"))
-
-        kb_dir = root / "kb"
-        sections_dir = kb_dir / "sections"
-        sections_dir.mkdir(parents=True, exist_ok=True)
-        md_text = full_md.read_text(encoding="utf-8", errors="replace")
-        sections = _split_markdown_to_sections(md_text)
-        section_items: list[dict[str, Any]] = []
-        for idx, sec in enumerate(sections, start=1):
-            sid = f"s{idx:04d}"
-            fn = f"{sid}.md"
-            _write_text(sections_dir / fn, sec.get("text") or "")
-            section_items.append({"section_id": sid, "filename": fn, "title": sec.get("title") or sid})
-
-        package_id = f"rp_{uuid.uuid4().hex}"
-        # 2.c 约定：对外产物 manifest 至少包含 doc_id/doc_version/tenant_id/user_id/source_hash/parser_version/section_count
-        # 这里没有单独的 user-doc_id 概念，使用 package_id 作为 doc_id（稳定唯一），并保留 task_id 便于追溯。
+        source_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+    except Exception:
         source_hash = ""
-        try:
-            source_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
-        except Exception:
-            source_hash = ""
-        manifest = {
-            "doc_id": package_id,
-            "doc_version": 1,
-            "package_id": package_id,
-            "task_id": task_id,
-            "tenant_id": tenant_id,
-            "user_id": owner_username,
-            "source_hash": source_hash,
-            "created_at": _now_iso(),
-            "parser_version": res.docling_version or "docling",
-            "section_count": len(section_items),
-            "archive": {"full_md": "archive/full.md", "full_json": "archive/full.json"},
-            "sections": section_items,
-        }
-        _write_json(kb_dir / "manifest.json", manifest)
+    manifest = {
+        "doc_id": package_id,
+        "doc_version": 1,
+        "package_id": package_id,
+        "task_id": task_id,
+        "tenant_id": tenant_id,
+        "user_id": owner_username,
+        "source_hash": source_hash,
+        "created_at": _now_iso(),
+        "parser_version": res.docling_version or "docling",
+        "section_count": len(section_items),
+        "archive": {"full_md": "archive/full.md", "full_json": "archive/full.json"},
+        "sections": section_items,
+    }
+    _write_json(kb_dir / "manifest.json", manifest)
 
-        # storage_path：记录相对 uploads 的路径
-        storage_rel = str(root.relative_to(Path(settings.upload_dir).resolve())).replace("\\", "/")
-        _insert_rag_package(
-            tenant_id,
-            package_id=package_id,
-            name=f"大文档包-{package_id[-6:]}",
-            manifest=manifest,
-            storage_path=storage_rel,
-            owner_username=owner_username,
-            created_by_task_id=task_id,
-        )
+    # storage_path：记录相对 uploads 的路径
+    storage_rel = str(root.relative_to(Path(settings.upload_dir).resolve())).replace("\\", "/")
+    _insert_rag_package(
+        tenant_id,
+        package_id=package_id,
+        name=f"大文档包-{package_id[-6:]}",
+        manifest=manifest,
+        storage_path=storage_rel,
+        owner_username=owner_username,
+        created_by_task_id=task_id,
+    )
 
-        update_task(
-            tenant_id,
-            task_id,
-            status="done",
-            stage="done",
-            progress=100,
-            result_package_id=package_id,
-            detail=None,
-        )
-    except Exception as e:
-        update_task(
-            tenant_id,
-            task_id,
-            status="failed",
-            stage="failed",
-            progress=100,
-            detail=str(e),
-        )
+    update_task(
+        tenant_id,
+        task_id,
+        status="running",
+        stage="packaging",
+        progress=95,
+        result_package_id=package_id,
+        detail=None,
+    )
 

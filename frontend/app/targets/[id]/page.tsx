@@ -13,7 +13,7 @@ type GraphNode = {
   name: string;
   entity_type: string;
   credit_code?: string | null;
-  tags?: Record<string, any>;
+  tags?: Record<string, unknown>;
   geo?: { province?: string | null; city?: string | null; reg_location?: string | null };
   industry?: string | null;
 };
@@ -48,7 +48,7 @@ type TargetListItem = { entity_id: string; name: string; is_key: boolean };
 function mergePanoramaFromOwnership(up: GraphResponse, down: GraphResponse): PanoramaResponse {
   const nodesById = new Map<string, GraphNode>();
   for (const n of down.nodes || []) nodesById.set(n.id, n);
-  for (const n of up.nodes || []) nodesById.set(n.id, { ...(nodesById.get(n.id) as any), ...n });
+  for (const n of up.nodes || []) nodesById.set(n.id, { ...(nodesById.get(n.id) as GraphNode | undefined), ...n });
 
   const edgesById = new Map<string, GraphEdge>();
   for (const e of down.edges || []) edgesById.set(e.id, e);
@@ -81,7 +81,7 @@ export default function TargetDetailPage() {
   const entityId = String(params?.id || "");
   const fromQs = search.get("snapshot_name")?.trim() ?? "";
   const { snapshotName, setSnapshotName } = useEquitySnapshotName(fromQs);
-  const [direction, setDirection] = useState<"up" | "down">((search.get("direction") as any) === "up" ? "up" : "down");
+  const [direction, setDirection] = useState<"up" | "down">(search.get("direction") === "up" ? "up" : "down");
   // UI 收敛：不再展示/可配这些参数，但仍允许 URL 透传以兼容旧链接
   const minPct = Number(search.get("min_pct") || 0);
   const maxDepth = Number(search.get("max_depth") || 10);
@@ -103,6 +103,9 @@ export default function TargetDetailPage() {
     u.set("max_nodes", String(maxNodes));
     return u.toString();
   }, [snapshotName, entityId, direction, minPct, maxDepth, maxNodes]);
+
+  const tagsObj = (x: unknown): Record<string, unknown> | null =>
+    x && typeof x === "object" ? (x as Record<string, unknown>) : null;
 
   useEffect(() => {
     if (!snapshotName.trim()) {
@@ -163,7 +166,7 @@ export default function TargetDetailPage() {
           } else {
             throw new Error(await rp.text());
           }
-        } catch (e) {
+        } catch {
           // fallback: fetch both directions and merge on client
           const mk = (direction: "up" | "down") => {
             const u = new URLSearchParams();
@@ -196,9 +199,10 @@ export default function TargetDetailPage() {
         if (!r.ok) throw new Error(await r.text());
         const d = (await r.json()) as GraphResponse;
         if (!cancelled) setData(d);
-      } catch (e: any) {
+      } catch (e) {
         if (!cancelled) {
-          setError(String(e?.message || e));
+          const msg = e instanceof Error ? e.message : String(e);
+          setError(msg);
           setData(null);
           setPanorama(null);
         }
@@ -210,76 +214,7 @@ export default function TargetDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [entityId, qs, snapshotName, entityId, minPct, maxDepth, maxNodes]);
-
-  function buildFocusedSubgraph(p: PanoramaResponse, centerId: string) {
-    const nodes = p.nodes || [];
-    const edges = p.edges || [];
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    const isTarget = (n: GraphNode | undefined) => Boolean((n?.tags as any)?.is_target) || Boolean((n?.tags as any)?.is_key_target);
-    const targetIds = nodes.filter((n) => isTarget(n)).map((n) => n.id);
-    if (!targetIds.length) return { nodes, edges };
-
-    // undirected adjacency (to find any shortest connection)
-    const adj = new Map<string, string[]>();
-    const pushAdj = (a: string, b: string) => {
-      const arr = adj.get(a) || [];
-      arr.push(b);
-      adj.set(a, arr);
-    };
-    for (const e of edges) {
-      pushAdj(e.from, e.to);
-      pushAdj(e.to, e.from);
-    }
-
-    // BFS from center; keep prev to reconstruct paths to targets
-    const prev = new Map<string, string>();
-    const depth = new Map<string, number>();
-    const q: string[] = [];
-    q.push(centerId);
-    depth.set(centerId, 0);
-    let qi = 0;
-    const MAX_BFS = 12000;
-    while (qi < q.length && q.length < MAX_BFS) {
-      const cur = q[qi++];
-      const d = depth.get(cur) || 0;
-      if (d >= 12) continue;
-      for (const nb of adj.get(cur) || []) {
-        if (depth.has(nb)) continue;
-        depth.set(nb, d + 1);
-        prev.set(nb, cur);
-        q.push(nb);
-      }
-    }
-
-    const keep = new Set<string>();
-    keep.add(centerId);
-    // reconstruct path for each target reachable
-    for (const tid of targetIds) {
-      if (!depth.has(tid)) continue;
-      let cur: string | undefined = tid;
-      let steps = 0;
-      while (cur && steps++ < 50) {
-        keep.add(cur);
-        if (cur === centerId) break;
-        cur = prev.get(cur);
-      }
-    }
-    // add 1-hop neighbors around kept nodes for context (bounded)
-    const extraLimit = 1600;
-    for (const id of Array.from(keep)) {
-      for (const nb of adj.get(id) || []) {
-        keep.add(nb);
-        if (keep.size >= extraLimit) break;
-      }
-      if (keep.size >= extraLimit) break;
-    }
-
-    const nodes2 = nodes.filter((n) => keep.has(n.id));
-    const keepSet = new Set(nodes2.map((n) => n.id));
-    const edges2 = edges.filter((e) => keepSet.has(e.from) && keepSet.has(e.to));
-    return { nodes: nodes2, edges: edges2 };
-  }
+  }, [entityId, qs, snapshotName, minPct, maxDepth, maxNodes]);
 
   const panoramaChart = useMemo(() => {
     if (!panorama) return "";
@@ -297,8 +232,9 @@ export default function TargetDetailPage() {
       let geo = "";
       if (g?.city) geo = g.province ? `${g.city}（${g.province}）` : g.city;
       else if (g?.province) geo = g.province;
-      const isKey = Boolean((n.tags as any)?.is_key_target);
-      const isTarget = Boolean((n.tags as any)?.is_target);
+      const t = tagsObj(n.tags);
+      const isKey = Boolean(t?.is_key_target);
+      const isTarget = Boolean(t?.is_target);
       const prefix = isKey ? "【标的★】" : isTarget ? "【标的】" : "";
       return `${prefix}${n.name}${geo ? `（${geo}）` : ""}`;
     };
@@ -307,8 +243,9 @@ export default function TargetDetailPage() {
     for (const n of nodes.slice(0, 1100)) {
       // mermaid id 不能含特殊字符
       const id = `N_${n.id.replaceAll("-", "_")}`;
-      const isKey = Boolean((n.tags as any)?.is_key_target);
-      const isTarget = Boolean((n.tags as any)?.is_target);
+      const t = tagsObj(n.tags);
+      const isKey = Boolean(t?.is_key_target);
+      const isTarget = Boolean(t?.is_target);
       const shape = isKey ? "{{" : isTarget ? "([" : "[";
       const close = isKey ? "}}" : isTarget ? "])" : "]";
       lines.push(`${id}${shape}\"${safe(labelOf(n))}\"${close}`);

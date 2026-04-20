@@ -43,6 +43,7 @@ copy .env.example .env
 2. 编辑 `.env`：
    - `DATABASE_URL`：指向本机 PostgreSQL（如 `postgresql://user:pass@localhost:5432/mgmt_web`）
    - `UPLOAD_DIR`：本地上传目录（如 `./uploads`），该目录已加入 `.gitignore`；财务后台路径、登录用户名等应用设置保存在该目录下的 `app_settings.json`，请勿删除
+   - `DB_MIGRATION_MODE`：数据库结构迁移模式。`legacy`=启动自动建表（默认）；`alembic`=由 Alembic 显式迁移管理（生产推荐）
 3. 在 PostgreSQL 中创建数据库（若尚未创建）：
    ```sql
    CREATE DATABASE mgmt_web;
@@ -60,6 +61,107 @@ copy .env.example .env
    ```
 3. 启动前端（新开终端）：`cd frontend; npm run dev`（Node 已通过一键安装全局安装）
 4. 浏览器访问前端提示的地址（如 `http://localhost:3000`）。
+
+## 代码质量与验证（推荐开发习惯）
+
+在 `frontend/` 下：
+
+- **CI/合并门槛（严格）**：`npm run lint`（等价于 `npm run lint:strict`，要求 0 warnings）
+- **开发快速检查**：`npm run lint:fast`
+- **质量巡检（不阻断 CI）**：`npm run lint:quality`
+  - 本仓库采用“档 2”策略：`lint:quality` 会对 `@typescript-eslint/no-explicit-any` 给出 **warning**。
+  - **新增代码禁止引入 `any`**：优先用 `unknown` + 类型守卫/窄化替代，存量逐步清理。
+
+在仓库根目录：
+
+- **后端测试**：`python -m pytest -q`
+
+## 数据库结构迁移（Alembic，生产推荐）
+
+本仓库已引入 Alembic 用于**只迁移数据库结构（schema）**。建议生产环境使用：
+
+### 总体流程（先备份，再迁移）
+
+1. **备份数据库**（备份方式二选一：方案 1 / 方案 2；两种都做更稳）。
+2. **设置迁移模式**：`DB_MIGRATION_MODE=alembic`（避免应用启动时隐式建表/补列）。
+3. **执行 Alembic 迁移**（执行方式二选一：A / B）。
+4. **重启与验证**：重启 `backend` 后访问 `/api/health`，并抽查关键页面/接口。
+
+> 说明：这里的 **方案 1/2** 只是在讲“如何备份”；**A/B** 只是在讲“在哪里执行 alembic 命令”。二者可以组合，不是四选一。
+
+### Step 1：生产备份怎么做（备份方式二选一）
+
+#### 方案 1：`pg_dump`（推荐，可移植、可回滚）
+
+本仓库 `docker-compose.yml` 里的数据库服务名是 `db`，并且使用以下环境变量：
+`POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB`。
+
+在 **compose 同目录** 执行（会在宿主机当前目录生成备份文件）：
+
+```bash
+# 生成带时间戳的备份文件（自定义路径即可）
+BK="backup_$(date +%Y%m%d_%H%M%S).dump"
+
+# 以自定义格式备份（推荐：体积更小、恢复更灵活）
+docker compose exec -T db pg_dump -U "${POSTGRES_USER:-mgmt}" -d "${POSTGRES_DB:-mgmt_web}" -Fc > "$BK"
+
+echo "备份完成：$BK"
+```
+
+恢复（回滚）示例：
+
+```bash
+# 1) 先停止 backend（避免写入）
+docker compose stop backend
+
+# 2) 如需“完全覆盖恢复”，建议先清空并重建 schema（谨慎！确认是要覆盖）
+docker compose exec -T db psql -U "${POSTGRES_USER:-mgmt}" -d "${POSTGRES_DB:-mgmt_web}" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+# 3) 用 pg_restore 恢复
+BK="backup_xxx.dump"  # 替换为你的备份文件
+cat "$BK" | docker compose exec -T db pg_restore -U "${POSTGRES_USER:-mgmt}" -d "${POSTGRES_DB:-mgmt_web}" --clean --if-exists
+
+# 4) 再启动 backend
+docker compose up -d backend
+```
+
+说明：
+- `-T`：避免 `docker compose exec` 分配伪终端，配合重定向更稳定。
+- `-Fc`：自定义格式（`pg_restore` 使用），更适合生产备份/恢复。
+
+#### 方案 2：volume snapshot（最快，但不可移植）
+
+如果你的 PostgreSQL 数据卷是 `pgdata`（compose 里就是这个名字），可以用 **宿主机/云盘/存储** 的快照能力做卷快照。
+这个方式恢复很快，但通常只能在同一套存储/同一台机器上恢复，不如 `pg_dump` 可移植。
+
+### Step 2：设置迁移模式（必做）
+
+在同目录 `.env` 或 Portainer 的环境变量里设置：
+
+- `DB_MIGRATION_MODE=alembic`
+
+### Step 3：执行迁移（执行方式二选一）
+
+#### A) Docker / Portainer（推荐）
+
+本仓库生产 `docker-compose.yml` 会把 `DATABASE_URL` 注入到 `backend` 容器（指向 `db:5432`）。因此直接在容器内执行：
+
+```bash
+docker compose exec backend alembic -c backend/alembic.ini upgrade head
+```
+
+迁移完成后再做 `docker compose up -d`（或重启 backend）即可。
+
+#### B) 本机虚拟环境（仅用于本地开发）
+
+在项目根目录执行迁移（使用与你本机后端相同的 `.env` / `DATABASE_URL`）：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+alembic -c backend\alembic.ini upgrade head
+```
+
+然后再启动/更新后端容器或服务。
 
 ## Windows 开发注意事项（含中文路径）
 
@@ -206,12 +308,24 @@ docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 - **开发机无 GPU、生产机有 GPU 且同一局域网**：可在开发环境 `.env` 中设置 `OLLAMA_URL=http://生产机内网IP:11434`，让开发环境复用生产机上的 Ollama（需生产机开放 11434 仅对内网或指定 IP）。这样开发时无需在本机跑 GPU，也不需在开发机做 GPU 相关测试。
 - **从 GitHub 克隆使用的用户**：可不配置 Ollama，直接使用非 AI 功能；若本机或局域网内有 Ollama 实例，在 `.env` 中设置 `OLLAMA_URL` 即可启用流程文档等 AI 功能。CI/自动化测试可不包含依赖 GPU 或 Ollama 的用例。
 
+## Docling 长任务与队列治理
+
+- 文档解析与大 PDF 任务已切换为**持久化队列**（`kb_tasks`），worker 重启后会自动续跑 `queued/running` 任务，不再依赖进程内内存队列。
+- 大 PDF 建议保留较大的 `DOCLING_HTTP_TIMEOUT_S`（例如 600~1800），避免 OCR 中途被误杀；同时配合租约心跳防止“长任务卡死”。
+- 推荐同时配置以下参数（见 `.env.example`）：
+  - `QUEUE_WORKER_LEASE_SECONDS`、`QUEUE_WORKER_HEARTBEAT_SECONDS`
+  - `QUEUE_RUNNING_TIMEOUT_SECONDS`、`QUEUE_QUEUED_TIMEOUT_SECONDS`
+  - `QUEUE_TASK_MAX_ATTEMPTS`、`QUEUE_RETRY_BACKOFF_SECONDS`
+  - `DOCLING_HTTP_CONNECT_TIMEOUT_S`、`DOCLING_HTTP_READ_TIMEOUT_S`、`DOCLING_HTTP_MAX_RETRIES`
+- 运行中可通过 `GET /api/queue/stats` 观察持久化队列状态（`persisted_tasks`）与当前 worker 执行情况。
+- 若上游 Docling 不可达，任务会按退避策略重试；超过重试上限后会进入 `failed`，前端可看到失败状态与错误摘要。
+
 ## 扩展与协同
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
 - 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`、`/knowledge`（知识库展位）、`/utils`（实用工具，含流程文档 `/utils/process-doc`、大 PDF 生知识库、「数据解析」等）。其中「数据解析」入口当前沿用路径 `/utils/excel-kanban`，目标是：用户上传电子表，通过 LLM + 工具（Prompt/MCP 风格工具/Skills 等）对表格数据进行解析，生成可视化看板、整理为更符合逻辑和条理的表格视图，并完成信息归纳、专业评价与风险识别。财务后台默认路径为 `/admin`，可在后台页面修改。
 - **股权全景（实验）**：`/equity` 及关联分析页用于内网导入后的公司股权架构与地理等可视化；**为临时增加能力，后续可能移除**，接口与页面行为以当前版本为准、不作为长期对外契约。
-- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.2.1**：含股权全景实验能力、部署与文档同步等见 CHANGELOG。
+- 项目更新记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **1.2.1.1**：股权全景实验能力、文档与规划修正等见 CHANGELOG。
 
 ## 知识库（权限/共享）验收说明
 
