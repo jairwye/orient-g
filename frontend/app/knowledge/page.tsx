@@ -1026,7 +1026,10 @@ export default function KnowledgePage() {
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => previewRagText(ragDetail.package_id, "merged")}
+                onClick={() => {
+                  if (!ragDetail.package_id) return;
+                  previewRagText(ragDetail.package_id, "merged");
+                }}
                 className="rounded border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
               >
                 预览 merged（archive/full.md）
@@ -1040,7 +1043,10 @@ export default function KnowledgePage() {
                     <button
                       key={s.filename}
                       type="button"
-                      onClick={() => previewRagText(ragDetail.package_id, "section", s.filename)}
+                      onClick={() => {
+                        if (!ragDetail.package_id) return;
+                        previewRagText(ragDetail.package_id, "section", s.filename);
+                      }}
                       className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs font-mono text-zinc-200 hover:bg-zinc-800"
                       title={`${s.filename} (${s.size_bytes ?? 0} bytes)`}
                     >
@@ -1050,10 +1056,10 @@ export default function KnowledgePage() {
                   {ragDetail.sections.length > 10 ? <span className="text-xs text-zinc-500">…</span> : null}
                 </div>
               ) : null}
-              {ragDetail?.created_by_task_id ? (
+              {typeof ragDetail?.created_by_task_id === "string" && ragDetail.created_by_task_id ? (
                 <button
                   type="button"
-                  onClick={() => retryBigPdfTask(ragDetail.created_by_task_id)}
+                  onClick={() => retryBigPdfTask(ragDetail.created_by_task_id as string)}
                   className="rounded border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
                 >
                   重试该任务
@@ -1061,12 +1067,12 @@ export default function KnowledgePage() {
               ) : null}
             </div>
 
-            {ragDetail?._preview?.text ? (
+            {typeof (ragDetail?._preview as any)?.text === "string" ? (
               <div className="mt-4 rounded border border-zinc-800 bg-zinc-950/40 p-3">
                 <div className="mb-2 flex items-center justify-between text-xs text-zinc-400">
                   <span>
-                    预览：{ragDetail._preview.filename}
-                    {ragDetail._preview.truncated ? "（已截断）" : ""}
+                    预览：{String((ragDetail?._preview as any)?.filename ?? "")}
+                    {(ragDetail?._preview as any)?.truncated ? "（已截断）" : ""}
                   </span>
                   <button
                     type="button"
@@ -1077,27 +1083,33 @@ export default function KnowledgePage() {
                   </button>
                 </div>
                 <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words text-xs text-zinc-200">
-                  {ragDetail._preview.text}
+                  {String((ragDetail?._preview as any)?.text ?? "")}
                 </pre>
               </div>
             ) : null}
 
             <div className="mt-4 rounded border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-400">
-              <div>产物路径（后端）：{ragDetail?.paths?.root}</div>
+              <div>产物路径（后端）：{String((ragDetail as any)?.paths?.root ?? "")}</div>
               <div>sections：{Array.isArray(ragDetail.sections) ? ragDetail.sections.length : 0}</div>
             </div>
 
             <div className="mt-4 flex flex-wrap justify-end gap-2">
               <button
                 type="button"
-                onClick={() => downloadRagExport(ragDetail.package_id, ragExportKind)}
+                onClick={() => {
+                  if (!ragDetail.package_id) return;
+                  downloadRagExport(ragDetail.package_id, ragExportKind);
+                }}
                 className="rounded border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
               >
                 下载
               </button>
               <button
                 type="button"
-                onClick={() => deleteRagPackage(ragDetail.package_id)}
+                onClick={() => {
+                  if (!ragDetail.package_id) return;
+                  deleteRagPackage(ragDetail.package_id);
+                }}
                 className="rounded border border-red-900/50 bg-red-900/20 px-3 py-2 text-sm text-red-300 hover:bg-red-900/40"
               >
                 删除整个资源包

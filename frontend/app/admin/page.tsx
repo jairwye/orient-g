@@ -57,6 +57,24 @@ function normalizeKbReadPolicy(p: unknown): Record<string, boolean> {
   return out;
 }
 
+function normalizeSpecialCollections(
+  raw: unknown
+): Array<{ collection_id: string; label: string; space_type?: string; name?: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Array<{ collection_id: string; label: string; space_type?: string; name?: string }> = [];
+  for (const it of raw) {
+    if (!it || typeof it !== "object") continue;
+    const o = it as Record<string, unknown>;
+    const collection_id = typeof o.collection_id === "string" ? o.collection_id : String(o.collection_id ?? "");
+    const label = typeof o.label === "string" ? o.label : String(o.label ?? "");
+    if (!collection_id || !label) continue;
+    const space_type = typeof o.space_type === "string" ? o.space_type : undefined;
+    const name = typeof o.name === "string" ? o.name : undefined;
+    out.push({ collection_id, label, space_type, name });
+  }
+  return out.length ? out : undefined;
+}
+
 function deriveEffectiveReadFromShareScope(doc: { share_scope?: { kinds?: string[] } }): Record<string, boolean> {
   const kinds = new Set((doc.share_scope?.kinds ?? []).map(String));
   const out: Record<string, boolean> = {};
@@ -226,7 +244,7 @@ export default function AdminPage() {
             special_collection_ids: Array.isArray(x.special_collection_ids)
               ? (x.special_collection_ids as string[]).map(String)
               : [],
-            special_collections: Array.isArray(x.special_collections) ? (x.special_collections as Array<Record<string, unknown>>) : undefined,
+            special_collections: normalizeSpecialCollections(x.special_collections),
             acl: normalizeKbReadPolicy(x.acl),
             share_scope: x.share_scope ? (x.share_scope as Record<string, unknown>) : undefined,
           }))
@@ -260,7 +278,7 @@ export default function AdminPage() {
           special_collection_ids: Array.isArray(x.special_collection_ids)
             ? (x.special_collection_ids as string[]).map(String)
             : [],
-          special_collections: Array.isArray(x.special_collections) ? (x.special_collections as Array<Record<string, unknown>>) : undefined,
+          special_collections: normalizeSpecialCollections(x.special_collections),
           acl: normalizeKbReadPolicy(x.acl),
           share_scope: x.share_scope ? (x.share_scope as Record<string, unknown>) : undefined,
         }))
@@ -406,14 +424,14 @@ export default function AdminPage() {
           const o = x as { effect?: unknown; resource_type?: unknown; resource_id?: unknown };
           return o.effect === "allow" && o.resource_type === "collection" && typeof o.resource_id === "string";
         })
-        .map((x) => (x as { resource_id: string }).resource_id);
+        .map((x: unknown) => (x as { resource_id: string }).resource_id);
       const writeAllow = (writeData.overrides || [])
         .filter((x: unknown) => {
           if (!x || typeof x !== "object") return false;
           const o = x as { effect?: unknown; collection_id?: unknown };
           return o.effect === "allow" && typeof o.collection_id === "string";
         })
-        .map((x) => (x as { collection_id: string }).collection_id);
+        .map((x: unknown) => (x as { collection_id: string }).collection_id);
 
       setKbPermReadAllow(Array.from(new Set([...(defaultRead || []), ...(readAllow || [])])));
       setKbPermWriteAllow(Array.from(new Set([...(defaultWrite || []), ...(writeAllow || [])])));
