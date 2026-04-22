@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     queue_queued_timeout_seconds: int = 7200
     queue_task_max_attempts: int = 3
     queue_retry_backoff_seconds: int = 30
+    queue_retry_backoff_max_seconds: int = 900
+    queue_worker_idle_min_s: float = 0.2
+    queue_worker_idle_max_s: float = 5.0
+    queue_worker_idle_backoff: bool = True
 
     # GPU/推理资源并发（用于本机 Ollama、向量嵌入等需要“重资源”的调用）
     gpu_max_concurrency: int = 1

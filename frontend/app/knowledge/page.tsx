@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
 import { KbInProgressBanner } from "../components/KbInProgressBanner";
 import { buildAiInteractionHref, writeKbScopeCapsule } from "../lib/kb_scope_capsule";
+import { useSmartPoll } from "../lib/smartPoll";
 
 type MyDoc = {
   doc_id: string;
@@ -170,6 +171,34 @@ export default function KnowledgePage() {
   const [folderLoading, setFolderLoading] = useState(false);
   const [folderUploadBusy, setFolderUploadBusy] = useState(false);
   const folderFileInputRef = useRef<HTMLInputElement>(null);
+  const [isPageVisible, setIsPageVisible] = useState(true);
+
+  useEffect(() => {
+    const update = () => setIsPageVisible(document.visibilityState === "visible");
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  const docIsRunning = useCallback((d: { status?: string }) => {
+    const s = (d.status || "").toLowerCase();
+    return ["queued", "parsing", "parsed", "packaged"].includes(s);
+  }, []);
+
+  const folderHasRunningDocs = useMemo(() => {
+    if (!folderDetail?.docs?.length) return false;
+    return folderDetail.docs.some((d) => docIsRunning(d));
+  }, [docIsRunning, folderDetail?.docs]);
+
+  const fetchFolderDetail = useCallback(async (folderId: string): Promise<FolderResourcesResponse> => {
+    const res = await fetch(`/api/knowledge/folders/${encodeURIComponent(folderId)}/resources`, {
+      credentials: "include",
+      headers: getAuthHeaders(),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<FolderResourcesResponse> & { detail?: string };
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "加载失败");
+    return data as FolderResourcesResponse;
+  }, []);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -227,13 +256,8 @@ export default function KnowledgePage() {
       if (!folderId) return;
       setFolderLoading(true);
       try {
-        const res = await fetch(`/api/knowledge/folders/${encodeURIComponent(folderId)}/resources`, {
-          credentials: "include",
-          headers: getAuthHeaders(),
-        });
-        const data = (await res.json().catch(() => ({}))) as Partial<FolderResourcesResponse> & { detail?: string };
-        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "加载失败");
-        setFolderDetail(data as FolderResourcesResponse);
+        const data = await fetchFolderDetail(folderId);
+        setFolderDetail(data);
       } catch (e) {
         setFolderDetail(null);
         setMsg({ type: "error", text: e instanceof Error ? e.message : "加载失败" });
@@ -241,7 +265,7 @@ export default function KnowledgePage() {
         setFolderLoading(false);
       }
     },
-    [setFolderDetail]
+    [fetchFolderDetail]
   );
 
   const openRagDetail = async (pkg: RagPackage) => {
@@ -352,15 +376,24 @@ export default function KnowledgePage() {
     if (activeFolderId) loadFolderDetail(activeFolderId);
   }, [activeFolderId, loadFolderDetail]);
 
-  useEffect(() => {
-    if (!activeFolderId || !folderDetail?.docs?.length) return;
-    const hasRunning = folderDetail.docs.some((d) => ["queued", "parsing", "parsed", "packaged"].includes((d.status || "").toLowerCase()));
-    if (!hasRunning) return;
-    const timer = setInterval(() => {
-      loadFolderDetail(activeFolderId);
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [activeFolderId, folderDetail, loadFolderDetail]);
+  useSmartPoll<FolderResourcesResponse>({
+    enabled: isPageVisible && Boolean(activeFolderId) && folderHasRunningDocs,
+    load: async () => {
+      const fid = activeFolderId;
+      if (!fid) throw new Error("missing folder id");
+      const data = await fetchFolderDetail(fid);
+      setFolderDetail(data);
+      return data;
+    },
+    isTerminal: (data) => !data.docs.some((d) => docIsRunning(d)),
+    isActive: (data) => data.docs.some((d) => docIsRunning(d)),
+    activeMs: 5000,
+    stableMs: 30000,
+    errorMaxMs: 60000,
+    errorCooldownAfter: 3,
+    errorCooldownMs: 120000,
+    initialData: folderDetail ?? undefined,
+  });
 
   const departmentChoices = useMemo(() => {
     const s = new Set<string>();

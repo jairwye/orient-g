@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../../lib/auth";
 import { buildAiInteractionHref, buildKnowledgeHref } from "../../lib/kb_scope_capsule";
+import { useSmartPoll } from "../../lib/smartPoll";
 
 type BigPdfTask = {
   task_id: string;
@@ -21,7 +22,9 @@ export default function PdfKnowledgePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ type: "info" | "success" | "error"; text: string } | null>(null);
-  const [task, setTask] = useState<BigPdfTask | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(true);
+  const queryTaskId = useMemo(() => (sp.get("task_id") || "").trim(), [sp]);
+  const shownQueryInfoMsgRef = useRef(false);
 
   const info = useMemo(() => {
     const from = sp.get("from") || "";
@@ -34,54 +37,49 @@ export default function PdfKnowledgePage() {
   }, [sp]);
 
   useEffect(() => {
-    const rawTaskId = sp.get("task_id");
-    if (!rawTaskId) return;
-    // 嵌套 async 闭包内 TS 不会保留对 sp.get 结果的收窄，单独绑定为 string 避免 encodeURIComponent 报 null
-    const taskIdFromQuery: string = rawTaskId;
-    let stop = false;
-    async function loadOnce() {
-      try {
-        const res = await fetch(`/api/knowledge/bigpdf/tasks/${encodeURIComponent(taskIdFromQuery)}`, {
-          credentials: "include",
-          headers: getAuthHeaders(),
-        });
-        const data = (await res.json().catch(() => ({}))) as BigPdfTask;
-        if (!stop && res.ok && data?.task_id) {
-          setTask(data);
-          setMsg({ type: "info", text: "已加载任务进度（来自跳转参数）。" });
-        }
-      } catch {
-        // ignore
-      }
-    }
-    loadOnce();
-    return () => {
-      stop = true;
-    };
-  }, [sp]);
+    const update = () => setIsPageVisible(document.visibilityState !== "hidden");
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  const taskId = queryTaskId;
+  const {
+    data: task,
+    setData: setTask,
+  } = useSmartPoll<BigPdfTask>({
+    enabled: isPageVisible && Boolean(taskId),
+    load: async () => {
+      const res = await fetch(`/api/knowledge/bigpdf/tasks/${encodeURIComponent(taskId)}`, {
+        credentials: "include",
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) throw new Error("任务查询失败");
+      const data = (await res.json().catch(() => ({}))) as BigPdfTask;
+      if (!data?.task_id) throw new Error("任务查询返回无效");
+      return data;
+    },
+    isTerminal: (data) => data.status === "done" || data.status === "failed",
+    isActive: (data) => {
+      if (data.status === "done" || data.status === "failed") return false;
+      const stage = (data.stage || "").toLowerCase();
+      if (!stage) return true;
+      return !["queued", "queue", "waiting", "pending"].includes(stage);
+    },
+    activeMs: 2500,
+    stableMs: 20000,
+    errorMaxMs: 60000,
+    errorCooldownAfter: 3,
+    errorCooldownMs: 120000,
+  });
 
   useEffect(() => {
-    let stop = false;
-    async function poll() {
-      if (!task?.task_id) return;
-      if (task.status === "done" || task.status === "failed") return;
-      try {
-        const res = await fetch(`/api/knowledge/bigpdf/tasks/${encodeURIComponent(task.task_id)}`, {
-          credentials: "include",
-          headers: getAuthHeaders(),
-        });
-        const data = (await res.json().catch(() => ({}))) as BigPdfTask;
-        if (!stop && res.ok && data?.task_id) setTask(data);
-      } catch {
-        // ignore
-      }
-    }
-    const t = setInterval(poll, 1200);
-    return () => {
-      stop = true;
-      clearInterval(t);
-    };
-  }, [task?.task_id, task?.status]);
+    if (!queryTaskId) return;
+    if (!task?.task_id) return;
+    if (shownQueryInfoMsgRef.current) return;
+    shownQueryInfoMsgRef.current = true;
+    setMsg({ type: "info", text: "已加载任务进度（来自跳转参数）。" });
+  }, [queryTaskId, task?.task_id]);
 
   const handleUpload = async (f: File) => {
     setBusy(true);

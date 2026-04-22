@@ -320,6 +320,21 @@ docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 - 运行中可通过 `GET /api/queue/stats` 观察持久化队列状态（`persisted_tasks`）与当前 worker 执行情况。
 - 若上游 Docling 不可达，任务会按退避策略重试；超过重试上限后会进入 `failed`，前端可看到失败状态与错误摘要。
 
+## 资源治理（Resource governance）与智能轮询
+
+为避免“长任务 + 多开标签页”导致后端被轮询打爆，前端对任务/资源状态采用**智能轮询**策略：
+
+- **无活跃自动停止**：当任务/文档已进入终态（`done/failed`，或列表中不再存在活跃项）后停止轮询。
+- **标签页不可见停止**：当浏览器标签页隐藏（`document.visibilityState !== "visible"`）时暂停轮询，恢复可见后再继续。
+- **错误退避与冷却**：请求失败会指数退避；连续错误达到阈值后进入 cooldown（冷却期内不再请求一段时间）。
+
+可通过 `.env` 调整相关参数（见 `.env.example` 的 `NEXT_PUBLIC_POLL_*`、以及后端 `QUEUE_WORKER_IDLE_*` / `QUEUE_RETRY_BACKOFF_MAX_SECONDS`）。
+
+### 排查轮询/资源状态
+
+- **看 Network**：浏览器 DevTools → Network，检查是否仍在请求相关接口、是否出现 429/5xx、以及响应体 `detail`。
+- **看队列快照**：访问 `GET /api/queue/stats`，确认 `persisted_tasks`、running/queued 数量与 worker 心跳是否符合预期。
+
 ## 扩展与协同
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。

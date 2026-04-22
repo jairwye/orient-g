@@ -326,6 +326,7 @@ def _run_next_persisted() -> bool:
     except Exception as e:
         bo = max(1, int(settings.queue_retry_backoff_seconds))
         bo = bo * max(1, int(task.get("attempts") or 1))
+        bo = min(max(1, int(getattr(settings, "queue_retry_backoff_max_seconds", 900))), max(1, int(bo)))
         action = kb_tasks.fail_or_retry_task(
             tenant_id,
             task_id,
@@ -396,13 +397,23 @@ def start_worker(poll_interval_s: float = 0.2) -> None:
     _poll_interval_s = float(poll_interval_s or 0.2)
 
     def _loop() -> None:
+        idle_min_s = max(0.0, float(getattr(settings, "queue_worker_idle_min_s", _poll_interval_s) or 0.0))
+        idle_max_s = max(idle_min_s, float(getattr(settings, "queue_worker_idle_max_s", 5.0) or 5.0))
+        idle_backoff = bool(getattr(settings, "queue_worker_idle_backoff", True))
+        idle_sleep_s = idle_min_s
         while not _stop_event.is_set():
             try:
                 did = run_next()
             except Exception:
                 did = False
-            if not did:
-                time.sleep(_poll_interval_s)
+            if did:
+                idle_sleep_s = idle_min_s
+                continue
+            if not idle_backoff:
+                time.sleep(idle_min_s)
+                continue
+            time.sleep(idle_sleep_s)
+            idle_sleep_s = min(idle_max_s, max(idle_min_s, idle_sleep_s * 2.0))
 
     _worker_thread = threading.Thread(target=_loop, name="task-queue-worker", daemon=True)
     _worker_thread.start()

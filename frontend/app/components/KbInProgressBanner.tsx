@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getAuthHeaders } from "../lib/auth";
+import { useSmartPoll } from "../lib/smartPoll";
 
 type BigPdfTaskRow = {
   task_id: string;
@@ -12,37 +13,59 @@ type BigPdfTaskRow = {
   detail?: string | null;
 };
 
-function isActive(status?: string) {
+function rowIsActive(status?: string) {
   const s = (status || "").toLowerCase();
   return s !== "done" && s !== "failed";
 }
 
 export function KbInProgressBanner() {
-  const [items, setItems] = useState<BigPdfTaskRow[]>([]);
+  const [mounted, setMounted] = useState(false);
+  const [pageVisible, setPageVisible] = useState(true);
 
   useEffect(() => {
-    let stop = false;
-    async function load() {
-      try {
-        const res = await fetch("/api/knowledge/bigpdf/tasks?limit=12", {
-          credentials: "include",
-          headers: getAuthHeaders(),
-        });
-        const data = (await res.json().catch(() => ({}))) as { items?: BigPdfTaskRow[] };
-        if (!stop && res.ok && Array.isArray(data.items)) setItems(data.items);
-      } catch {
-        // ignore
-      }
-    }
-    load();
-    const t = setInterval(load, 5000);
-    return () => {
-      stop = true;
-      clearInterval(t);
-    };
+    setMounted(true);
+    return () => setMounted(false);
   }, []);
 
-  const active = items.filter((x) => isActive(x.status));
+  useEffect(() => {
+    const update = () => setPageVisible(document.visibilityState === "visible");
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  const enabled = mounted && pageVisible;
+
+  const load = useMemo(
+    () => async (): Promise<BigPdfTaskRow[]> => {
+      const res = await fetch("/api/knowledge/bigpdf/tasks?limit=12", {
+        credentials: "include",
+        headers: getAuthHeaders(),
+      });
+      const data = (await res.json().catch(() => ({}))) as { items?: BigPdfTaskRow[] };
+      if (!res.ok) throw new Error("kb tasks fetch failed");
+      if (!Array.isArray(data.items)) return [];
+      return data.items;
+    },
+    []
+  );
+
+  const { data } = useSmartPoll<BigPdfTaskRow[]>({
+    enabled,
+    load,
+    isActive: (rows) => rows.some((x) => rowIsActive(x.status)),
+    isTerminal: (rows) => !rows.some((x) => rowIsActive(x.status)),
+    activeMs: 5000,
+    stableMs: 30000,
+    errorMaxMs: 60000,
+    errorCooldownAfter: 3,
+    errorCooldownMs: 120000,
+    initialData: [],
+  });
+
+  const items = data ?? [];
+
+  const active = items.filter((x) => rowIsActive(x.status));
   if (!active.length) return null;
 
   return (
