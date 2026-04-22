@@ -46,6 +46,8 @@ docs/playwright-mcp-cursor.md
 docs/*openapi*.md
 docs/*天眼查*.md
 docs/*股权*.md
+docs/github-collab-sop.md
+docs/assets/github-*.png
 
 # 本地 IDE/MCP 状态（不入库）
 .cursor/
