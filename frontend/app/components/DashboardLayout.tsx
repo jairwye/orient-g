@@ -13,7 +13,6 @@ const baseNavItems = [
   { href: "/ai-interaction", label: "AI 互动", icon: MessageCircle },
   { href: "/policy-news", label: "新闻政策", icon: Newspaper },
   { href: "/exchange", label: "汇率趋势", icon: TrendingUp },
-  { href: "/knowledge", label: "知识库", icon: BookOpen },
   { href: "/contracts", label: "合同台账", icon: FileText },
   { href: "/equity", label: "股权全景", icon: Network },
   { href: "/utils", label: "实用工具", icon: Wrench },
