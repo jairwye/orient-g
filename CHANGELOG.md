@@ -29,6 +29,12 @@
 - 待更新计划：修正「已完成/待完成」标注与序号，统一从上到下重排（内部规划 `规划/待更新计划.md`，不入 GitHub）。
 - 股权全景（实验）：强调该能力为临时增加、后续可能移除（文档与版本说明同步）。
 
+### DB / Migrations
+
+- 新增 Alembic 迁移链（`backend/alembic/versions/`），用于落地「知识库文件夹 / 文件夹资源绑定 / 合同台账」等结构变更。
+  - **非破坏性**：仅新增表/索引与 `ADD COLUMN IF NOT EXISTS`（无 drop column、无类型强转、无唯一约束收紧）。
+  - 上线需执行：`alembic -c backend/alembic.ini upgrade head`。
+
 ### Docs
 
 - `README.md`：版本号更新至 1.2.1.1，并补充本次变更说明。
