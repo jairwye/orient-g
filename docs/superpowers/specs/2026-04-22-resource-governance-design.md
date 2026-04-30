@@ -48,8 +48,7 @@
 - `docker-compose.yml`
   - backend 健康检查（30s interval）
   - 容器 restart 策略
-- `scripts/caddy-health-recreate.sh`
-  - 可选健康检查脚本（必须保证低频、仅失败时触发恢复动作）
+  - （可选）健康检查可结合外部编排（如 systemd / cron）实现，但应保证低频、仅失败时触发恢复动作，避免引入新的持续性资源消耗
 
 ## 方案 A 总体设计
 

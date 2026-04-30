@@ -1,0 +1,2 @@
+# Linux 上 shebang 若带 CRLF 会变成 "bash\r"，systemd 执行会报 No such file or directory
+*.sh text eol=lf

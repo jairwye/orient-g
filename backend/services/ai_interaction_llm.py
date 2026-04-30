@@ -23,20 +23,25 @@ def generate_chat_reply(
     *,
     model: str,
     messages: list[dict[str, Any]],
+    skill_addon: str | None = None,
 ) -> str:
     """
     纯对话（不走证据、不返回 citations）。
     用于“用户未显式选择知识库范围”的场景，表现应接近普通 LLM。
+
+    skill_addon：由 backend/data/agent_skills/*/SKILL.md 拼接的 system 片段（仅已勾选且 manifest 登记的技能）。
     """
-    system = "\n".join(
-        [
-            "你是一个企业内网智能助手。",
-            "如果用户只是寒暄/闲聊，请自然回应并引导其提出具体问题。",
-            "如果用户提出事实性问题，但缺少上下文或数据来源，请先追问需要的关键信息。",
-            "除非用户明确要求，否则不要编造公司内部制度、流程、金额、日期等事实。",
-            "回答要简洁、友好、可执行。",
-        ]
-    )
+    parts = [
+        "你是一个企业内网智能助手。",
+        "如果用户只是寒暄/闲聊，请自然回应并引导其提出具体问题。",
+        "如果用户提出事实性问题，但缺少上下文或数据来源，请先追问需要的关键信息。",
+        "除非用户明确要求，否则不要编造公司内部制度、流程、金额、日期等事实。",
+        "回答要简洁、友好、可执行。",
+    ]
+    sa = (skill_addon or "").strip()
+    if sa:
+        parts.append(sa[:12000])
+    system = "\n".join(parts)
     msgs: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for m in messages or []:
         role = str(m.get("role") or "").strip()
@@ -133,10 +138,13 @@ def generate_answer_with_evidence(
     user_query: str,
     citations: list[dict[str, Any]],
     fixtures: dict[str, Any],
+    skill_addon: str | None = None,
 ) -> str:
     """
     用“证据片段 + 强约束提示词”生成答案。
     约束：只能根据证据回答；不确定就说不知道，并指出缺少什么证据。
+
+    skill_addon：已启用技能的 SKILL.md 拼接段；不得放宽「仅依据证据」要求，仅作口径与输出形态补充。
     """
     q = (user_query or "").strip()[:800]
     if not q:
@@ -173,14 +181,19 @@ def generate_answer_with_evidence(
             if row:
                 evidence_blocks.append(f"[table_row {table_id}#{row_key}] {json.dumps(row, ensure_ascii=False)}")
 
-    system = "\n".join(
-        [
-            "你是财务知识库问答助手。",
-            "你必须严格只根据给定的证据回答；禁止编造任何未出现在证据中的数值或条款。",
-            "如果证据不足以得出结论，请明确说明“不确定/缺少证据”，并指出需要什么证据。",
-            "回答要简洁、可执行；如涉及金额/日期/条款，优先引用证据中的原始字段或原句。",
-        ]
-    )
+    parts = [
+        "你是财务知识库问答助手。",
+        "你必须严格只根据给定的证据回答；禁止编造任何未出现在证据中的数值或条款。",
+        "如果证据不足以得出结论，请明确说明“不确定/缺少证据”，并指出需要什么证据。",
+        "回答要简洁、可执行；如涉及金额/日期/条款，优先引用证据中的原始字段或原句。",
+    ]
+    sa = (skill_addon or "").strip()
+    if sa:
+        parts.append(
+            "以下为本次对话已启用的技能文档（补充约束）。若与上文「仅依据证据」冲突，仍以证据为准，不得用技能文档编造证据中不存在的事实。"
+        )
+        parts.append(sa[:12000])
+    system = "\n".join(parts)
     evidence_text = "\n".join(evidence_blocks) if evidence_blocks else "(无证据片段)"
     user = f"问题：{q}\n\n证据：\n{evidence_text}\n\n请给出答案。"
 

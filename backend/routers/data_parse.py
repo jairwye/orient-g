@@ -10,7 +10,7 @@ import logging
 
 import jwt
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.config import settings
 from backend.services import data_parse_chat
@@ -27,7 +27,10 @@ ALGORITHM = "HS256"
 
 class ChatBody(BaseModel):
     session_id: str
+    extra_session_ids: list[str] | None = Field(default=None, description="可选：附加会话 ID（多 Excel 并存时使用）")
     message: str
+    enabled_skills: list[str] | None = Field(default=None, description="工作流传入：数据解析类技能（如 Playbook）")
+    prompt_addon: str | None = Field(default=None, description="工作流传入：prompt.* 勾选项拼接的 system 补充，服务端截断")
 
 
 def _get_token_from_request(request: Request) -> str | None:
@@ -152,7 +155,14 @@ def chat_endpoint(body: ChatBody):
     """自然语言问答；返回 reply、chart_spec、table_spec（可选）。"""
     if not settings.ollama_configured:
         raise HTTPException(status_code=503, detail="Ollama 未配置，请在 .env 中设置 OLLAMA_URL 后使用对话功能")
-    result = data_parse_chat.chat(body.session_id, body.message)
+    extra = [str(x).strip() for x in (body.extra_session_ids or []) if str(x).strip()]
+    session_ids = [str(body.session_id).strip(), *extra]
+    result = data_parse_chat.chat_multi(
+        session_ids,
+        body.message,
+        enabled_skills=body.enabled_skills,
+        prompt_addon=body.prompt_addon,
+    )
     return result
 
 

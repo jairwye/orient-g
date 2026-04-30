@@ -4,11 +4,13 @@ Knowledge：options/ask、用户上传文档、RAG 包列表。
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import jwt
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import bindparam, text
 
 from backend.config import settings
 from backend.services.kb_acl_store import get_all_resource_assignments
@@ -35,6 +37,7 @@ from backend.services.kb_vector_store import vector_enabled
 from backend.services.kb_tables import list_table_instances
 from fastapi.responses import Response
 from backend.services.kb_folders import (
+    add_resource_to_folder_extra,
     bind_resource_to_folder,
     create_folder,
     delete_folder,
@@ -45,6 +48,8 @@ from backend.services.kb_folders import (
     set_folder_collections,
     share_folder_to_kb_kind,
     share_folder_scope,
+    share_folder_add_scope,
+    unlink_doc_from_folder,
     unshare_folder_to_private,
     upsert_folder,
     backfill_uploaded_docs_to_private_folders,
@@ -54,6 +59,7 @@ router = APIRouter()
 ALGORITHM = "HS256"
 
 KB_KIND_CHOICES = [
+    "Private",
     "DeptPublic",
     "DeptLead",
     "ProjectPublic",
@@ -84,6 +90,44 @@ def _get_username_from_request(request: Request) -> str | None:
         return (payload.get("sub") or "").strip() or None
     except Exception:
         return None
+
+
+def _norm_folder_name(name: str) -> str:
+    # 名称冲突按“去首尾空白 + 压缩中间空白 + 小写”判定
+    return re.sub(r"\s+", " ", (name or "").strip()).lower()
+
+
+def _is_visible_folder_name_conflict(
+    *,
+    tenant_id: str,
+    username: str,
+    allowed_col_ids: set[str],
+    target_name: str,
+    exclude_folder_id: str | None = None,
+) -> bool:
+    """
+    可见范围同名冲突检测：
+    - 包含当前用户自己的私有 folder
+    - 包含通过 collection ACL 可见的共享 folder
+    """
+    tn = _norm_folder_name(target_name)
+    if not tn:
+        return False
+    ex = (exclude_folder_id or "").strip()
+    un = (username or "").strip()
+    for f in list_folders(tenant_id):
+        fid = str(f.get("folder_id") or "").strip()
+        if not fid or (ex and fid == ex):
+            continue
+        cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
+        visible = any(cid in allowed_col_ids for cid in cids)
+        owner = (str(f.get("owner_username") or "").strip() or "")
+        # private folder：owner 可见；共享 folder：按 collection ACL 可见
+        if not visible and owner != un:
+            continue
+        if _norm_folder_name(str(f.get("name") or "")) == tn:
+            return True
+    return False
 
 
 class OptionsResponse(BaseModel):
@@ -296,8 +340,18 @@ def kb_create_folder(request: Request, body: CreateFolderBody):
     un = _get_username_from_request(request)
     if not un:
         raise HTTPException(status_code=401, detail="not authenticated")
+    token = _get_token_from_request(request) or ""
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
+    scope = compute_acl_scope(token, fixtures=fixtures)
+    allowed_col_ids = set(scope["allowed_collection_ids"])
+    if _is_visible_folder_name_conflict(
+        tenant_id=tenant_id,
+        username=un,
+        allowed_col_ids=allowed_col_ids,
+        target_name=body.name,
+    ):
+        raise HTTPException(status_code=409, detail="文件夹名称已存在（含共享到你可见范围的知识库）。请使用其他名称。")
     info = create_folder(tenant_id, name=body.name, created_by=un, kind="Private", scope={}, owner_username=un)
     # 默认绑定动态私有 collection，保证 folder 可用于问答范围过滤
     pcid = kb_docs.dynamic_private_collection_id(un)
@@ -314,6 +368,7 @@ def kb_rename_folder(folder_id: str, request: Request, body: PatchFolderBody):
     un = _get_username_from_request(request)
     if not un:
         raise HTTPException(status_code=401, detail="not authenticated")
+    token = _get_token_from_request(request) or ""
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     f = get_folder(tenant_id, folder_id=folder_id)
@@ -325,6 +380,16 @@ def kb_rename_folder(folder_id: str, request: Request, body: PatchFolderBody):
     new_name = (body.name or "").strip()
     if not new_name:
         raise HTTPException(status_code=400, detail="name required")
+    scope = compute_acl_scope(token, fixtures=fixtures)
+    allowed_col_ids = set(scope["allowed_collection_ids"])
+    if _is_visible_folder_name_conflict(
+        tenant_id=tenant_id,
+        username=un,
+        allowed_col_ids=allowed_col_ids,
+        target_name=new_name,
+        exclude_folder_id=folder_id,
+    ):
+        raise HTTPException(status_code=409, detail="文件夹名称已存在（含共享到你可见范围的知识库）。请使用其他名称。")
     upsert_folder(
         tenant_id,
         folder_id=folder_id,
@@ -390,9 +455,9 @@ def kb_folder_resources(folder_id: str, request: Request):
                     """
                     SELECT doc_id, title, original_filename, size_bytes, status, last_error, created_at
                     FROM kb_user_documents
-                    WHERE tenant_id=:t AND doc_id = ANY(:ids::text[])
+                    WHERE tenant_id=:t AND doc_id IN :ids
                     """
-                ),
+                ).bindparams(bindparam("ids", expanding=True)),
                 {"t": tenant_id, "ids": doc_ids},
             ).fetchall()
         for r in rows:
@@ -433,9 +498,71 @@ def kb_move_folder_resources(folder_id: str, request: Request, body: MoveResourc
             raise HTTPException(status_code=403, detail="forbidden")
     moved = 0
     for did in [str(x).strip() for x in (body.doc_ids or []) if str(x).strip()]:
+        # move 语义：从源文件夹解绑，再绑定到目标文件夹
+        try:
+            unlink_doc_from_folder(tenant_id, folder_id=folder_id, doc_id=did)
+        except Exception:
+            # 若源文件夹本就无绑定，保持幂等
+            pass
         bind_resource_to_folder(tenant_id, folder_id=body.target_folder_id, resource_type="doc", resource_id=did)
         moved += 1
     return {"ok": True, "moved": moved}
+
+
+class LinkDocBody(BaseModel):
+    doc_id: str
+
+
+@router.post("/folders/{folder_id}/link-doc")
+def kb_link_doc_to_folder(folder_id: str, request: Request, body: LinkDocBody):
+    """将文档额外绑定到目标文件夹（复制到文件夹：保留原文件夹绑定）。"""
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    dst = get_folder(tenant_id, folder_id=folder_id)
+    if not dst:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(dst.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    did = (body.doc_id or "").strip()
+    if not did:
+        raise HTTPException(status_code=400, detail="doc_id required")
+    if kb_docs.get_document_owner(tenant_id, did) != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    try:
+        add_resource_to_folder_extra(tenant_id, folder_id=folder_id, resource_type="doc", resource_id=did)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    return {"ok": True}
+
+
+@router.post("/folders/{folder_id}/unlink-doc")
+def kb_unlink_doc_from_folder(folder_id: str, request: Request, body: LinkDocBody):
+    """从当前文件夹移除文档绑定（不删除文档；若无其它绑定则回到私有文件夹）。"""
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    did = (body.doc_id or "").strip()
+    if not did:
+        raise HTTPException(status_code=400, detail="doc_id required")
+    if kb_docs.get_document_owner(tenant_id, did) != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    try:
+        unlink_doc_from_folder(tenant_id, folder_id=folder_id, doc_id=did, owner_username=un)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    return {"ok": True}
 
 
 class ShareFolderBody(BaseModel):
@@ -478,8 +605,64 @@ def kb_share_folder(folder_id: str, request: Request, body: ShareFolderBody):
     return {"ok": True, "collection_ids": cids, "doc_count": len(doc_ids)}
 
 
+def _sync_folder_doc_collection_assignments(tenant_id: str, folder_id: str, collection_ids: list[str]) -> int:
+    resources = list_folder_resources(tenant_id, folder_id=folder_id)
+    doc_ids = [r["resource_id"] for r in resources if r.get("resource_type") == "doc"]
+    from backend.services.kb_acl_store import set_resource_assignments
+
+    for did in doc_ids:
+        set_resource_assignments(tenant_id, resource_type="doc", resource_id=str(did), collection_ids=collection_ids)
+    return len(doc_ids)
+
+
+@router.post("/folders/{folder_id}/move-to-kb")
+def kb_move_folder_to_kb(folder_id: str, request: Request, body: ShareFolderBody):
+    """
+    将文件夹「移动」到目标知识库范围：先从当前共享范围撤回为私有绑定，再按目标 kb_kind 重新共享（与「复制」不同）。
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    kk = (body.kb_kind or "").strip()
+    if not kk:
+        raise HTTPException(status_code=400, detail="kb_kind required")
+    if kk not in KB_KIND_CHOICES:
+        raise HTTPException(status_code=400, detail="invalid kb_kind")
+
+    try:
+        cids_private = unshare_folder_to_private(tenant_id, folder_id=folder_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+
+    if kk == "Private":
+        n = _sync_folder_doc_collection_assignments(tenant_id, folder_id, cids_private)
+        return {"ok": True, "collection_ids": cids_private, "doc_count": n, "moved": True}
+
+    cids = share_folder_to_kb_kind(
+        tenant_id,
+        fixtures,
+        folder_id=folder_id,
+        kb_kind=kk,
+        department_ids=list(body.department_ids or []),
+        project_ids=list(body.project_ids or []),
+        company_public=bool(body.company_public) or kk == "CompanyPublic",
+    )
+    n = _sync_folder_doc_collection_assignments(tenant_id, folder_id, cids)
+    return {"ok": True, "collection_ids": cids, "doc_count": n, "moved": True}
+
+
 class ShareFolderScopeBody(BaseModel):
     target: str  # company|department|project
+    access_kind: str = "public"  # public|lead（仅 department/project 生效）
     department_ids: list[str] = []
     project_ids: list[str] = []
 
@@ -518,6 +701,40 @@ def kb_share_folder_scope(folder_id: str, request: Request, body: ShareFolderSco
     for did in doc_ids:
         set_resource_assignments(tenant_id, resource_type="doc", resource_id=str(did), collection_ids=cids)
     return {"ok": True, "collection_ids": cids, "doc_count": len(doc_ids)}
+
+
+@router.post("/folders/{folder_id}/share-add-scope")
+def kb_share_folder_add_scope(folder_id: str, request: Request, body: ShareFolderScopeBody):
+    """
+    共享（加法）：追加可见范围，但不产生两份文件夹/文档。
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    try:
+        cids = share_folder_add_scope(
+            tenant_id,
+            fixtures,
+            folder_id=folder_id,
+            target=body.target,
+            access_kind=body.access_kind,
+            department_ids=list(body.department_ids or []),
+            project_ids=list(body.project_ids or []),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+
+    n = _sync_folder_doc_collection_assignments(tenant_id, folder_id, cids)
+    return {"ok": True, "collection_ids": cids, "doc_count": n, "shared": True}
 
 
 @router.post("/folders/{folder_id}/unshare")
@@ -720,6 +937,7 @@ def knowledge_kb_kinds(request: Request):
     if not _get_token_from_request(request):
         raise HTTPException(status_code=401, detail="not authenticated")
     labels = {
+        "Private": "私人知识库",
         "DeptPublic": "部门公共库",
         "DeptLead": "部门负责人库",
         "ProjectPublic": "项目公共库",
@@ -851,6 +1069,50 @@ def knowledge_rag_packages(request: Request):
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     return {"items": kb_docs.list_rag_packages(tenant_id)}
+
+
+@router.post("/folders/{folder_id}/parse")
+def kb_parse_folder(folder_id: str, request: Request):
+    """
+    批量解析文件夹内文档（多文档处理 MVP）：
+    - 对 folder 中的 doc 资源逐个入队 enqueue_user_doc_task（与上传后的异步解析同链路）
+    - 只做“触发解析/索引”，不强制结构化抽取
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+
+    # 可见性：与 kb_folder_resources 一致
+    owner = str(f.get("owner_username") or "").strip()
+    token = _get_token_from_request(request) or ""
+    scope = compute_acl_scope(token, fixtures=fixtures)
+    allowed_col_ids = set(scope["allowed_collection_ids"])
+    if owner and owner != un:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not owner:
+        cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
+        if not any(cid in allowed_col_ids for cid in cids):
+            raise HTTPException(status_code=403, detail="forbidden")
+
+    resources = list_folder_resources(tenant_id, folder_id=folder_id)
+    doc_ids = [str(r.get("resource_id") or "").strip() for r in (resources or []) if r.get("resource_type") == "doc"]
+    doc_ids = [x for x in doc_ids if x]
+    if not doc_ids:
+        return {"ok": True, "queued": 0, "skipped": 0, "detail": "folder has no docs"}
+    queued = 0
+    skipped = 0
+    for did in doc_ids:
+        ok, _ = enqueue_user_doc_task(tenant_id, un, did)
+        if ok:
+            queued += 1
+        else:
+            skipped += 1
+    return {"ok": True, "queued": queued, "skipped": skipped, "doc_count": len(doc_ids)}
 
 
 @router.get("/rag-packages/{package_id}")

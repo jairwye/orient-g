@@ -183,7 +183,8 @@ alembic -c backend\alembic.ini upgrade head
 ├── docs/              # 部署说明、API 契约、汇率 PostgreSQL 排查（见 docs/api-contract.md、docs/汇率-PostgreSQL排查.md）
 ├── 规则/              # 项目规则与约束（不上传 GitHub）
 ├── 规划/              # 实现规划、待更新计划、各功能方案与清单（不上传 GitHub）
-├── scripts/           # 一键安装、部署用脚本（如 setup.ps1；生产可选 caddy-health-recreate.sh）
+├── scripts/           # 一键安装、常用脚本（如 setup.ps1）
+├── deploy/systemd/    # 生产开机编排示例（如 orient-g-compose.service.example）
 ├── docker-compose.yml # 生产环境一键部署
 ├── Caddyfile         # 反向代理配置，生产部署时与 compose 同目录
 ├── .env.example       # 环境变量示例（复制为 .env 后修改，.env 已加入 .gitignore）
@@ -303,69 +304,9 @@ docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 
 **部署时务必配置的环境变量**（在 Portainer 的 Stack 环境变量或服务器 `.env` 中设置）：
 
-- **BIND_IP**：反向代理绑定的内网 IP（如 `192.168.1.100`），生产环境必须设置，否则默认 `127.0.0.1` 仅本机可访问、内网其他机器无法访问。
 - **POSTGRES_PASSWORD**：数据库密码；生产环境务必修改，勿使用默认值。
 - **FRONTEND_ORIGIN**：浏览器实际访问的地址（如 `http://192.168.1.100` 或 `https://192.168.1.100`），用于后端 CORS。未设置时默认为 `http://localhost:3000`，若用户通过内网 IP 访问则跨域请求会被拒绝。
 - **AUTH_SECRET**：页面登录 JWT 签名密钥；生产环境务必设置为强随机字符串，勿使用默认值，防止 token 被伪造。
-
-### 重启后 Caddy 不通 / 夜间异常像「断网」
-
-用户侧常把「页面打不开、超时」感知为断网；若 **Caddy 未把 80/443 发布到宿主机** 或 **`BIND_IP` 与当前网卡地址不一致**，会出现整机重启后必须 `docker compose up -d --force-recreate caddy` 才恢复的现象。建议按下面顺序自检（均在 **含 `docker-compose.yml` 与 `Caddyfile` 的部署目录** 执行；不在该目录时用 `-f` / `--project-directory`，见上文数据库迁移一节示例）。
-
-**1）确认端口是否已映射到宿主机**
-
-```bash
-docker compose ps
-```
-
-查看 **caddy** 一行是否出现 `PORTS`（例如 `192.168.x.x:80->80/tcp`）。若 **PORTS 为空**，宿主机上 `curl http://127.0.0.1/api/health` 也会失败，此时 `force-recreate caddy` 通常能按当前 compose 重建映射。
-
-**2）核对 Docker 实际绑定**
-
-将 `orient-g-caddy-1` 换成 `docker compose ps` 中的实际容器名：
-
-```bash
-docker inspect "$(docker compose ps -q caddy)" --format '{{json .HostConfig.PortBindings}}'
-```
-
-**3）宿主机是否在监听 80/443**
-
-```bash
-ss -lntp | grep -E ':80|:443' || true
-```
-
-**4）对照 `BIND_IP` 与当前内网地址**
-
-`docker-compose.yml` 中 Caddy 使用 `"${BIND_IP:-127.0.0.1}:80:80"` 等形式发布端口。若 `.env` 里 **`BIND_IP` 写成某次 DHCP 拿到的地址**，重启后 IP 变化会导致监听目标与访问地址不一致。建议生产机为反向代理使用 **固定内网 IP**，或显式使用 **`BIND_IP=0.0.0.0`** 发布到所有网卡，再用 **UFW / 上游防火墙** 限制仅内网可达（本栈约定为内网部署）。
-
-**5）夜间「断网」根因深挖（非 Caddy 专属）**
-
-故障当次在宿主机保留：`journalctl -u docker --since "1 hour ago"`、`dmesg | tail -100`、`docker compose logs --tail 200 caddy`，对照 **OOM**、**dockerd 报错**、**磁盘满**、网卡驱动日志等。
-
-**可选：健康检查仅在失败时重建 Caddy**
-
-仓库提供 [`scripts/caddy-health-recreate.sh`](scripts/caddy-health-recreate.sh)：对 `/api/health` 做短时探测，失败则执行 `docker compose up -d --force-recreate caddy`。部署到服务器后建议 `chmod +x`，并用 cron（如每 5 分钟）或 systemd timer 调用；**传入 compose 目录**或设置环境变量 `ORIENT_G_COMPOSE_DIR`。
-
-```bash
-chmod +x scripts/caddy-health-recreate.sh
-ORIENT_G_COMPOSE_DIR=/home/jair/docker/orient-g ./scripts/caddy-health-recreate.sh
-```
-
-**可选：用 systemd 延迟到网络就绪后再起 compose**
-
-若你使用 **systemd unit** 在开机时执行 `docker compose up -d`，可在 unit 中增加依赖，减少「网未就绪就绑定端口」的竞态（示例，路径与 unit 名请按实际修改）：
-
-```ini
-[Unit]
-After=docker.service network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=/home/jair/docker/orient-g
-ExecStart=/usr/bin/docker compose up -d
-RemainAfterExit=yes
-```
 
 ## 开发/生产与 Ollama（GPU）
 
@@ -404,7 +345,7 @@ RemainAfterExit=yes
 ## 扩展与协同
 
 - 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
-- 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`、`/knowledge`（知识库展位）、`/utils`（实用工具，含流程文档 `/utils/process-doc`、大 PDF 生知识库、「数据解析」等）。其中「数据解析」入口当前沿用路径 `/utils/excel-kanban`，目标是：用户上传电子表，通过 LLM + 工具（Prompt/MCP 风格工具/Skills 等）对表格数据进行解析，生成可视化看板、整理为更符合逻辑和条理的表格视图，并完成信息归纳、专业评价与风险识别。财务后台默认路径为 `/admin`，可在后台页面修改。
+- 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`、`/knowledge`（知识库展位）、`/utils`（实用工具，含流程文档 `/utils/process-doc`、大 PDF 生知识库、「数据解析」等）。其中「数据解析」入口当前沿用路径 `/utils/excel-kanban`，目标是：用户上传电子表，通过本地 LLM + **MCP 风格 Tools** + 符合 [Agent Skills](https://agentskills.io) 习惯的 **Agent Skills**，以及工作空间登记的 **`prompt.*` 提示词资产**（见 [docs/agent-skills-glossary.md](docs/agent-skills-glossary.md)），对表格数据进行解析，生成可视化看板、整理为更符合逻辑和条理的表格视图，并完成信息归纳、专业评价与风险识别。财务后台默认路径为 `/admin`，可在后台页面修改。
 - **股权全景（实验）**：`/equity` 及关联分析页用于内网导入后的公司股权架构与地理等可视化；**为临时增加能力，后续可能移除**，接口与页面行为以当前版本为准、不作为长期对外契约。
 - 项目更新记录见 [changelog.md](changelog.md)。当前版本 **1.2.1.1**：股权全景实验能力、文档与规划修正等见 changelog。
 

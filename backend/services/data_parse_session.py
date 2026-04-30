@@ -1,10 +1,12 @@
 """
 数据解析 Session 存储：以 session_id 保存解析结果（通用表格 tables、表结构 table_schemas、按需生成的看板配置）。
-内存 dict，符合 规则/规则.md 内网与数据不外传要求。
+内存 dict + 本地文件落盘（跨进程兜底），符合 规则/规则.md 内网与数据不外传要求。
 """
+import json
 import logging
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -12,6 +14,44 @@ logger = logging.getLogger(__name__)
 # key=session_id, value={ tables, table_schemas, column_profiles, aggregations, auto_dashboards, kanban_config, created_at, chat_history }
 _sessions: dict[str, dict[str, Any]] = {}
 MAX_SESSIONS = 50
+_SESSIONS_DIR = Path(__file__).resolve().parent.parent / "data" / ".data_parse_sessions"
+_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _session_file(session_id: str) -> Path:
+    return _SESSIONS_DIR / f"{session_id}.json"
+
+
+def _persist_session(session_id: str, data: dict[str, Any]) -> None:
+    try:
+        p = _session_file(session_id)
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning("persist data_parse session failed: %s", e)
+
+
+def _load_session_from_disk(session_id: str) -> dict[str, Any] | None:
+    p = _session_file(session_id)
+    if not p.exists():
+        return None
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except Exception as e:
+        logger.warning("load data_parse session failed: %s", e)
+        return None
+
+
+def _prune_session_files(max_files: int = MAX_SESSIONS * 2) -> None:
+    try:
+        files = sorted(_SESSIONS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+    except Exception:
+        return
+    for f in files[max_files:]:
+        try:
+            f.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def create_session(pipeline_result: dict[str, Any]) -> str:
@@ -28,15 +68,25 @@ def create_session(pipeline_result: dict[str, Any]) -> str:
         "created_at": time.time(),
         "chat_history": [],
     }
+    _persist_session(session_id, _sessions[session_id])
     while len(_sessions) > MAX_SESSIONS:
         oldest_id = min(_sessions.keys(), key=lambda k: _sessions[k]["created_at"])
         del _sessions[oldest_id]
+    _prune_session_files()
     return session_id
 
 
 def get_session(session_id: str) -> dict[str, Any] | None:
     """获取 session 内容，不存在返回 None。"""
-    return _sessions.get(session_id)
+    s = _sessions.get(session_id)
+    if s is not None:
+        return s
+    # 跨进程兜底：当前进程没有命中时从本地落盘读取并回填内存
+    loaded = _load_session_from_disk(session_id)
+    if loaded is not None:
+        _sessions[session_id] = loaded
+        return loaded
+    return None
 
 
 def get_tables(session_id: str) -> dict[str, dict[str, Any]] | None:
@@ -76,6 +126,7 @@ def append_kanban_chart(session_id: str, chart: dict[str, Any]) -> None:
         config = s.get("kanban_config") or []
         config.append(chart)
         s["kanban_config"] = config
+        _persist_session(session_id, s)
 
 
 def get_chat_history(session_id: str) -> list[dict[str, str]]:
@@ -91,6 +142,7 @@ def append_chat_history(session_id: str, role: str, content: str) -> None:
         hist = s.get("chat_history") or []
         hist.append({"role": role, "content": content})
         s["chat_history"] = hist
+        _persist_session(session_id, s)
 
 
 def get_validation_summary(session_id: str) -> dict | None:

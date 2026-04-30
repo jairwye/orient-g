@@ -15,6 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import { getAuthHeaders } from "../lib/auth";
+import { BUSINESS_CHART_COLORS as CHART_COLORS } from "../lib/business_chart_colors";
 
 const PROFIT_BAR_GRADIENT_ID = "profitBarGradient";
 const PROFIT_COMPARE_LAST_YEAR_GRADIENT_ID = "profitCompareLastYearGradient";
@@ -61,14 +62,6 @@ const fetchOverview = () =>
     .then((r) => r.json())
     .then((data) => data as Overview)
     .catch(() => null);
-
-const CHART_COLORS = {
-  current: "#2563eb",
-  previous: "#3f3f46",
-  actual: "#22c55e",
-  target: "#3f3f46",
-  lastYear: "#52525b",
-};
 
 /** 数字展示：千分位、保留两位小数；非数字（如 "—"）原样返回 */
 function formatNumber(val: string | number): string {

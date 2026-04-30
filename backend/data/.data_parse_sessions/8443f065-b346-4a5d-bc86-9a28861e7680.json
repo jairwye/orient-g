@@ -1,0 +1,1 @@
+{"tables": {"经营数据": {"headers": ["月份", "净利润"], "rows": [["2024-01", 100]]}}, "table_schemas": [{"sheet_name": "经营数据", "headers": ["月份", "净利润"], "row_count": 1}], "column_profiles": {}, "aggregations": {}, "auto_dashboards": [], "kanban_config": [], "validation_summary": {}, "created_at": 1777532124.6462827, "chat_history": []}

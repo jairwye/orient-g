@@ -129,7 +129,15 @@ def upsert_folder(
                     updated_at = CURRENT_TIMESTAMP
                 """
             ),
-            {"fid": fid, "t": tid, "n": nm, "cb": (created_by or "").strip() or None},
+            {
+                "fid": fid,
+                "t": tid,
+                "n": nm,
+                "k": (kind or "").strip() or None,
+                "sj": scope_json,
+                "ou": (owner_username or "").strip() or None,
+                "cb": (created_by or "").strip() or None,
+            },
         )
         if collection_ids is not None:
             db.execute(
@@ -319,6 +327,76 @@ def bind_resource_to_folder(
         db.execute(text("UPDATE kb_folders SET updated_at=CURRENT_TIMESTAMP WHERE tenant_id=:t AND folder_id=:fid"), {"t": tid, "fid": fid})
 
 
+def add_resource_to_folder_extra(
+    tenant_id: str,
+    *,
+    folder_id: str,
+    resource_type: str,
+    resource_id: str,
+) -> None:
+    """
+    在**不删除**其它文件夹绑定的前提下，将资源额外绑定到目标文件夹（「复制到文件夹」）。
+    与 bind_resource_to_folder（移动：先删后绑）区分。
+    """
+    tid = (tenant_id or "").strip() or "tenant1"
+    fid = (folder_id or "").strip()
+    rt = (resource_type or "").strip()
+    rid = (resource_id or "").strip()
+    if not fid or rt not in {"doc", "table"} or not rid:
+        raise ValueError("invalid bind params")
+    with get_db() as db:
+        db.execute(
+            text(
+                """
+                INSERT INTO kb_folder_resources (tenant_id, folder_id, resource_type, resource_id)
+                VALUES (:t, :fid, :rt, :rid)
+                ON CONFLICT (tenant_id, folder_id, resource_type, resource_id) DO NOTHING
+                """
+            ),
+            {"t": tid, "fid": fid, "rt": rt, "rid": rid},
+        )
+        db.execute(text("UPDATE kb_folders SET updated_at=CURRENT_TIMESTAMP WHERE tenant_id=:t AND folder_id=:fid"), {"t": tid, "fid": fid})
+
+
+def unlink_doc_from_folder(
+    tenant_id: str,
+    *,
+    folder_id: str,
+    doc_id: str,
+    owner_username: str,
+) -> None:
+    """从指定文件夹移除文档绑定；若文档不再属于任何文件夹，则挂回该用户的私有文件夹。"""
+    tid = (tenant_id or "").strip() or "tenant1"
+    fid = (folder_id or "").strip()
+    did = (doc_id or "").strip()
+    un = (owner_username or "").strip()
+    if not fid or not did or not un:
+        raise ValueError("invalid unlink params")
+    with get_db() as db:
+        db.execute(
+            text(
+                """
+                DELETE FROM kb_folder_resources
+                WHERE tenant_id=:t AND folder_id=:fid AND resource_type='doc' AND resource_id=:did
+                """
+            ),
+            {"t": tid, "fid": fid, "did": did},
+        )
+        n = db.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM kb_folder_resources
+                WHERE tenant_id=:t AND resource_type='doc' AND resource_id=:did
+                """
+            ),
+            {"t": tid, "did": did},
+        ).scalar()
+        cnt = int(n or 0)
+    if cnt == 0:
+        pf = ensure_private_folder(tid, username=un)
+        bind_resource_to_folder(tid, folder_id=pf, resource_type="doc", resource_id=did)
+
+
 def list_folder_resources(tenant_id: str, *, folder_id: str) -> list[dict[str, Any]]:
     tid = (tenant_id or "").strip() or "tenant1"
     fid = (folder_id or "").strip()
@@ -496,6 +574,85 @@ def share_folder_scope(
             company_public=False,
         )
     raise ValueError("invalid target")
+
+
+def share_folder_add_scope(
+    tenant_id: str,
+    fixtures: dict[str, Any],
+    *,
+    folder_id: str,
+    target: str,
+    access_kind: str = "public",  # public|lead（仅 department/project 生效）
+    department_ids: list[str] | None = None,
+    project_ids: list[str] | None = None,
+    company_public: bool = False,
+) -> list[str]:
+    """
+    新语义：共享（加法，不是覆盖）。
+    - 物理上仍是同一个 folder/doc；只是在 ACL 层面追加可见集合。
+    - 保留 owner 的动态私有 collection（owner 仍可在“私人”里看到）。
+    - 同时把 folder.kind 设为目标 kind（让共享目标库能“调用/看到”该文件夹）。
+      注：当前数据模型只有一个 kind 字段，无法表达“同时属于多个库”，因此采用“目标库可见 + 私人仍可见”的折中。
+    """
+    tid = (tenant_id or "").strip() or "tenant1"
+    fid = (folder_id or "").strip()
+    if not fid:
+        raise ValueError("folder_id required")
+    f = get_folder(tid, folder_id=fid)
+    if not f:
+        raise ValueError("folder not found")
+    owner = str(f.get("owner_username") or "").strip()
+    if not owner:
+        raise ValueError("folder has no owner")
+    pcid = dynamic_private_collection_id(owner)
+
+    tgt = (target or "").strip().lower()
+    ak = (access_kind or "").strip().lower()
+    if ak not in {"public", "lead"}:
+        ak = "public"
+
+    kb_kind = "Private"
+    extra: list[str] = []
+    department_ids = list(department_ids or [])
+    project_ids = list(project_ids or [])
+
+    if tgt == "company":
+        kb_kind = "CompanyPublic"
+        extra.extend(resolve_share_collection_ids(fixtures, tid, kb_kind="CompanyPublic", department_ids=[], project_ids=[], company_public=True))
+    elif tgt == "department":
+        kb_kind = "DeptLead" if ak == "lead" else "DeptPublic"
+        extra.extend(resolve_share_collection_ids(fixtures, tid, kb_kind=kb_kind, department_ids=department_ids, project_ids=[], company_public=False))
+    elif tgt == "project":
+        kb_kind = "ProjectLead" if ak == "lead" else "ProjectPublic"
+        extra.extend(resolve_share_collection_ids(fixtures, tid, kb_kind=kb_kind, department_ids=[], project_ids=project_ids, company_public=False))
+    else:
+        raise ValueError("invalid target")
+
+    cur = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
+    merged = sorted(set([pcid, *cur, *[x for x in extra if x]]))
+    set_folder_collections(tid, folder_id=fid, collection_ids=merged)
+
+    scope = {
+        "share_add": {
+            "target": tgt,
+            "access_kind": ak,
+            "department_ids": department_ids,
+            "project_ids": project_ids,
+            "company_public": bool(company_public) or kb_kind == "CompanyPublic",
+        }
+    }
+    with get_db() as db:
+        db.execute(
+            text(
+                """
+                UPDATE kb_folders
+                SET kind=:k, scope_json=:sj, updated_at=CURRENT_TIMESTAMP
+                WHERE tenant_id=:t AND folder_id=:fid
+                """
+            ),
+            {"t": tid, "fid": fid, "k": kb_kind, "sj": json.dumps(scope, ensure_ascii=False)},
+        )
+    return merged
 
 
 def unshare_folder_to_private(tenant_id: str, *, folder_id: str) -> list[str]:

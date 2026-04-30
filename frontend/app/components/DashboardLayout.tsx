@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen, User, Wrench, BookOpen, Settings, MessageCircle, Network, Trophy } from "lucide-react";
+import { BarChart3, FileText, TrendingUp, Newspaper, PanelLeftClose, PanelLeftOpen, User, Wrench, Settings, MessageCircle, Network, Trophy } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
 /** 经营数据（/）需 view_business_dashboard：管理层 或 管理员 或 部门=财务部，见规划 2.a */

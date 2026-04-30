@@ -81,7 +81,32 @@
 
 ---
 
-## 7. 常见问题（FAQ）
+## 7. 产品 Agent Skill 与开发机 Cursor 技能（边界）
+
+术语总表与表格化对照见 [`docs/agent-skills-glossary.md`](docs/agent-skills-glossary.md) 第 6 节。
+
+本仓库《规则》中「Agent Skill 包仅来自本仓或内网配置」等表述，**在协作上按下述范围理解**，避免与 Cursor 生态里的第三方技能包混淆。
+
+### 7.1 产品侧（对内网交付物生效）
+
+- **唯一登记入口**：`backend/data/agent_skills/manifest.json` 中列出的技能 ID。
+- **唯一指令体来源**：与各 ID 对应的 `backend/data/agent_skills/<skill_id>/SKILL.md`（由后端加载，见 `backend/services/agent_skills_loader.py`）。
+- **交付物**：随仓库/内网构建发布的应用与配置中，**仅**上述路径下的 Agent Skill 属于「Orient-G 产品登记技能」；须遵守 `docs/skills-guidelines.md` 与《规则》中的内网、本地化 AI、数据不外泄等约束。
+
+### 7.2 开发机侧（可选，不等同于产品技能）
+
+以下安装在**开发者本机 Cursor** 目录或插件缓存中，用于本地写代码、跑计划文档中的 agentic 工作流提示等，**不属于**上一节的产品登记范围，**也无需**写入 `manifest.json`：
+
+- **Cursor Superpowers 等插件**及其随插件分发的技能（如文档 `docs/superpowers/plans/` 中引用的 `superpowers:*` 工作流）。
+- **[gstack](https://github.com/garrytan/gstack)**（若个人安装）：与本仓库产品技能**分列**；**不得**将 gstack 登记进 `manifest.json`，**不得**将 gstack 作为 Orient-G 内网交付物或运行时依赖打包进发布产物。
+
+### 7.3 使用提醒
+
+开发机工具**不免除**《规则》对**业务数据、对话、代码**不外泄、不违规使用外网能力等要求；若使用带浏览器、外网模型、遥测等能力的工具，仍须遵守公司与项目安全策略。
+
+---
+
+## 8. 常见问题（FAQ）
 
 - **为什么我看不到 `规则/`、`规划/`？**  
   这两个目录按仓库约定不上传到 GitHub；对外协作请以 `README.md`、`docs/`、`CONTRIBUTING.md` 为准。

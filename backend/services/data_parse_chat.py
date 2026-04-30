@@ -5,6 +5,7 @@
 import json
 import logging
 import re
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import httpx
 from backend.config import settings
 from backend.services.ollama_guard import post_json_with_guard
 from backend.services.upstream_guard import assert_upstream_allowed
+from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
 from backend.services.data_parse_session import (
     get_kanban_config,
     get_metrics,
@@ -35,12 +37,15 @@ def _load_skills() -> dict:
         return json.load(f)
 
 
-def _build_system_prompt(skills: dict) -> str:
+def _build_system_prompt(skills: dict, *, playbook_addon: str = "", prompt_addon: str = "") -> str:
+    # playbook_addon：历史命名；现为「已启用技能的 SKILL.md 等 system 追加段」
     parts = [
         "你是经营数据与电子表数据解析助手。",
+        "当前已绑定解析会话：服务端会在 system 末尾附带「当前会话表结构快照」；回答前仍应调用 read_metrics 以获取列画像与校验摘要。若快照中已有工作表，禁止声称「未绑定」「无有效表格」或「请先上传」。",
         "你仅根据工具返回的指标与结构化表格作答；禁止编造任何未在数据中出现的数值。",
         "若用户要求画图或制表，请调用 auto_generate_chart、generate_chart 或 generate_table，然后根据返回结果用自然语言简要说明。",
         "当用户只用自然语言描述想看的图，而未给出明确 sheet 名和列名时，应优先调用 auto_generate_chart，由后端自动匹配合适的表和字段。",
+        "若用户要求「美化电子表」等 Excel 格式类需求：诚实说明当前工具链不支持单元格样式/主题；可建议用 generate_chart / generate_table 或 auto_generate_chart 提升可读性，并先 read_metrics。",
         "输出可包含结论、风险点、建议；若生成了图表或表格，在回复中简要描述即可，具体由前端渲染。",
     ]
     if skills:
@@ -50,7 +55,395 @@ def _build_system_prompt(skills: dict) -> str:
             parts.append("财务术语（简要）：" + " ".join(skills["finance_terms"][:5]))
         if skills.get("exception_templates"):
             parts.append("异常表述约束：" + " ".join(skills["exception_templates"][:4]))
-    return "\n".join(parts)
+    out = "\n".join(parts)
+    if playbook_addon.strip():
+        out = out + "\n\n" + playbook_addon.strip()
+    if prompt_addon.strip():
+        pa = prompt_addon.strip()
+        if len(pa) > 6000:
+            pa = pa[:6000] + "\n…（已截断）"
+        out = out + "\n\n## 用户勾选的提示词资产（摘要/正文拼接）\n" + pa
+    return out
+
+
+def _session_table_bootstrap(session_id: str) -> str:
+    """
+    将当前会话的表结构摘要直接拼入 system，避免模型在未成功调用 read_metrics 时
+    编造「未绑定」「无有效表格」等与前端状态矛盾的表述。
+    """
+    s = get_session(session_id)
+    if not s:
+        return ""
+    schemas = s.get("table_schemas") or []
+    tables = s.get("tables") or {}
+    lines: list[str] = []
+    if schemas:
+        for row in schemas[:40]:
+            lines.append(
+                json.dumps(
+                    {
+                        "sheet_name": row.get("sheet_name"),
+                        "headers": row.get("headers"),
+                        "row_count": row.get("row_count"),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+    elif isinstance(tables, dict) and tables:
+        for name, t in list(tables.items())[:40]:
+            headers = (t or {}).get("headers") or []
+            nrows = len((t or {}).get("rows") or [])
+            lines.append(json.dumps({"sheet_name": name, "headers": headers, "row_count": nrows}, ensure_ascii=False))
+    val = s.get("validation_summary") or {}
+    val_str = json.dumps(val, ensure_ascii=False)[:2500] if val else "{}"
+    header = (
+        "\n\n## 当前会话表结构快照（已由服务端自动注入）\n"
+        "以下每行 JSON 描述一个工作表：名称、列名、行数。回答「各工作表用途/风险/结构」类问题时**必须以此为准**。\n"
+        "**禁止**声称「当前会话未绑定」「未绑定有效表格」「无表格数据」等，除非下方快照明确无任何工作表行。\n"
+        "行级具体数值仍须通过 read_metrics / 工具返回使用，勿凭想象填写单元格。\n"
+    )
+    if not lines:
+        return header + "_（解析结果中无工作表：table_schemas 与 tables 均为空）_\n"
+    body = "\n".join(lines)
+    if len(body) > 10000:
+        body = body[:10000] + "\n…（表结构快照已截断）"
+    extra = ""
+    if val_str and val_str != "{}":
+        extra = f"\n\n## validation_summary（摘录）\n{val_str}"
+    return header + body + extra
+
+
+def _should_direct_sheet_usage_risk(user_message: str) -> bool:
+    """
+    结构型问题（各工作表用途/主要风险）容易被模型编造“未绑定/无表格/缺失比例”等。
+    对这类问题直接由后端基于 session 的 table_schemas/tables/validation_summary 生成确定性答复。
+    """
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    m = msg.lower()
+    has_sheet = ("工作表" in msg) or ("sheet" in m) or ("表1" in msg) or ("表2" in msg)
+    has_usage = ("用途" in msg) or ("用来" in msg) or ("做什么" in msg)
+    has_risk = ("风险" in msg) or ("缺失" in msg) or ("质量" in msg) or ("可信" in msg) or ("异常" in msg)
+    has_analysis_ask = ("分析" in msg) or ("总结" in msg) or ("概述" in msg) or ("主要" in msg)
+    # “请根据已上传的表格/列出各工作表用途与主要风险” 这种典型问法
+    if has_sheet and has_usage and has_risk:
+        return True
+    # “分析经营的主要风险（勿编造具体表述）” 这类风险分析问法，也走后端确定性逻辑
+    return bool(has_risk and has_analysis_ask)
+
+
+def _build_sheet_usage_risk_reply(session_id: str) -> str:
+    s = get_session(session_id) or {}
+    schemas = s.get("table_schemas") or []
+    tables = s.get("tables") or {}
+    val = s.get("validation_summary") or {}
+
+    # 统一从 schemas 取结构；若缺失则从 tables 推导
+    items: list[dict[str, Any]] = []
+    if isinstance(schemas, list) and schemas:
+        for row in schemas:
+            if not isinstance(row, dict):
+                continue
+            items.append(
+                {
+                    "sheet_name": row.get("sheet_name"),
+                    "headers": row.get("headers") or [],
+                    "row_count": row.get("row_count"),
+                    "is_main_sheet": bool(row.get("is_main_sheet")),
+                }
+            )
+    elif isinstance(tables, dict) and tables:
+        for name, t in tables.items():
+            headers = (t or {}).get("headers") or []
+            rows = (t or {}).get("rows") or []
+            items.append({"sheet_name": name, "headers": headers, "row_count": len(rows), "is_main_sheet": False})
+
+    if not items:
+        return "当前会话已绑定，但解析结果中没有任何工作表结构可用（table_schemas 与 tables 均为空）。请换一份含有效表格的 Excel 后重新上传。"
+
+    # 逐表生成确定性风险点（不编造百分比）
+    lines: list[str] = []
+    lines.append("已检测到以下工作表（基于服务端解析结构快照；不包含行级明细）：")
+    for it in items[:20]:
+        name = str(it.get("sheet_name") or "").strip() or "(未命名工作表)"
+        headers = it.get("headers") if isinstance(it.get("headers"), list) else []
+        row_count = it.get("row_count")
+        try:
+            rc = int(row_count) if row_count is not None else None
+        except Exception:
+            rc = None
+        total_cols = len(headers)
+        empty_cols = sum(1 for h in headers if not str(h or "").strip())
+        nonempty_cols = total_cols - empty_cols
+        risks: list[str] = []
+        if total_cols == 0:
+            risks.append("未解析到表头（无法判断字段含义）")
+        if empty_cols > 0:
+            risks.append(f"表头存在空列名：{empty_cols} 列（建议在 Excel 补齐字段名或删除空列）")
+        if rc is not None and rc <= 3:
+            risks.append(f"行数较少：{rc} 行（趋势/对比结论可能不稳健）")
+        if nonempty_cols <= 3 and total_cols > 3:
+            risks.append(f"有效字段较少：非空列名仅 {nonempty_cols} 列（其余多为空列名）")
+
+        usage_guess = "用于按时间/维度查看经营指标（如收入、利润等）的汇总或明细"  # 仅为通用用途，不给具体口径
+        # 若主表标记为 true，更偏“主分析表”
+        if it.get("is_main_sheet"):
+            usage_guess = "主分析表：适合做趋势/对比/排名等经营指标分析（具体以字段含义为准）"
+
+        lines.append(f"\n- 工作表「{name}」")
+        lines.append(f"  - 用途：{usage_guess}")
+        lines.append(f"  - 结构：列数 {total_cols}（非空列名 {nonempty_cols}），行数 {rc if rc is not None else '未知'}")
+        if risks:
+            lines.append("  - 主要风险：")
+            for r in risks[:6]:
+                lines.append(f"    - {r}")
+        else:
+            lines.append("  - 主要风险：未发现明显结构性风险（如需更细粒度缺失/类型检查，可继续深挖）")
+
+        # FP&A 风格补充：趋势/波动/异常/集中度（仅基于当前会话数据，确定性计算）
+        tb = (tables or {}).get(name) if isinstance(tables, dict) else None
+        if isinstance(tb, dict):
+            hdrs = [str(x or "").strip() for x in (tb.get("headers") or [])]
+            rws = tb.get("rows") or []
+            if hdrs and rws:
+                # 时间列与指标列识别（轻量启发）
+                time_idx = -1
+                for i, h in enumerate(hdrs):
+                    hl = h.lower()
+                    if any(k in hl for k in ["日期", "时间", "月份", "month", "date", "year", "季度", "quarter"]):
+                        time_idx = i
+                        break
+                metric_idx = -1
+                priority_keys = ["净利润", "利润", "营收", "收入", "流水", "成本", "费用", "profit", "revenue", "cost", "expense"]
+                for i, h in enumerate(hdrs):
+                    hl = h.lower()
+                    vals = [row[i] for row in rws if isinstance(row, list) and i < len(row)]
+                    num_vals = [float(v) for v in vals if _is_numeric_like(v)]
+                    ratio = (len(num_vals) / len(vals)) if vals else 0.0
+                    if ratio < 0.6:
+                        continue
+                    if metric_idx < 0:
+                        metric_idx = i
+                    if any(k in hl for k in priority_keys):
+                        metric_idx = i
+                        break
+                if metric_idx >= 0:
+                    seq = []
+                    for row in rws:
+                        if not isinstance(row, list) or metric_idx >= len(row):
+                            continue
+                        v = row[metric_idx]
+                        if _is_numeric_like(v):
+                            seq.append(float(v))
+                    if len(seq) >= 2:
+                        first, last = seq[0], seq[-1]
+                        change_pct = None
+                        if abs(first) > 1e-9:
+                            change_pct = (last - first) / abs(first) * 100.0
+                        mean_abs = sum(abs(x) for x in seq) / len(seq) if seq else 0.0
+                        stdev = statistics.pstdev(seq) if len(seq) >= 2 else 0.0
+                        cv = (stdev / mean_abs * 100.0) if mean_abs > 1e-9 else None
+                        # 异常点：|z|>2
+                        outlier_cnt = 0
+                        if len(seq) >= 3 and stdev > 1e-9:
+                            m0 = statistics.mean(seq)
+                            for x in seq:
+                                z = (x - m0) / stdev
+                                if abs(z) >= 2.0:
+                                    outlier_cnt += 1
+                        # 集中度：Top3 占比
+                        top3_ratio = None
+                        abs_vals = sorted([abs(x) for x in seq], reverse=True)
+                        s_all = sum(abs_vals)
+                        if s_all > 1e-9:
+                            top3_ratio = sum(abs_vals[:3]) / s_all * 100.0
+
+                        metric_name = hdrs[metric_idx] or f"列{metric_idx + 1}"
+                        lines.append("  - 经营分析（FP&A 启发）：")
+                        if change_pct is not None:
+                            direction = "上升" if change_pct >= 0 else "下降"
+                            lines.append(f"    - 趋势：{metric_name} 从首期到末期总体{direction}，变动约 {change_pct:.1f}%。")
+                        else:
+                            lines.append(f"    - 趋势：{metric_name} 可用于趋势分析（首期基数为 0，未给出百分比变化）。")
+                        if cv is not None:
+                            vol = "高" if cv >= 30 else ("中" if cv >= 15 else "低")
+                            lines.append(f"    - 波动：{metric_name} 变异系数约 {cv:.1f}%（波动{vol}）。")
+                        if outlier_cnt > 0:
+                            lines.append(f"    - 异常：检测到约 {outlier_cnt} 个疑似异常点（|z|>=2，建议复核）。")
+                        if top3_ratio is not None:
+                            lines.append(f"    - 集中度：{metric_name} Top3 观测值占比约 {top3_ratio:.1f}%。")
+
+    # validation_summary 只做“存在性提示”，避免模型把它扩写成虚构百分比
+    if isinstance(val, dict) and val:
+        keys = [k for k in val.keys()][:10]
+        lines.append(f"\n补充：本次解析带有 validation_summary（字段：{', '.join(map(str, keys))}）。如需更细粒度缺失/类型/异常提示，我可以继续展开。")
+    else:
+        lines.append("\n补充：如需更细粒度缺失/类型/异常提示，我可以继续展开。")
+
+    return "\n".join(lines).strip()
+
+
+def _should_direct_metric_lookup(user_message: str) -> bool:
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    has_metric = any(k in msg for k in ["流水", "营收", "收入", "净利润", "成本", "费用"])
+    has_query = any(k in msg for k in ["如何", "多少", "怎么样", "情况", "是多少", "?","？"])
+    return bool(has_metric and has_query)
+
+
+def _build_metric_lookup_reply(session_id: str, user_message: str) -> str:
+    tables = get_tables(session_id) or {}
+    if not tables:
+        return "当前会话已绑定，但解析结果中没有任何工作表数据。请换一份含有效表格的 Excel 后重新上传。"
+
+    q = (user_message or "").strip()
+    m = re.search(r"([\u4e00-\u9fa5A-Za-z0-9_\-]{1,40})的(流水|营收|收入|净利润|成本|费用)", q)
+    keyword = (m.group(1) if m else "").strip()
+    metric_word = (m.group(2) if m else "")
+
+    metric_alias = {
+        "流水": ["流水", "营收", "收入", "revenue", "sales", "turnover"],
+        "营收": ["营收", "收入", "revenue", "sales", "turnover"],
+        "收入": ["收入", "营收", "revenue", "sales", "turnover"],
+        "净利润": ["净利润", "利润", "profit"],
+        "成本": ["成本", "支出", "费用", "cost", "expense"],
+        "费用": ["费用", "支出", "成本", "cost", "expense"],
+    }
+    keys = metric_alias.get(metric_word or "流水", metric_alias["流水"])
+
+    def _pick_metric_col(headers: list[str]) -> int:
+        for i, h in enumerate(headers):
+            hl = str(h or "").lower()
+            if any(k in hl for k in keys):
+                return i
+        # 次优：第一列含“金额/值”的列
+        for i, h in enumerate(headers):
+            hl = str(h or "").lower()
+            if any(k in hl for k in ["金额", "数值", "value", "amt"]):
+                return i
+        return -1
+
+    matches: list[tuple[str, float | None]] = []
+    checked_sheets: list[str] = []
+    metric_cols_found: list[str] = []
+    for sheet_name, t in tables.items():
+        headers = [str(x or "").strip() for x in (t.get("headers") or [])]
+        rows = t.get("rows") or []
+        checked_sheets.append(str(sheet_name))
+        mi = _pick_metric_col(headers)
+        if mi >= 0:
+            metric_cols_found.append(f"{sheet_name}.{headers[mi]}")
+        if not keyword:
+            continue
+        for row in rows:
+            text = " ".join(str(c) for c in (row or []))
+            if keyword not in text:
+                continue
+            val = None
+            if mi >= 0 and isinstance(row, list) and mi < len(row):
+                try:
+                    val = float(row[mi])
+                except (TypeError, ValueError):
+                    val = None
+            matches.append((sheet_name, val))
+
+    if not keyword:
+        return (
+            "当前会话有效。若要查询某对象的指标，请使用“<对象>的<指标>如何”格式，例如“项目A的流水如何”。"
+            f"当前已解析工作表：{'、'.join(checked_sheets[:5])}。"
+        )
+
+    if not matches:
+        # 兜底：转置表结构（第一行是对象，第一列是指标）识别
+        # 例：表头 ["流水","破天一剑"]，行 ["本年累计",10], ["目标",100]
+        for sheet_name, t in tables.items():
+            headers = [str(x or "").strip() for x in (t.get("headers") or [])]
+            rows = t.get("rows") or []
+            if not headers or not rows or not keyword:
+                continue
+            if keyword not in headers:
+                continue
+            col_idx = headers.index(keyword)
+            # 指标主题可在第 0 列表头，也可能在行标签
+            metric_theme = headers[0] if headers else ""
+            metric_like = any(k in (metric_theme or "") for k in keys) or metric_word in (metric_theme or "")
+            if not metric_like:
+                # 若主题不匹配，再看行标签里是否出现 metric 词
+                row_label_hit = False
+                for row in rows:
+                    if not isinstance(row, list) or not row:
+                        continue
+                    lbl = str(row[0] or "").strip()
+                    if any(k in lbl for k in keys):
+                        row_label_hit = True
+                        break
+                if not row_label_hit:
+                    continue
+
+            def _row_label(row: list[Any]) -> str:
+                return str(row[0] if row else "").strip()
+
+            preferred_order = ["本年累计", "累计", "本年", "实际", "当前", "值", "流水", "营收", "收入"]
+            picked_row = None
+            for pref in preferred_order:
+                for row in rows:
+                    if not isinstance(row, list):
+                        continue
+                    if col_idx >= len(row):
+                        continue
+                    if pref in _row_label(row) and _is_numeric_like(row[col_idx]):
+                        picked_row = row
+                        break
+                if picked_row is not None:
+                    break
+            if picked_row is None:
+                for row in rows:
+                    if not isinstance(row, list):
+                        continue
+                    if col_idx < len(row) and _is_numeric_like(row[col_idx]):
+                        picked_row = row
+                        break
+            if picked_row is not None:
+                cur_label = _row_label(picked_row) or "当前值"
+                cur_val = float(picked_row[col_idx])
+                target_val = None
+                for row in rows:
+                    if not isinstance(row, list):
+                        continue
+                    lbl = _row_label(row)
+                    if col_idx < len(row) and any(k in lbl for k in ["目标", "预算", "plan", "target"]) and _is_numeric_like(row[col_idx]):
+                        target_val = float(row[col_idx])
+                        break
+                if target_val is not None and abs(target_val) > 1e-9:
+                    ratio = cur_val / target_val * 100.0
+                    return (
+                        f"已在「{sheet_name}」识别到「{keyword}」的{metric_word or '指标'}："
+                        f"{cur_label}={cur_val:.2f}，目标={target_val:.2f}，完成率约 {ratio:.1f}%。"
+                    )
+                return f"已在「{sheet_name}」识别到「{keyword}」的{metric_word or '指标'}：{cur_label}={cur_val:.2f}。"
+
+        cols = "、".join(metric_cols_found[:6]) if metric_cols_found else "（未识别到明确的指标列）"
+        return (
+            f"当前会话有效，但未在已解析数据中检索到与「{keyword}」相关的记录。"
+            f"已检索工作表：{'、'.join(checked_sheets[:5])}；可用指标列：{cols}。"
+            "请核对关键词是否与表内文本一致，或提供具体 sheet/列名后我继续定位。"
+        )
+
+    vals = [v for _s, v in matches if isinstance(v, float)]
+    if vals:
+        total = sum(vals)
+        return (
+            f"已在当前会话中检索到与「{keyword}」相关记录 {len(matches)} 条，"
+            f"匹配到的“{metric_word or '指标'}”数值合计约为 {total:.2f}。"
+            "如需我展开到按月份/按工作表明细，请继续指定维度。"
+        )
+    return (
+        f"已在当前会话中检索到与「{keyword}」相关记录 {len(matches)} 条，"
+        f"但未能稳定解析出“{metric_word or '指标'}”数值列。"
+        "请提供具体 sheet 与列名，我可直接返回明细表。"
+    )
 
 
 def _ollama_base() -> str:
@@ -168,6 +561,82 @@ def _to_num(v: Any) -> float:
         return 0.0
 
 
+def _safe_header_name(v: Any) -> str:
+    s = str(v or "").strip()
+    return s
+
+
+def _is_numeric_like(v: Any) -> bool:
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return False
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _pick_fallback_chart_choice(tables: dict[str, dict[str, Any]], chart_type: str) -> dict[str, Any] | None:
+    """
+    当 column_profiles 不完整或判定失败时的兜底策略：
+    - 优先选第一个有数据的 sheet
+    - x 轴优先时间相关列名，否则第一列非空列名
+    - y 轴优先“数值占比最高”的列，且不与 x 同列
+    """
+    for sheet_name, t in (tables or {}).items():
+        headers_raw = t.get("headers") or []
+        rows = t.get("rows") or []
+        headers = [_safe_header_name(h) for h in headers_raw]
+        if not rows or not headers:
+            continue
+
+        nonempty = [(i, h) for i, h in enumerate(headers) if h]
+        if not nonempty:
+            continue
+
+        time_idx = -1
+        for i, h in nonempty:
+            hl = h.lower()
+            if any(k in hl for k in ["日期", "时间", "月份", "month", "date", "year", "季度", "quarter"]):
+                time_idx = i
+                break
+        if time_idx < 0:
+            time_idx = nonempty[0][0]
+        x_col = headers[time_idx]
+
+        best_y_idx = -1
+        best_ratio = -1.0
+        for i, h in nonempty:
+            if i == time_idx:
+                continue
+            vals = [row[i] for row in rows if isinstance(row, list) and i < len(row)]
+            if not vals:
+                continue
+            num_cnt = sum(1 for v in vals if _is_numeric_like(v))
+            ratio = num_cnt / max(1, len(vals))
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_y_idx = i
+        if best_y_idx < 0:
+            # 如果都不像数值列，也至少给一个可画的列，避免“生成图表”直接失败
+            for i, _h in nonempty:
+                if i != time_idx:
+                    best_y_idx = i
+                    break
+        if best_y_idx < 0:
+            continue
+        y_col = headers[best_y_idx]
+        if not x_col or not y_col:
+            continue
+        return {
+            "sheet_name": sheet_name,
+            "x_column": x_col,
+            "y_columns": [y_col],
+            "chart_type": chart_type,
+        }
+    return None
+
+
 def _infer_metric_tag(col_name: str) -> str | None:
     """根据列名粗略推断财务语义标签（profit / revenue / cost 等）。"""
     name = (col_name or "").lower()
@@ -220,8 +689,10 @@ def _auto_pick_chart_from_intent(session_id: str, intent: str, preferred_chart_t
 
     metrics = get_metrics(session_id)
     tables = get_tables(session_id)
-    if not metrics or not tables:
-        return {"error": "当前会话无可用表格数据，请先上传并解析 Excel。"}
+    if tables is None or metrics is None:
+        return {"error": "会话不存在或已过期（例如后端已重启）。请在本页重新上传 Excel 以创建新会话。"}
+    if not tables:
+        return {"error": "当前会话已绑定，但解析结果中没有任何工作表数据。请换一份含有效表格的 Excel 后重新上传。"}
 
     profiles_all = metrics.get("column_profiles") or {}
     validation = metrics.get("validation_summary") or {}
@@ -320,6 +791,8 @@ def _auto_pick_chart_from_intent(session_id: str, intent: str, preferred_chart_t
                     "chart_type": chart_type,
                 }
 
+    if best_choice is None:
+        best_choice = _pick_fallback_chart_choice(tables, chart_type)
     if best_choice is None:
         return {"error": "未能根据当前数据与意图自动匹配合适的图表，请在问题中注明表名和列名后重试。"}
 
@@ -432,17 +905,45 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def _should_direct_auto_chart(user_message: str) -> bool:
+def _looks_like_session_missing_reply(text: str) -> bool:
+    t = (text or "").lower()
+    if not t:
+        return False
+    patterns = [
+        "会话不存在",
+        "session 不存在",
+        "session不存在",
+        "会话未绑定",
+        "未绑定有效表格",
+        "请先上传",
+    ]
+    return any(p in t for p in patterns)
+
+
+def _build_session_valid_hint(session_id: str) -> str:
+    tables = get_tables(session_id) or {}
+    if not tables:
+        return "当前会话已绑定，但解析结果中没有任何工作表数据。请换一份含有效表格的 Excel 后重新上传。"
+    names = list(tables.keys())
+    show = "、".join(names[:5])
+    more = "" if len(names) <= 5 else f" 等 {len(names)} 张"
+    return f"当前会话有效，已解析到工作表：{show}{more}。如需具体分析，请明确指标/表名，或让我先调用 read_metrics。"
+
+
+def _should_direct_auto_chart(user_message: str, session_id: str | None = None) -> bool:
     """
     粗粒度判断：是否可以直接走后端 auto_generate_chart，而不依赖 LLM 自己决定是否调用工具。
     场景：用户明显在要求“画某个指标的趋势/排名图”，例如「画一个利润趋势图」「按项目看营收排名」。
+    含「生成图表」等短指令且当前会话已有表数据时，也走自动匹配（避免仅因缺少“利润”等词而失败）。
     """
     msg = (user_message or "").strip()
     if not msg:
         return False
     m = msg.lower()
     # 是否提到图表 / 画图
-    has_chart_intent = any(k in m for k in ["画", "趋势图", "趋势", "图", "plot", "chart", "可视化"])
+    has_chart_intent = any(
+        k in m for k in ["画", "生成图表", "作图", "出图", "趋势图", "趋势", "图", "plot", "chart", "可视化"]
+    )
     # 是否提到典型经营指标
     has_metric = any(
         k in m
@@ -461,7 +962,12 @@ def _should_direct_auto_chart(user_message: str) -> bool:
             "expense",
         ]
     )
-    return bool(has_chart_intent and has_metric)
+    tables_ok = False
+    if session_id:
+        t = get_tables(session_id)
+        tables_ok = bool(t and len(t) > 0)
+    explicit_chart = "生成图表" in msg or "帮我画图" in msg or "画个图" in msg
+    return bool(has_chart_intent and (has_metric or (explicit_chart and tables_ok) or (tables_ok and ("图" in msg or "chart" in m))))
 
 
 def generate_analysis(session_id: str) -> str:
@@ -488,17 +994,38 @@ def generate_analysis(session_id: str) -> str:
         return "解读生成失败，请检查 Ollama 服务。"
 
 
-def chat(session_id: str, user_message: str) -> dict[str, Any]:
+def chat(
+    session_id: str,
+    user_message: str,
+    *,
+    enabled_skills: list[str] | None = None,
+    prompt_addon: str | None = None,
+) -> dict[str, Any]:
     """
     多轮对话：支持工具调用（read_metrics, generate_chart, generate_table 等）。
     返回 { "reply": str, "chart_spec": dict|None, "table_spec": dict|None }。
+
+    enabled_skills：AI 互动工作流传入；与 manifest 登记一致的 ID 会将对应 SKILL.md 正文注入 system（可多选叠加）。
+    prompt_addon：由前端将勾选的 prompt.* 摘要/正文拼接后注入 system（服务端截断）。
     """
     if not get_session(session_id):
         return {"reply": "会话不存在或已过期，请重新上传表格。", "chart_spec": None, "table_spec": None}
 
+    skill_ids = [str(x).strip() for x in (enabled_skills or []) if str(x).strip()]
+    skill_md_addon = build_system_addon_for_enabled_skills(skill_ids)
+
+    # 结构型问法：直接由后端确定性生成（避免模型编造“无表/缺失比例”等）
+    if _should_direct_sheet_usage_risk(user_message):
+        reply = _build_sheet_usage_risk_reply(session_id)
+        return {"reply": reply, "chart_spec": None, "table_spec": None}
+    # 指标检索类问法（如“xx 的流水如何”）：直接后端检索，避免模型误报 session 失效
+    if _should_direct_metric_lookup(user_message):
+        reply = _build_metric_lookup_reply(session_id, user_message)
+        return {"reply": reply, "chart_spec": None, "table_spec": None}
+
     # 一类高频且规则明确的需求（如「画一个利润趋势图」），直接由后端触发 auto_generate_chart，
     # 避免完全依赖 LLM 自己是否调用工具，从而提升可预测性与成功率。
-    if _should_direct_auto_chart(user_message):
+    if _should_direct_auto_chart(user_message, session_id):
         auto_res = _auto_pick_chart_from_intent(session_id, user_message, None)
         if "chart_spec" in auto_res:
             resolved = auto_res.get("resolved") or {}
@@ -512,7 +1039,14 @@ def chat(session_id: str, user_message: str) -> dict[str, Any]:
         return {"reply": err_msg, "chart_spec": None, "table_spec": None}
 
     skills = _load_skills()
-    system = _build_system_prompt(skills)
+    system = (
+        _build_system_prompt(
+            skills,
+            playbook_addon=skill_md_addon,
+            prompt_addon=(prompt_addon or "").strip(),
+        )
+        + _session_table_bootstrap(session_id)
+    )
     tools_def = _get_tools_def()
 
     from backend.services.data_parse_session import append_chat_history, get_chat_history
@@ -568,7 +1102,84 @@ def chat(session_id: str, user_message: str) -> dict[str, Any]:
 
         reply_text = content or "已执行工具，请查看图表或表格。"
 
+    from backend.services.data_parse_output_validate import append_output_shape_audit
+
+    reply_text = append_output_shape_audit(reply_text, prompt_addon=prompt_addon)
+    # 防幻觉兜底：会话有效时，禁止输出“会话不存在/未绑定”等错误结论。
+    if _looks_like_session_missing_reply(reply_text):
+        if _should_direct_sheet_usage_risk(user_message):
+            reply_text = _build_sheet_usage_risk_reply(session_id)
+        else:
+            reply_text = _build_session_valid_hint(session_id)
+
     append_chat_history(session_id, "user", user_message)
     append_chat_history(session_id, "assistant", reply_text)
 
     return {"reply": reply_text, "chart_spec": chart_spec_out, "table_spec": table_spec_out}
+
+
+def chat_multi(
+    session_ids: list[str],
+    user_message: str,
+    *,
+    enabled_skills: list[str] | None = None,
+    prompt_addon: str | None = None,
+) -> dict[str, Any]:
+    """
+    多会话聚合（多 Excel 并存）：
+    - deterministic 路由优先：风险分析/指标检索/生成图表
+    - 其它问题默认使用第一个会话（primary）走原 chat
+    """
+    ids = [str(x).strip() for x in (session_ids or []) if str(x).strip()]
+    if not ids:
+        return {"reply": "缺少 session_id，请先上传并解析 Excel。", "chart_spec": None, "table_spec": None}
+    # 去重保序
+    seen = set()
+    ids = [x for x in ids if not (x in seen or seen.add(x))]
+    primary = ids[0]
+
+    # 若只有一个会话，直接走原逻辑
+    if len(ids) == 1:
+        return chat(primary, user_message, enabled_skills=enabled_skills, prompt_addon=prompt_addon)
+
+    # 指标检索：在所有会话里找“能给出值/完成率”的那一个
+    if _should_direct_metric_lookup(user_message):
+        best = None
+        for sid in ids:
+            if not get_session(sid):
+                continue
+            txt = _build_metric_lookup_reply(sid, user_message)
+            if "完成率" in txt or re.search(r"\b\d+\.\d{2}\b", txt):
+                return {"reply": txt, "chart_spec": None, "table_spec": None}
+            best = best or txt
+        return {"reply": best or _build_session_valid_hint(primary), "chart_spec": None, "table_spec": None}
+
+    # 风险/用途：合并输出（按会话分组）
+    if _should_direct_sheet_usage_risk(user_message):
+        parts: list[str] = []
+        for sid in ids:
+            if not get_session(sid):
+                continue
+            parts.append(f"### 会话 {sid[:8]}…\n{_build_sheet_usage_risk_reply(sid)}")
+        if parts:
+            return {"reply": "\n\n".join(parts).strip(), "chart_spec": None, "table_spec": None}
+        return {"reply": "所有会话均不存在或已过期，请重新上传表格。", "chart_spec": None, "table_spec": None}
+
+    # 生成图表：优先 primary，失败则遍历
+    if _should_direct_auto_chart(user_message, primary) or ("生成图表" in (user_message or "") and user_message.strip() == "生成图表"):
+        for sid in ids:
+            if not get_session(sid):
+                continue
+            auto_res = _auto_pick_chart_from_intent(sid, user_message, None)
+            if "chart_spec" in auto_res:
+                resolved = auto_res.get("resolved") or {}
+                reply = (
+                    f"已根据当前表自动生成「{resolved.get('sheet_name', '')}」中"
+                    f"列「{', '.join(resolved.get('y_columns') or [])}」的趋势图。"
+                )
+                return {"reply": reply, "chart_spec": auto_res["chart_spec"], "table_spec": None}
+        # 都失败
+        return {"reply": "未能在已绑定的任一表中自动匹配合适的图表。请说明要画的指标/表名/列名。", "chart_spec": None, "table_spec": None}
+
+    # 其它：默认使用 primary（MVP：后续可做跨 session 工具调用）
+    return chat(primary, user_message, enabled_skills=enabled_skills, prompt_addon=prompt_addon)

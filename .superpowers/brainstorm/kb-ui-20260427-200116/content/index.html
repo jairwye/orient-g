@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>知识库 Tab UI — 对照稿</title>
+    <style>
+      :root{
+        --bg:#0b0f14;--panel:#0f1621;--panel2:#0c131d;--bd:#223043;--txt:#e6edf3;--mut:#93a4b8;
+        --chip:#152131;--chip2:#101a27;--good:#2ecc71;--warn:#f39c12;--bad:#e74c3c;--accent:#4aa3ff;
+      }
+      *{box-sizing:border-box}
+      body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",Arial;
+        background:var(--bg);color:var(--txt)}
+      .wrap{max-width:1400px;margin:0 auto;padding:18px}
+      .top{display:flex;align-items:center;gap:12px;justify-content:space-between;margin-bottom:14px}
+      .title{display:flex;flex-direction:column;gap:4px}
+      .title h1{margin:0;font-size:16px;font-weight:650;letter-spacing:.2px}
+      .title p{margin:0;font-size:12px;color:var(--mut)}
+      .legend{display:flex;gap:8px;flex-wrap:wrap}
+      .pill{font-size:12px;border:1px solid var(--bd);background:var(--chip2);color:var(--mut);padding:6px 10px;border-radius:999px}
+      .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+      @media (max-width:1100px){.grid{grid-template-columns:1fr}}
+      .card{border:1px solid var(--bd);background:linear-gradient(180deg,var(--panel),var(--panel2));border-radius:12px;overflow:hidden}
+      .card .hd{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--bd)}
+      .card .hd .k{display:flex;align-items:center;gap:10px}
+      .badge{font-size:11px;border:1px solid var(--bd);background:var(--chip);color:var(--mut);padding:2px 8px;border-radius:999px}
+      .card .bd{padding:12px}
+      .row{display:flex;gap:10px;align-items:center}
+      .search{flex:1;border:1px solid var(--bd);background:#0a111a;color:var(--txt);border-radius:10px;padding:10px 10px;font-size:12px}
+      .btn{border:1px solid var(--bd);background:#0a111a;color:var(--txt);border-radius:10px;padding:10px 10px;font-size:12px}
+      .btn.primary{border-color:#2a4566;background:#0d1a2a}
+      .btn.accent{border-color:#2a4566;background:rgba(74,163,255,.08);color:#cfe6ff}
+      .split{display:grid;grid-template-columns:320px 1fr;gap:10px;margin-top:12px}
+      @media (max-width:900px){.split{grid-template-columns:1fr}}
+      .side{border:1px solid var(--bd);border-radius:10px;background:#0a111a;padding:10px}
+      .main{border:1px solid var(--bd);border-radius:10px;background:#0a111a;padding:10px}
+      .secTitle{font-size:12px;color:var(--mut);display:flex;align-items:center;justify-content:space-between;margin:0 0 8px}
+      .tree .node{display:flex;align-items:center;justify-content:space-between;padding:7px 8px;border-radius:8px}
+      .tree .node:hover{background:#0e1724}
+      .tree .node .l{display:flex;gap:8px;align-items:center;font-size:12px}
+      .dot{width:7px;height:7px;border-radius:99px;background:#3a5676}
+      .kinds{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+      .chip{font-size:11px;border:1px solid var(--bd);background:var(--chip2);color:var(--mut);padding:4px 8px;border-radius:999px}
+      .chip.on{background:#0d1a2a;color:#cfe6ff;border-color:#2a4566}
+      table{width:100%;border-collapse:collapse;font-size:12px}
+      th,td{border-bottom:1px solid rgba(34,48,67,.65);padding:8px 6px;text-align:left;vertical-align:middle}
+      th{color:var(--mut);font-weight:600}
+      .st{display:inline-flex;align-items:center;gap:6px}
+      .s{width:8px;height:8px;border-radius:99px;background:#556b84}
+      .s.good{background:var(--good)}.s.warn{background:var(--warn)}.s.bad{background:var(--bad)}
+      .more{color:var(--mut);font-size:12px}
+      .callout{margin-top:10px;border:1px dashed rgba(74,163,255,.45);background:rgba(74,163,255,.06);border-radius:10px;padding:10px;color:#cfe6ff;font-size:12px}
+      .callout b{color:#eaf4ff}
+      .choose{font-size:12px;color:var(--mut)}
+      .optbar{display:flex;gap:10px;align-items:center}
+      .pick{cursor:pointer}
+      /* modal */
+      .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:18px}
+      .modal.on{display:flex}
+      .modal .box{width:min(860px,96vw);max-height:86vh;overflow:auto;border:1px solid var(--bd);border-radius:14px;background:linear-gradient(180deg,var(--panel),var(--panel2));box-shadow:0 30px 90px rgba(0,0,0,.6)}
+      .modal .box .mh{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid var(--bd)}
+      .modal .box .mh h2{margin:0;font-size:14px}
+      .modal .box .mb{padding:12px 14px}
+      .krow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+      .mini{font-size:12px;color:var(--mut)}
+      .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+      .tab{font-size:12px;border:1px solid var(--bd);background:var(--chip2);color:var(--mut);padding:6px 10px;border-radius:999px;cursor:pointer}
+      .tab.on{background:#0d1a2a;color:#cfe6ff;border-color:#2a4566}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="top">
+        <div class="title">
+          <h1>知识库 Tab — 极简对照稿（按你的反馈重做）</h1>
+          <p>目标：去掉多余层级；同一 frame 容纳不同知识库；右侧“管理面板”去掉，回归“三点菜单”；恢复“大 PDF 包管理”原位置。</p>
+        </div>
+        <div class="legend">
+          <span class="pill">点击卡片左上角：A/B/C 选择偏好</span>
+          <span class="pill">重点先做：B 管理 → A 搜索 → C 日志</span>
+        </div>
+      </div>
+
+      <div class="grid">
+        <!-- Option A -->
+        <div class="card pick" data-choice="A" onclick="selectChoice('A')">
+          <div class="hd">
+            <div class="k">
+              <span class="badge">方案 A</span>
+              <span class="choose">单页一体：树 + 列表（无额外标题层）</span>
+            </div>
+            <div class="optbar"><span class="more">偏好：极简浏览</span></div>
+          </div>
+          <div class="bd">
+            <div class="row">
+              <input class="search" value="" placeholder="搜索文档/文件夹/ID（全局）" />
+              <button class="btn primary">上传</button>
+              <button class="btn">新建文件夹</button>
+              <button class="btn accent" onclick="event.stopPropagation();openPdfModal()">大PDF产物</button>
+              <button class="btn">⋯</button>
+            </div>
+
+            <div class="split">
+              <div class="side">
+                <div class="kinds">
+                  <span class="chip on">私人</span>
+                  <span class="chip on">公司公共</span>
+                  <span class="chip">部门</span>
+                  <span class="chip">项目</span>
+                </div>
+                <div class="secTitle"><span>文件夹</span><span class="more">⋯</span></div>
+                <div class="tree">
+                  <div class="node"><div class="l"><span class="dot"></span>合同管理</div><span class="more">⋯</span></div>
+                  <div class="node"><div class="l"><span class="dot"></span>合同台账</div><span class="more">⋯</span></div>
+                  <div class="node"><div class="l"><span class="dot"></span>财务报表</div><span class="more">⋯</span></div>
+                </div>
+              </div>
+              <div class="main">
+                <div class="secTitle"><span>文档</span><span class="more">（批量/移动/权限都在“⋯”菜单内）</span></div>
+                <table>
+                  <thead>
+                    <tr><th style="width:34px;"></th><th>名称</th><th>状态</th><th>位置</th><th>更新时间</th><th style="width:40px;"></th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td><input type="checkbox" /></td><td>合同_XX公司_2026.pdf</td><td><span class="st"><span class="s.good"></span>可用</span></td><td>合同管理</td><td>今天 16:20</td><td>⋯</td></tr>
+                    <tr><td><input type="checkbox" /></td><td>台账_2026Q1.xlsx</td><td><span class="st"><span class="s.warn"></span>处理中</span></td><td>合同台账</td><td>今天 16:10</td><td>⋯</td></tr>
+                    <tr><td><input type="checkbox" /></td><td>说明_规则.md</td><td><span class="st"><span class="s.bad"></span>失败</span></td><td>未归类</td><td>昨天 21:33</td><td>⋯</td></tr>
+                  </tbody>
+                </table>
+                <div class="callout"><b>关键变化：</b>去掉“知识库”大标题层与“文件浏览器”标题层；不同知识库同一 frame 用 chips/过滤承载；所有管理动作回归每行/每文件夹 “⋯”。</div>
+                <div class="callout" style="margin-top:10px">
+                  <b>大PDF（产物视角）：</b>不占主列表区域；通过顶栏“<span style="color:#cfe6ff">大PDF产物</span>”查看包列表/下载/删除/跳转工具页。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Option B -->
+        <div class="card pick" data-choice="B" onclick="selectChoice('B')">
+          <div class="hd">
+            <div class="k">
+              <span class="badge">方案 B</span>
+              <span class="choose">Open-WebUI 风格：同 frame + 顶部工具条 + 列表为中心</span>
+            </div>
+            <div class="optbar"><span class="more">偏好：治理/管理</span></div>
+          </div>
+          <div class="bd">
+            <div class="row">
+              <button class="btn">范围：私人+公司公共 ▾</button>
+              <input class="search" value="" placeholder="搜索（支持：状态、文件夹、ID）" />
+              <button class="btn primary">上传</button>
+              <button class="btn">⋯</button>
+            </div>
+            <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+              <span class="chip on">全部</span><span class="chip">处理中</span><span class="chip">可用</span><span class="chip">失败</span>
+              <span class="more">排序：私人、公司公共置顶；其他保持原顺序</span>
+            </div>
+
+            <div class="split" style="grid-template-columns:260px 1fr">
+              <div class="side">
+                <div class="secTitle"><span>文件夹</span><span class="more">+ / ⋯</span></div>
+                <div class="tree">
+                  <div class="node"><div class="l"><span class="dot"></span>合同管理</div><span class="more">⋯</span></div>
+                  <div class="node"><div class="l"><span class="dot"></span>合同台账</div><span class="more">⋯</span></div>
+                  <div class="node"><div class="l"><span class="dot"></span>（部门公共）默认文件夹</div><span class="more">⋯</span></div>
+                </div>
+                <div class="callout"><b>权限/回收分享：</b>放在文件夹 “⋯ → 分享/权限” 里；支持“一键全撤 + 高级按范围撤回”。</div>
+              </div>
+              <div class="main">
+                <div class="secTitle"><span>文档（点选=详情弹层，不占常驻右栏）</span><span class="more">批量：顶部浮层工具条或“⋯”</span></div>
+                <table>
+                  <thead>
+                    <tr><th style="width:34px;"></th><th>名称</th><th>状态</th><th>范围</th><th>更新时间</th><th style="width:40px;"></th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td><input type="checkbox" /></td><td>合同_YY项目_2026.pdf</td><td><span class="st"><span class="s.good"></span>可用</span></td><td>公司公共</td><td>今天 16:02</td><td>⋯</td></tr>
+                    <tr><td><input type="checkbox" /></td><td>台账_合同台账_2026.xlsx</td><td><span class="st"><span class="s.warn"></span>处理中</span></td><td>私人</td><td>今天 15:40</td><td>⋯</td></tr>
+                    <tr><td><input type="checkbox" /></td><td>RAG包_2026-04.pdfpkg</td><td><span class="st"><span class="s.good"></span>可用</span></td><td>私人</td><td>今天 14:10</td><td>⋯</td></tr>
+                  </tbody>
+                </table>
+                <div class="callout"><b>关键变化：</b>同 frame 里承载不同知识库；取消常驻右侧“管理面板”；“大 PDF 包管理”作为列表一类资源或独立列表项（不占第二栏）。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <script>
+      function openPdfModal(){
+        const m=document.getElementById("pdfModal");
+        if(m) m.classList.add("on");
+      }
+      function closePdfModal(){
+        const m=document.getElementById("pdfModal");
+        if(m) m.classList.remove("on");
+      }
+      function selectChoice(c){
+        localStorage.setItem("kb-ui-choice", c);
+        alert("已选择方案 " + c + "。请在聊天里回复：我选 " + c + "，并说 1 句话原因。");
+      }
+    </script>
+
+    <!-- 大PDF产物弹层（产物视角） -->
+    <div id="pdfModal" class="modal" onclick="closePdfModal()">
+      <div class="box" onclick="event.stopPropagation()">
+        <div class="mh">
+          <div>
+            <h2>大PDF产物（包列表）</h2>
+            <div class="mini">这里展示“产物”，不展示“过程”；过程进度仍可在工具页查看。</div>
+          </div>
+          <div class="krow">
+            <button class="btn" onclick="closePdfModal()">关闭</button>
+            <button class="btn primary">打开工具页</button>
+          </div>
+        </div>
+        <div class="mb">
+          <div class="krow">
+            <input class="search" style="max-width:360px" placeholder="搜索包名 / package_id" />
+            <div class="tabs">
+              <span class="tab on">全部</span>
+              <span class="tab">最近7天</span>
+              <span class="tab">失败产物</span>
+            </div>
+          </div>
+          <div style="margin-top:10px">
+            <table>
+              <thead>
+                <tr>
+                  <th>包名</th><th>状态</th><th>来源文件夹</th><th>创建时间</th><th style="width:180px">导出类型</th><th style="width:70px">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>RAG包_合同台账_2026Q1.pdfpkg</td>
+                  <td><span class="st"><span class="s.good"></span>可用</span></td>
+                  <td>合同台账</td>
+                  <td>今天 14:10</td>
+                  <td>
+                    <select class="btn" style="padding:8px 10px">
+                      <option>Open-WebUI 专用包</option>
+                      <option selected>cn_kb</option>
+                      <option>standard</option>
+                    </select>
+                  </td>
+                  <td><span class="more">⋯</span></td>
+                </tr>
+                <tr>
+                  <td>RAG包_合同扫描件_2026-04.pdfpkg</td>
+                  <td><span class="st"><span class="s.warn"></span>生成中</span></td>
+                  <td>合同管理</td>
+                  <td>今天 16:05</td>
+                  <td>
+                    <select class="btn" style="padding:8px 10px">
+                      <option selected>Open-WebUI 专用包</option>
+                      <option>cn_kb</option>
+                      <option>standard</option>
+                    </select>
+                  </td>
+                  <td><span class="more">⋯</span></td>
+                </tr>
+                <tr>
+                  <td>RAG包_失败样例.pdfpkg</td>
+                  <td><span class="st"><span class="s.bad"></span>失败</span></td>
+                  <td>未归类</td>
+                  <td>昨天 21:33</td>
+                  <td>
+                    <select class="btn" style="padding:8px 10px">
+                      <option>Open-WebUI 专用包</option>
+                      <option>cn_kb</option>
+                      <option selected>standard</option>
+                    </select>
+                  </td>
+                  <td><span class="more">⋯</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout">
+            <b>为什么这样放：</b>不增加主界面层级、不拆出第二块版面；大PDF“产物”是一个可管理资源，适合弹层集中查看与操作。
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
+

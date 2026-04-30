@@ -63,6 +63,47 @@ def _to_str_list(row: list[Any]) -> list[str]:
     return [str(x) if x is not None and x != "" else "" for x in row]
 
 
+def _detect_used_col_count(rows: list[tuple], default_cols: int) -> int:
+    """
+    从原始 rows 中检测“实际使用列数”（最右非空列索引 + 1），
+    避免因 iter_rows(max_col=200) 导致所有 sheet 都被扩成 200 列。
+    """
+    used = 0
+    for row in rows or []:
+        if not row:
+            continue
+        last = -1
+        for i, v in enumerate(row):
+            if v is None:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            last = i
+        if last + 1 > used:
+            used = last + 1
+    if used <= 0:
+        return max(1, min(default_cols, MAX_COLS))
+    return min(used, MAX_COLS)
+
+
+def _normalize_headers(headers: list[str]) -> list[str]:
+    """
+    表头规范化：
+    - 空列名补成“列N”
+    - 重名列追加后缀“_2/_3”
+    """
+    out: list[str] = []
+    seen: dict[str, int] = {}
+    for i, h in enumerate(headers):
+        base = (h or "").strip()
+        if not base:
+            base = f"列{i + 1}"
+        n = int(seen.get(base) or 0) + 1
+        seen[base] = n
+        out.append(base if n == 1 else f"{base}_{n}")
+    return out
+
+
 def _looks_like_header_vs_data(header_row: list[Any], data_row: list[Any]) -> bool:
     """简单判断一行是否更像表头：自身多为字符串，下一行更多是数字。"""
     if not header_row or not data_row:
@@ -88,8 +129,30 @@ def _detect_header_row(cleaned_rows: list[list[Any]]) -> int | None:
     - 包含典型标题关键词；或
     - 与下一行在“字符串 vs 数字分布”上明显不同。
     """
-    max_check = min(10, len(cleaned_rows))
-    header_indicators = ["名称", "姓名", "name", "id", "编号", "日期", "date", "金额", "amount"]
+    max_check = min(20, len(cleaned_rows))
+    header_indicators = [
+        "名称",
+        "姓名",
+        "name",
+        "id",
+        "编号",
+        "日期",
+        "date",
+        "时间",
+        "月份",
+        "month",
+        "项目",
+        "部门",
+        "金额",
+        "amount",
+        "收入",
+        "营收",
+        "利润",
+        "成本",
+        "费用",
+    ]
+    best_idx = None
+    best_score = -1.0
     for i in range(max_check):
         row = cleaned_rows[i]
         non_empty = [str(v).strip() for v in row if v not in (None, "")]
@@ -101,6 +164,25 @@ def _detect_header_row(cleaned_rows: list[list[Any]]) -> int | None:
         if i + 1 < len(cleaned_rows):
             if _looks_like_header_vs_data(row, cleaned_rows[i + 1]):
                 return i
+        # 兜底打分：字符串占比高 + 唯一值比例高 + 下一行有更多数值
+        str_cnt = 0
+        num_next = 0
+        for v in row:
+            s = str(v).strip() if v is not None else ""
+            if s and not s.replace(".", "").replace("-", "").isdigit():
+                str_cnt += 1
+        if i + 1 < len(cleaned_rows):
+            for v in cleaned_rows[i + 1]:
+                s = str(v).strip() if v is not None else ""
+                if s and s.replace(".", "").replace("-", "").isdigit():
+                    num_next += 1
+        uniq_ratio = len(set(non_empty)) / max(1, len(non_empty))
+        score = str_cnt * 1.0 + uniq_ratio * 2.0 + num_next * 0.3
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    if best_idx is not None and best_score >= 2.5:
+        return best_idx
     return None
 
 
@@ -144,6 +226,7 @@ def generic_parse_excel(content: bytes) -> dict[str, Any]:
             continue
         max_cols_num = max(len(r) for r in all_rows) if all_rows else 0
         max_cols_num = min(max_cols_num, MAX_COLS)
+        max_cols_num = _detect_used_col_count(all_rows, max_cols_num)
         cleaned = _clean_rows(all_rows, max_cols_num)
         if not cleaned:
             tables[name] = {"headers": [], "rows": []}
@@ -153,7 +236,7 @@ def generic_parse_excel(content: bytes) -> dict[str, Any]:
         header_idx = _detect_header_row(cleaned)
         if header_idx is None:
             header_idx = 0
-        headers = _to_str_list(cleaned[header_idx])
+        headers = _normalize_headers(_to_str_list(cleaned[header_idx]))
         data_block = cleaned[header_idx + 1 :]
         rows = [list(row)[: len(headers)] for row in data_block]
         if len(rows) > MAX_ROWS_PER_SHEET:

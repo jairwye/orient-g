@@ -554,12 +554,36 @@ def list_my_documents(tenant_id: str, owner_username: str) -> list[dict[str, Any
             ),
             {"tid": tenant_id, "owner": owner_username},
         ).fetchall()
+    doc_ids = [str(r[0]) for r in rows if r and r[0]]
+    folder_by_doc: dict[str, list[str]] = {}
+    if doc_ids:
+        with get_db() as db:
+            placeholders = ", ".join([f":d{i}" for i in range(len(doc_ids))])
+            params: dict[str, Any] = {"tid": tenant_id}
+            for i, did in enumerate(doc_ids):
+                params[f"d{i}"] = did
+            fr_rows = db.execute(
+                text(
+                    f"""
+                    SELECT resource_id, folder_id
+                    FROM kb_folder_resources
+                    WHERE tenant_id = :tid AND resource_type = 'doc' AND resource_id IN ({placeholders})
+                    """
+                ),
+                params,
+            ).fetchall()
+        for fr in fr_rows:
+            rid = str(fr[0] or "")
+            fid = str(fr[1] or "")
+            if rid and fid:
+                folder_by_doc.setdefault(rid, []).append(fid)
     out = []
     for r in rows:
-        cids = get_doc_collection_ids(tenant_id, str(r[0]))
+        did = str(r[0])
+        cids = get_doc_collection_ids(tenant_id, did)
         out.append(
             {
-                "doc_id": str(r[0]),
+                "doc_id": did,
                 "title": str(r[1] or ""),
                 "original_filename": str(r[2] or ""),
                 "size_bytes": int(r[3] or 0),
@@ -567,6 +591,7 @@ def list_my_documents(tenant_id: str, owner_username: str) -> list[dict[str, Any
                 "created_at": r[5].isoformat() if r[5] else None,
                 "last_error": str(r[6] or "") if r[6] else None,
                 "collection_ids": cids,
+                "folder_ids": folder_by_doc.get(did, []),
             }
         )
     return out

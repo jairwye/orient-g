@@ -210,11 +210,14 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                 "tool_calls": tool_calls,
             }
         try:
+            from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
             from backend.services.ai_interaction_llm import generate_chat_reply
 
+            skill_addon = build_system_addon_for_enabled_skills(enabled_skills)
             llm_reply = generate_chat_reply(
                 model=model,
                 messages=[m.model_dump() for m in (body.messages or [])],  # type: ignore[attr-defined]
+                skill_addon=skill_addon or None,
             )
             return {"denied": False, "reply": llm_reply, "citations": [], "tool_calls": tool_calls, "llm_model": model}
         except Exception as e:
@@ -243,14 +246,17 @@ def ai_interaction_chat(request: Request, body: ChatBody):
         res["reply"] = (res.get("reply") or "") + "（Ollama 未配置，当前仅返回检索结果摘要）"
         return res
     try:
+        from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
         from backend.services.ai_interaction_llm import generate_answer_with_evidence
 
+        skill_addon_kb = build_system_addon_for_enabled_skills(enabled_skills)
         llm_reply = generate_answer_with_evidence(
             tenant_id=tenant_id,
             model=model,
             user_query=query,
             citations=list(res.get("citations") or []),
             fixtures=fixtures,
+            skill_addon=skill_addon_kb or None,
         )
         res["reply"] = llm_reply
         res["llm_model"] = model
@@ -260,6 +266,19 @@ def ai_interaction_chat(request: Request, body: ChatBody):
 
     res["tool_calls"] = tool_calls
     return res
+
+
+@router.get("/skills")
+def ai_interaction_skills_catalog(request: Request):
+    """
+    返回 manifest 登记的 Agent Skill：含 SKILL.md 全文，供 AI 互动页「技能」Tab 展示。
+    与运行时注入一致（build_system_addon_for_enabled_skills 使用相同加载器）。
+    """
+    if not _get_token_from_request(request):
+        raise HTTPException(status_code=401, detail="not authenticated")
+    from backend.services.agent_skills_loader import list_skill_documents
+
+    return {"skills": list_skill_documents()}
 
 
 @router.get("/models")

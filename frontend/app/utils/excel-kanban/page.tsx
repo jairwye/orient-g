@@ -32,6 +32,10 @@ type ToolsList = { tools: { name: string; description: string; constraint: strin
 type SkillsList = Record<string, { count: number; summary: string }>;
 
 const LAST_SESSION_KEY = "orientg_data_parse_last_session";
+const ENABLE_XLSX_SKILL_KEY = "orientg_data_parse_enable_skill_xlsx_v1";
+const XLSX_SKILL_ID = "skill.data_parse.xlsx.v1";
+/** 界面展示用名称（与 SKILL.md 内标题一致，便于用户识别） */
+const XLSX_SKILL_DISPLAY_NAME = "电子表解析工作流";
 
 /** 将后端图表配置（与 Recharts 兼容）转为 Recharts 所需 data */
 function optionToRechartsData(option: KanbanChart["option"]) {
@@ -190,8 +194,25 @@ export default function ExcelKanbanPage() {
   const [toolsList, setToolsList] = useState<ToolsList | null>(null);
   const [skillsList, setSkillsList] = useState<SkillsList | null>(null);
   const [showListings, setShowListings] = useState(false);
+  const [enableXlsxSkill, setEnableXlsxSkill] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(ENABLE_XLSX_SKILL_KEY);
+    // 默认开启：该页面即“电子表数据解析工作流”
+    if (raw === null) {
+      setEnableXlsxSkill(true);
+    } else {
+      setEnableXlsxSkill(raw === "1");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(ENABLE_XLSX_SKILL_KEY, enableXlsxSkill ? "1" : "0");
+  }, [enableXlsxSkill]);
 
   useEffect(() => {
     fetch("/api/data-parse/status", { credentials: "include" })
@@ -307,7 +328,11 @@ export default function ExcelKanbanPage() {
       const res = await fetch("/api/data-parse/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, message: msg }),
+        body: JSON.stringify({
+          session_id: sessionId,
+          message: msg,
+          enabled_skills: enableXlsxSkill ? [XLSX_SKILL_ID] : undefined,
+        }),
         credentials: "include",
       });
       const data = (await res.json()) as ChatResponse | { detail?: string };
@@ -392,6 +417,15 @@ export default function ExcelKanbanPage() {
           <section className="mb-8">
             <h2 className="mb-4 text-lg font-medium text-zinc-200">问答与按需生图/生表</h2>
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+              <label className="mb-3 flex cursor-pointer items-center gap-2 text-sm text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={enableXlsxSkill}
+                  onChange={(e) => setEnableXlsxSkill(e.target.checked)}
+                  className="h-4 w-4 shrink-0 rounded border-zinc-700 bg-zinc-800"
+                />
+                <span className="text-zinc-300">对话携带 Agent Skill：{XLSX_SKILL_DISPLAY_NAME}</span>
+              </label>
               <div className="mb-4 max-h-[320px] space-y-3 overflow-y-auto">
                 {chatMessages.length === 0 && <p className="text-sm text-zinc-500">在此对当前表格提问或要求生成图表、表格。</p>}
                 {chatMessages.map((m, i) => (
@@ -463,7 +497,8 @@ export default function ExcelKanbanPage() {
             )}
             {skillsList && Object.keys(skillsList).length > 0 && (
               <div>
-                <h4 className="mb-1 font-medium text-zinc-400">Skills</h4>
+                <h4 className="mb-1 font-medium text-zinc-400">解析口径摘要（JSON 配置）</h4>
+                <p className="mb-1 text-xs text-zinc-600">以下为后端 `kanban_skills.json` 的条数统计，与上方 Agent Skill 不是同一套列示。</p>
                 <ul className="space-y-0.5">
                   {Object.entries(skillsList).map(([k, v]) => (
                     <li key={k}>

@@ -4,13 +4,42 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
 import { KnowledgeWorkspacePanel } from "../components/KnowledgeWorkspacePanel";
+import { PdfPackagesPanel } from "../knowledge/components/PdfPackagesPanel";
 import {
   emptyKbScopeCapsule,
   parseKbScopeFromSearchParams,
   readKbScopeCapsule,
   writeKbScopeCapsule,
 } from "../lib/kb_scope_capsule";
-import { ArrowUp, Check, ChevronLeft, ChevronRight, FileText, Folder, Home, MoreHorizontal, Plus, Sparkles, Trash2, Upload, Wrench, Workflow, X } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  Folder,
+  MoreHorizontal,
+  Plus,
+  ScrollText,
+  Sparkles,
+  Table,
+  Trash2,
+  Upload,
+  Wrench,
+  Workflow,
+  X,
+} from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 type SkillConfig = {
   id: string;
@@ -18,6 +47,15 @@ type SkillConfig = {
   description?: string;
   trigger_hint?: string;
   example?: string;
+};
+
+/** 与 GET /api/ai-interaction/skills 返回项一致（后端 agent_skills_loader） */
+type SkillCatalogDoc = {
+  id: string;
+  name: string;
+  description: string;
+  body_markdown: string;
+  raw_markdown: string;
 };
 
 type ToolConfig = {
@@ -31,6 +69,44 @@ type WorkflowConfig = {
   label: string;
   description?: string;
   example_prompt?: string;
+  /** 空会话时「开始对话」下方的引导文案 */
+  start_hint?: string;
+  default_enabled_prompt_ids?: string[];
+  default_enabled_skill_ids?: string[];
+  default_enabled_tool_ids?: string[];
+};
+
+/** 内置工作流与 localStorage 合并：新条目插入，同 id 以本地覆盖字段 */
+function mergeConfigById<T extends { id: string }>(builtins: T[], saved: T[] | null | undefined): T[] {
+  if (!saved?.length) return builtins.slice();
+  const sm = new Map(saved.map((x) => [x.id, x]));
+  const out: T[] = [];
+  for (const b of builtins) {
+    const s = sm.get(b.id);
+    out.push(s ? ({ ...b, ...s } as T) : b);
+  }
+  for (const s of saved) {
+    if (!builtins.some((b) => b.id === s.id)) out.push(s);
+  }
+  return out;
+}
+
+/** 与规划 1.2.2.f 第五节及工作流默认勾选一致 */
+const WF_DATA_PARSE_EXCEL_ID = "wf.data_parse.excel.v1";
+
+/** 工作空间「提示词」：全站可复用的 Prompt 设计条目（摘要 + 可选正文，供列示与后续链路引用） */
+type PromptConfig = {
+  id: string;
+  label: string;
+  description?: string;
+  /** system | user | other */
+  role?: string;
+  /** 如 data_parse、global */
+  scope?: string;
+  /** 列示用短摘要，避免把长 prompt 塞进列表 */
+  summary?: string;
+  /** 设计稿/正文，本地编辑；勿存生产密钥 */
+  body?: string;
 };
 
 type KnowledgeCollection = {
@@ -81,7 +157,14 @@ type AskResponse = {
 const BIG_PDF_SIZE_MB = 15;
 const BIG_PDF_PAGES = 60;
 
-type ChatMessage = { role: "user" | "assistant"; content: string; citations?: Citation[]; deny_reason?: string };
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+  deny_reason?: string;
+  chart_spec?: Record<string, unknown> | null;
+  table_spec?: { columns: string[]; rows: string[][] } | null;
+};
 
 type ChatSession = {
   id: string;
@@ -89,12 +172,19 @@ type ChatSession = {
   updated_at: number;
   messages: ChatMessage[];
   attachments?: Array<Omit<ComposerAttachment, "phase" | "progress"> & { phase: "done" | "error"; progress?: number }>;
+  data_parse_session_id?: string | null;
+  active_workflow_id?: string | null;
+  enabled_skills?: string[];
+  enabled_tools?: string[];
+  enabled_prompt_ids?: string[];
+  start_area_hint?: string | null;
 };
 
 const SESSIONS_LS_KEY = "orientg.ai_interaction.sessions.v1";
 const SKILL_CONFIGS_LS_KEY = "orientg.ai_interaction.skill_configs.v1";
 const TOOL_CONFIGS_LS_KEY = "orientg.ai_interaction.tool_configs.v1";
 const WORKFLOW_CONFIGS_LS_KEY = "orientg.ai_interaction.workflow_configs.v1";
+const PROMPT_CONFIGS_LS_KEY = "orientg.ai_interaction.prompt_configs.v1";
 
 function formatMb(bytes: number) {
   return Math.round((bytes / 1024 / 1024) * 10) / 10;
@@ -128,9 +218,132 @@ type ComposerAttachment = {
   size: number;
   phase: "uploading" | "done" | "error";
   progress: number;
+  /** 知识库上传 ud_… */
   docId?: string;
   error?: string;
+  /** kb_doc（默认）| 电子表数据解析工作流上传 */
+  kind?: "kb_doc" | "excel_parse";
+  /** kind=excel_parse 且 phase=done 时由 /api/data-parse/upload 返回 */
+  dataParseSessionId?: string;
 };
+
+function activeExcelParseSessionId(attachments: ComposerAttachment[]): string | null {
+  const row = attachments.find(
+    (a) =>
+      a.kind === "excel_parse" &&
+      a.phase === "done" &&
+      typeof a.dataParseSessionId === "string" &&
+      a.dataParseSessionId.trim().length > 0
+  );
+  return row?.dataParseSessionId?.trim() ?? null;
+}
+
+type ChartSpecLike = {
+  xAxis?: { data?: Array<string | number> };
+  series?: Array<{ name?: string; type?: string; data?: Array<number | string | null> }>;
+};
+
+const AI_CHART_COLORS = {
+  current: "#2563eb",
+  previous: "#3f3f46",
+  actual: "#22c55e",
+  lastYear: "#52525b",
+};
+
+function aiChartRowsFromSpec(spec: ChartSpecLike): Array<Record<string, string | number>> {
+  const labels = spec?.xAxis?.data ?? [];
+  const series = spec?.series ?? [];
+  return labels.map((name, i) => {
+    const row: Record<string, string | number> = { name: String(name ?? "") };
+    for (const s of series) {
+      const key = String(s?.name || "系列");
+      const raw = s?.data?.[i];
+      const num = typeof raw === "number" ? raw : Number(raw);
+      row[key] = Number.isFinite(num) ? num : 0;
+    }
+    return row;
+  });
+}
+
+function aiSeriesColor(name: string, idx: number): string {
+  const n = (name || "").toLowerCase();
+  if (n.includes("本年") || n.includes("current")) return AI_CHART_COLORS.current;
+  if (n.includes("去年") || n.includes("往年") || n.includes("last") || n.includes("previous")) return AI_CHART_COLORS.previous;
+  if (n.includes("目标") || n.includes("target") || n.includes("预算")) return AI_CHART_COLORS.lastYear;
+  if (idx === 0) return AI_CHART_COLORS.actual;
+  return [AI_CHART_COLORS.current, AI_CHART_COLORS.previous, AI_CHART_COLORS.actual, AI_CHART_COLORS.lastYear][idx % 4];
+}
+
+function AiInlineChart({ spec }: { spec: Record<string, unknown> }) {
+  const opt = spec as ChartSpecLike;
+  const rows = aiChartRowsFromSpec(opt);
+  const series = opt?.series ?? [];
+  if (!rows.length || !series.length) return null;
+  const isLine = series.every((s) => (s?.type || "bar").toLowerCase() === "line");
+  return (
+    <div className="mt-2 rounded border border-zinc-700 bg-zinc-900/60 p-2">
+      <ResponsiveContainer width="100%" height={220}>
+        {isLine ? (
+          <LineChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <XAxis dataKey="name" tick={{ fontSize: 11 }} stroke="#71717a" />
+            <YAxis tick={{ fontSize: 11 }} stroke="#71717a" />
+            <RechartsTooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46" }} />
+            <Legend />
+            {series.map((s, idx) => {
+              const name = String(s?.name || `系列${idx + 1}`);
+              return (
+                <Line key={`${name}-${idx}`} type="monotone" dataKey={name} stroke={aiSeriesColor(name, idx)} strokeWidth={2} dot={{ r: 2 }} />
+              );
+            })}
+          </LineChart>
+        ) : (
+          <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <XAxis dataKey="name" tick={{ fontSize: 11 }} stroke="#71717a" />
+            <YAxis tick={{ fontSize: 11 }} stroke="#71717a" />
+            <RechartsTooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46" }} />
+            <Legend />
+            {series.map((s, idx) => {
+              const name = String(s?.name || `系列${idx + 1}`);
+              return <Bar key={`${name}-${idx}`} dataKey={name} fill={aiSeriesColor(name, idx)} radius={[4, 4, 0, 0]} />;
+            })}
+          </BarChart>
+        )}
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function AiInlineTable({ spec }: { spec: { columns: string[]; rows: string[][] } }) {
+  const columns = spec.columns || [];
+  const rows = spec.rows || [];
+  if (!columns.length) return null;
+  return (
+    <div className="mt-2 overflow-x-auto rounded border border-zinc-700">
+      <table className="w-full min-w-[240px] text-left text-xs">
+        <thead>
+          <tr className="border-b border-zinc-700 bg-zinc-900/70">
+            {columns.map((c, i) => (
+              <th key={`${c}-${i}`} className="px-2 py-1.5 text-zinc-300">
+                {c || `列${i + 1}`}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 30).map((row, i) => (
+            <tr key={i} className="border-b border-zinc-800">
+              {columns.map((_, j) => (
+                <td key={j} className="px-2 py-1 text-zinc-400">
+                  {String(row[j] ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 /** 与 fetch 等价的 my-documents 上传，支持 upload 进度（XHR）。 */
 function uploadMyDocumentWithProgress(
@@ -183,7 +396,7 @@ export default function AiInteractionPage() {
   const scopeHydratedRef = useRef(false);
   const sessionsHydratedRef = useRef(false);
   const [activeLeftView, setActiveLeftView] = useState<"chat" | "workspace">("chat");
-  const [workspaceTab, setWorkspaceTab] = useState<"knowledge" | "skills" | "tools" | "workflows">("knowledge");
+  const [workspaceTab, setWorkspaceTab] = useState<"knowledge" | "pdf_packages" | "prompts" | "skills" | "tools" | "workflows">("knowledge");
   const [startAreaHint, setStartAreaHint] = useState<string | null>(null);
   const [sessionMenuOpenId, setSessionMenuOpenId] = useState<string | null>(null);
   const suppressNextSessionClickRef = useRef(false);
@@ -199,8 +412,12 @@ export default function AiInteractionPage() {
   const [uploadHint, setUploadHint] = useState<string | null>(null);
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [ragItems, setRagItems] = useState<Array<{ package_id: string; name: string; created_at?: string | null }>>([]);
+  const [ragBusyId, setRagBusyId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  /** 上传解析完成后立即发消息时，React state 可能尚未提交；优先用 ref 携带 session_id */
+  const excelParseSidRef = useRef<string | null>(null);
 
   const [plusOpen, setPlusOpen] = useState(false);
   const [plusTab, setPlusTab] = useState<"" | "kb" | "kb_advanced">("");
@@ -208,16 +425,22 @@ export default function AiInteractionPage() {
 
   const [toolsOpen, setToolsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [promptsOpen, setPromptsOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const toolsBtnRef = useRef<HTMLButtonElement>(null);
   const skillsBtnRef = useRef<HTMLButtonElement>(null);
+  const promptsBtnRef = useRef<HTMLButtonElement>(null);
   const workflowBtnRef = useRef<HTMLButtonElement>(null);
 
   const [skillConfigs, setSkillConfigs] = useState<SkillConfig[]>([]);
   const [toolConfigs, setToolConfigs] = useState<ToolConfig[]>([]);
   const [workflowConfigs, setWorkflowConfigs] = useState<WorkflowConfig[]>([]);
+  const [promptConfigs, setPromptConfigs] = useState<PromptConfig[]>([]);
+  const [skillCatalog, setSkillCatalog] = useState<SkillCatalogDoc[] | null>(null);
+  const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
+  const [skillCatalogError, setSkillCatalogError] = useState<string | null>(null);
 
-  const [configModal, setConfigModal] = useState<null | { kind: "skills" | "tools" | "workflows"; draftJson: string; error?: string }>(null);
+  const [configModal, setConfigModal] = useState<null | { kind: "skills" | "tools" | "workflows" | "prompts"; draftJson: string; error?: string }>(null);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -259,10 +482,69 @@ export default function AiInteractionPage() {
     // 方案 B：不在此页自动合并 default_selected_*，避免未操作即开启 RAG。
   }, []);
 
+  const refreshRagPackages = useCallback(async () => {
+    try {
+      const res = await fetch("/api/knowledge/rag-packages", { credentials: "include", headers: getAuthHeaders() });
+      const data = (await res.json().catch(() => ({}))) as { items?: Array<{ package_id: string; name: string; created_at?: string | null }> };
+      const items = Array.isArray(data.items) ? data.items : [];
+      setRagItems(items);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const downloadRagExport = useCallback(async (pkgId: string, profile: "openwebui" | "cn_kb" | "standard") => {
+    setRagBusyId(pkgId);
+    try {
+      const res = await fetch(
+        `/api/knowledge/rag-packages/${encodeURIComponent(pkgId)}/export?profile=${encodeURIComponent(profile)}`,
+        { credentials: "include", headers: getAuthHeaders() },
+      );
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const cd = res.headers.get("content-disposition") || "";
+      const m = cd.match(/filename="([^"]+)"/i);
+      const filename = m?.[1] || `${pkgId}_${profile}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      setRagBusyId(null);
+    }
+  }, []);
+
+  const deleteRagPackage = useCallback(async (pkgId: string) => {
+    if (!confirm("确定删除该大文档 RAG 包？（将同时删除磁盘产物）")) return;
+    setRagBusyId(pkgId);
+    try {
+      const res = await fetch(`/api/knowledge/rag-packages/${encodeURIComponent(pkgId)}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) return;
+      await refreshRagPackages();
+    } finally {
+      setRagBusyId(null);
+    }
+  }, [refreshRagPackages]);
+
+  useEffect(() => {
+    if (workspaceTab !== "pdf_packages") return;
+    void refreshRagPackages();
+  }, [workspaceTab, refreshRagPackages]);
+
   // 首次加载完成后：合并「范围胶囊」localStorage + URL 参数 → 显式范围
   useEffect(() => {
     if (loading || scopeHydratedRef.current) return;
     const fromUrl = parseKbScopeFromSearchParams(new URLSearchParams(sp.toString()));
+    const docIdsRaw = (sp.get("doc_ids") || "").trim();
+    const view = (sp.get("view") || "").trim().toLowerCase();
     const fromLs = readKbScopeCapsule() || emptyKbScopeCapsule();
     const merged = {
       folder_ids: fromUrl.folder_ids ?? fromLs.folder_ids,
@@ -278,8 +560,62 @@ export default function AiInteractionPage() {
         (fromUrl.collection_ids && fromUrl.collection_ids.length) ||
         (fromUrl.table_ids && fromUrl.table_ids.length)
     );
-    if (hadUrlScope && typeof window !== "undefined") {
-      window.history.replaceState({}, "", "/ai-interaction");
+    const replaceConsumedParams = (keys: string[]) => {
+      if (typeof window === "undefined") return;
+      try {
+        const url = new URL(window.location.href);
+        for (const k of keys) url.searchParams.delete(k);
+        const qs = url.searchParams.toString();
+        window.history.replaceState({}, "", qs ? `${url.pathname}?${qs}` : url.pathname);
+      } catch {
+        // ignore
+      }
+    };
+    if (hadUrlScope) {
+      replaceConsumedParams(["folder_id", "folders", "collections", "tables"]);
+    }
+
+    // v3：从 Knowledge「带到 AI」带入 doc_ids，直接在输入区显示引用（不隐式绑定 RAG 范围）
+    if (docIdsRaw) {
+      const ids = Array.from(new Set(docIdsRaw.split(",").map((x) => x.trim()).filter(Boolean)));
+      void (async () => {
+        try {
+          const res = await fetch("/api/knowledge/my-documents", { credentials: "include", headers: getAuthHeaders() });
+          const data = (await res.json().catch(() => ({}))) as { items?: Array<{ doc_id: string; title?: string; original_filename?: string; size_bytes?: number }> };
+          const items = Array.isArray(data.items) ? data.items : [];
+          const byId = new Map(items.map((d) => [String(d.doc_id || "").trim(), d]));
+          const now = Date.now();
+          const atts: ComposerAttachment[] = ids.map((id, idx) => {
+            const d = byId.get(id);
+            const name = String(d?.original_filename || d?.title || id);
+            return {
+              localId: `kb_${now}_${idx}`,
+              name,
+              size: Number(d?.size_bytes ?? 0) || 0,
+              phase: "done",
+              progress: 100,
+              docId: id,
+              kind: "kb_doc",
+            };
+          });
+          setComposerAttachments((prev) => {
+            const existed = new Set(prev.map((p) => String(p.docId || "")));
+            const mergedAtts = [...prev];
+            for (const a of atts) {
+              if (a.docId && existed.has(a.docId)) continue;
+              mergedAtts.push(a);
+            }
+            return mergedAtts;
+          });
+        } catch {
+          // ignore
+        }
+      })();
+      replaceConsumedParams(["doc_ids", "view"]);
+    }
+    // 如果 URL 明确指定 view=chat，或带入 scope/doc_ids，优先回到聊天界面
+    if (view === "chat" || hadUrlScope || Boolean(docIdsRaw)) {
+      setActiveLeftView("chat");
     }
     scopeHydratedRef.current = true;
   }, [loading, sp]);
@@ -331,40 +667,90 @@ export default function AiInteractionPage() {
                   const attachments = attachmentsRaw
                     .filter((a): a is ComposerAttachment => {
                       if (!a || typeof a !== "object") return false;
-                      const aa = a as { localId?: unknown; name?: unknown; size?: unknown; phase?: unknown; docId?: unknown; error?: unknown };
+                      const aa = a as {
+                        localId?: unknown;
+                        name?: unknown;
+                        size?: unknown;
+                        phase?: unknown;
+                        docId?: unknown;
+                        error?: unknown;
+                        kind?: unknown;
+                        dataParseSessionId?: unknown;
+                      };
                       const phaseOk = aa.phase === "done" || aa.phase === "error";
+                      const kindOk =
+                        aa.kind === undefined || aa.kind === "kb_doc" || aa.kind === "excel_parse";
                       return (
                         typeof aa.localId === "string" &&
                         typeof aa.name === "string" &&
                         typeof aa.size === "number" &&
                         phaseOk &&
+                        kindOk &&
                         (aa.docId === undefined || typeof aa.docId === "string") &&
-                        (aa.error === undefined || typeof aa.error === "string")
+                        (aa.error === undefined || typeof aa.error === "string") &&
+                        (aa.dataParseSessionId === undefined || typeof aa.dataParseSessionId === "string")
                       );
                     })
-                    .map((a) => ({
-                      localId: a.localId,
-                      name: a.name,
-                      size: a.size,
-                      phase: a.phase as "done" | "error",
-                      progress: 100,
-                      docId: a.docId,
-                      error: a.error,
-                    }));
+                    .map((a) => {
+                      const aa = a as ComposerAttachment & { kind?: unknown; dataParseSessionId?: unknown };
+                      return {
+                        localId: a.localId,
+                        name: a.name,
+                        size: a.size,
+                        phase: a.phase as "done" | "error",
+                        progress: 100,
+                        docId: a.docId,
+                        error: a.error,
+                        ...(aa.kind === "excel_parse" || aa.kind === "kb_doc" ? { kind: aa.kind } : {}),
+                        ...(typeof aa.dataParseSessionId === "string" ? { dataParseSessionId: aa.dataParseSessionId } : {}),
+                      };
+                    });
+                  const wf = obj as {
+                    data_parse_session_id?: unknown;
+                    active_workflow_id?: unknown;
+                    enabled_skills?: unknown;
+                    enabled_tools?: unknown;
+                    enabled_prompt_ids?: unknown;
+                    start_area_hint?: unknown;
+                  };
                   return {
                     id: obj.id,
                     title: typeof obj.title === "string" && obj.title.trim() ? obj.title : "对话",
                     updated_at: typeof obj.updated_at === "number" ? obj.updated_at : Date.now(),
                     messages,
                     attachments,
+                    data_parse_session_id: typeof wf.data_parse_session_id === "string" ? wf.data_parse_session_id : null,
+                    active_workflow_id: typeof wf.active_workflow_id === "string" ? wf.active_workflow_id : null,
+                    enabled_skills: Array.isArray(wf.enabled_skills)
+                      ? (wf.enabled_skills as unknown[]).filter((x): x is string => typeof x === "string")
+                      : undefined,
+                    enabled_tools: Array.isArray(wf.enabled_tools)
+                      ? (wf.enabled_tools as unknown[]).filter((x): x is string => typeof x === "string")
+                      : undefined,
+                    enabled_prompt_ids: Array.isArray(wf.enabled_prompt_ids)
+                      ? (wf.enabled_prompt_ids as unknown[]).filter((x): x is string => typeof x === "string")
+                      : undefined,
+                    start_area_hint: typeof wf.start_area_hint === "string" ? wf.start_area_hint : null,
                   } satisfies ChatSession;
                 })
                 .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
               setSessions(cleaned);
               if (cleaned.length) {
-                setActiveSessionId(cleaned[0].id);
-                setMessages(cleaned[0].messages);
-                setComposerAttachments((cleaned[0].attachments as ComposerAttachment[] | undefined) ?? []);
+                const s0 = cleaned[0];
+                setActiveSessionId(s0.id);
+                setMessages(s0.messages);
+                const att0 = (s0.attachments as ComposerAttachment[] | undefined) ?? [];
+                setComposerAttachments(att0);
+                setDataParseSessionId(activeExcelParseSessionId(att0) ?? s0.data_parse_session_id ?? null);
+                excelParseSidRef.current =
+                  activeExcelParseSessionId(att0) ??
+                  (typeof s0.data_parse_session_id === "string" ? s0.data_parse_session_id : null) ??
+                  null;
+                setActiveWorkflowId(s0.active_workflow_id ?? null);
+                setEnabledSkills(Array.isArray(s0.enabled_skills) ? [...s0.enabled_skills] : []);
+                setEnabledTools(Array.isArray(s0.enabled_tools) ? [...s0.enabled_tools] : []);
+                setEnabledPromptIds(Array.isArray(s0.enabled_prompt_ids) ? [...s0.enabled_prompt_ids] : []);
+                setStartAreaHint(s0.start_area_hint ?? null);
               }
             }
           }
@@ -382,6 +768,33 @@ export default function AiInteractionPage() {
       cancelled = true;
     };
   }, [refreshKnowledgeOptions]);
+
+  useEffect(() => {
+    if (loading || activeLeftView !== "workspace" || workspaceTab !== "skills") return;
+    let cancelled = false;
+    void (async () => {
+      setSkillCatalogLoading(true);
+      setSkillCatalogError(null);
+      try {
+        const res = await fetch("/api/ai-interaction/skills", {
+          credentials: "include",
+          headers: getAuthHeaders(),
+        });
+        const data = (await res.json().catch(() => ({}))) as { skills?: SkillCatalogDoc[]; detail?: string };
+        if (!res.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+        }
+        if (!cancelled) setSkillCatalog(Array.isArray(data.skills) ? data.skills : []);
+      } catch (e) {
+        if (!cancelled) setSkillCatalogError(e instanceof Error ? e.message : "加载技能文档失败");
+      } finally {
+        if (!cancelled) setSkillCatalogLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, activeLeftView, workspaceTab]);
 
   const groupedCollections = useMemo(() => {
     const map = new Map<string, KnowledgeCollection[]>();
@@ -419,28 +832,19 @@ export default function AiInteractionPage() {
   }, [chatInput, adjustTextareaHeight]);
 
   const removeComposerAttachment = useCallback((localId: string) => {
-    setComposerAttachments((prev) => prev.filter((a) => a.localId !== localId));
+    setComposerAttachments((prev) => {
+      const victim = prev.find((a) => a.localId === localId);
+      const next = prev.filter((a) => a.localId !== localId);
+      if (victim?.kind === "excel_parse") {
+        const still = next.some((a) => a.kind === "excel_parse" && a.phase === "done" && a.dataParseSessionId);
+        if (!still) {
+          setDataParseSessionId(null);
+          excelParseSidRef.current = null;
+        }
+      }
+      return next;
+    });
   }, []);
-
-  const kbScopeSummary = useMemo(() => {
-    const parts: string[] = [];
-    if (selectedFolderIds.length) {
-      const names = selectedFolderIds.map((id) => folders.find((f) => f.folder_id === id)?.name || id);
-      parts.push(`文件夹：${names.join("、")}`);
-    }
-    if (selectedCollectionIds.length) parts.push(`集合：${selectedCollectionIds.length} 个`);
-    if (selectedTableIds.length) parts.push(`表：${selectedTableIds.length} 个`);
-    return parts.join(" · ") || "未选择（当前为纯对话，不发 RAG）";
-  }, [selectedFolderIds, selectedCollectionIds, selectedTableIds, folders]);
-
-  const hasExplicitKbScope = selectedFolderIds.length > 0 || selectedCollectionIds.length > 0 || selectedTableIds.length > 0;
-
-  const clearKbScope = () => {
-    setSelectedFolderIds([]);
-    setSelectedCollectionIds([]);
-    setSelectedTableIds([]);
-    writeKbScopeCapsule(emptyKbScopeCapsule());
-  };
 
   const toggleFolder = (id: string) => {
     setSelectedFolderIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -454,14 +858,253 @@ export default function AiInteractionPage() {
     setSelectedTableIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
+  // v1.2.2：skills/tools allow-list（UI 先落地；后端执行后续补齐）
+  const ALL_SKILLS: SkillConfig[] = [
+    {
+      id: "skill.project_accounting_table.v1",
+      label: "基础数据生成项目核算表",
+      description: "根据项目与期间生成项目核算表（示例技能）。",
+      trigger_hint: "勾选技能后，在提问中包含“项目核算表/生成核算表”等关键词。",
+      example: "请生成项目核算表 projA 2026-04",
+    },
+    {
+      id: "skill.data_parse.interpret.v1",
+      label: "电子表解读（聚合指标 + 工具调用）",
+      description: "与「数据解析」后端会话配合：仅基于 read_metrics 等工具返回作答（工作流默认勾选）。",
+      trigger_hint: "上传 Excel 并存在解析会话后，在提问中描述分析或画图需求。",
+      example: "根据当前表做收入趋势分析，并提示主要风险。",
+    },
+    {
+      id: "skill.data_parse.playbook.v1",
+      label: "数据解析 Playbook（口径与话术包）",
+      description: "原「Playbook」口径类内容的工作流封装：注入只读合规话术，与 kanban_skills 及 prompt.* 勾选项协同。",
+      trigger_hint: "工作流「电子表数据解析」默认勾选；也可单独勾选后上传表格解读。",
+      example: "按 Playbook 口径总结各表可信度与缺失项。",
+    },
+    {
+      id: "skill.data_parse.xlsx.v1",
+      label: "电子表解析工作流（XLSX）",
+      description:
+        "中文版工作流技能：清洗/口径/汇总/制图等行为约束；与「电子表解读」「Playbook」叠加注入 System；仅基于 read_metrics 等工具结果，禁止编造与行级明文外泄。",
+      trigger_hint: "工作流「电子表数据解析」默认勾选；走 /api/data-parse/chat 时随 enabled_skills 生效。",
+      example: "根据当前上传表格，列出各工作表用途与主要风险（勿编造具体数值）。",
+    },
+  ];
+  const ALL_TOOLS: ToolConfig[] = [
+    { id: "tool.docling.convert", label: "Docling（文档解析/转换）", description: "在对话中引用 ud_xxx 并提到“docling/解析”时触发（最小闭环）。" },
+    {
+      id: "tool.data_parse.read_metrics",
+      label: "read_metrics（聚合指标）",
+      description: "数据解析会话内只读：表结构摘要、列画像、聚合指标（与规划 1.2.2.f §6.1 一致；走 /api/data-parse/chat 时由模型侧工具调用）。",
+    },
+    {
+      id: "tool.data_parse.template_render",
+      label: "template_render（模板短文本）",
+      description: "数据解析链路内按白名单模板渲染结论/风险/建议片段（§6.2）。",
+    },
+    { id: "tool.mcp.*", label: "MCP 工具（按配置）", description: "占位：后续可在此编辑/管理 MCP 工具配置。" },
+  ];
+  const ALL_WORKFLOWS: WorkflowConfig[] = [
+    {
+      id: "wf.nl_finance_process.v1",
+      label: "自然语言生成财务流程",
+      description: "把自然语言需求整理为可执行的财务流程步骤（占位工作流）。",
+      example_prompt: "把“月末结账”整理为可执行的财务流程清单，包含角色、输入输出与检查点。",
+      start_hint: "把需求整理为可执行步骤时可直接发送；未选知识库范围时为纯对话。",
+    },
+    {
+      id: WF_DATA_PARSE_EXCEL_ID,
+      label: "电子表数据解析",
+      description: "上传 Excel → 解析会话 → 基于聚合指标与工具解读/画图；与 /utils/excel-kanban 同源后端。",
+      start_hint: "请先通过「+ → 上传文件」选择 .xlsx/.xls；上传成功后可提问或要求画图。未上传前发送将提示先上传表格。",
+      example_prompt: "请根据已上传的表格，用要点列出各工作表用途与主要风险（勿编造具体数值）。",
+      default_enabled_prompt_ids: [
+        "prompt.data_parse.lexicon.financial_terms.v1",
+        "prompt.data_parse.lexicon.industry_metrics.v1",
+        "prompt.data_parse.table_layout_conventions.v1",
+        "prompt.data_parse.risk_and_missing_data_copy.v1",
+        "prompt.data_parse.output_shape.v1",
+      ],
+      default_enabled_skill_ids: [
+        "skill.data_parse.interpret.v1",
+        "skill.data_parse.playbook.v1",
+        "skill.data_parse.xlsx.v1",
+      ],
+      default_enabled_tool_ids: ["tool.data_parse.read_metrics", "tool.data_parse.template_render"],
+    },
+  ];
+  /** 与规划文档 `规划/1.2.2.f_数据解析设计.md` 第五节 prompt.* 表一致 */
+  const ALL_PROMPTS: PromptConfig[] = [
+    {
+      id: "prompt.data_parse.lexicon.financial_terms.v1",
+      label: "财务术语（lexicon）",
+      role: "system",
+      scope: "data_parse",
+      description: "一行一条财务术语定义，供拼接 system。",
+      summary: "无真实金额/人名；仅定义。",
+      body: "",
+    },
+    {
+      id: "prompt.data_parse.lexicon.industry_metrics.v1",
+      label: "指标口径（lexicon）",
+      role: "system",
+      scope: "data_parse",
+      description: "流水、毛利、同比等口径，与经营看板一致。",
+      summary: "与经营看板口径一致，变更走评审。",
+      body: "",
+    },
+    {
+      id: "prompt.data_parse.table_layout_conventions.v1",
+      label: "表格布局约定",
+      role: "system",
+      scope: "data_parse",
+      description: "汇总/分组/透视等布局约定。",
+      summary: "指导重排表格结构，不提供可执行脚本。",
+      body: "",
+    },
+    {
+      id: "prompt.data_parse.risk_and_missing_data_copy.v1",
+      label: "缺失与风险提示话术",
+      role: "system",
+      scope: "data_parse",
+      description: "缺失/异常时的表述模板。",
+      summary: "缺数据不说有数据。",
+      body: "",
+    },
+    {
+      id: "prompt.data_parse.output_shape.v1",
+      label: "输出 JSON 形状说明",
+      role: "system",
+      scope: "data_parse",
+      description: "与解读 JSON Schema 一致的人类可读摘要。",
+      summary: "conclusion / risks[] / suggestions[] 等字段说明。",
+      body: "",
+    },
+  ];
+  const [enabledSkills, setEnabledSkills] = useState<string[]>([]);
+  const [enabledTools, setEnabledTools] = useState<string[]>([]);
+  const [enabledPromptIds, setEnabledPromptIds] = useState<string[]>([]);
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const [dataParseSessionId, setDataParseSessionId] = useState<string | null>(null);
+  const toggleEnabledSkill = (id: string) =>
+    setEnabledSkills((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const toggleEnabledTool = (id: string) =>
+    setEnabledTools((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const toggleEnabledPrompt = (id: string) =>
+    setEnabledPromptIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  useEffect(() => {
+    excelParseSidRef.current = activeExcelParseSessionId(composerAttachments) ?? dataParseSessionId ?? null;
+  }, [composerAttachments, dataParseSessionId]);
+
+  const applyWorkflow = useCallback((wf: WorkflowConfig) => {
+    setActiveWorkflowId(wf.id);
+    setStartAreaHint((wf.start_hint ?? wf.description ?? "").trim() || null);
+    setEnabledPromptIds([...(wf.default_enabled_prompt_ids ?? [])]);
+    setEnabledSkills([...(wf.default_enabled_skill_ids ?? [])]);
+    setEnabledTools([...(wf.default_enabled_tool_ids ?? [])]);
+    // 切换工作流时移除电子表附件，进入新工作流的「等待上传 / 重新绑定」态
+    setComposerAttachments((prev) => prev.filter((a) => a.kind !== "excel_parse"));
+    setDataParseSessionId(null);
+    excelParseSidRef.current = null;
+    const prompt = (wf.example_prompt || "").trim();
+    if (prompt) setChatInput((prev) => (prev ? `${prev}\n${prompt}` : prompt));
+    setWorkflowOpen(false);
+    setToolsOpen(false);
+    setSkillsOpen(false);
+    setPromptsOpen(false);
+  }, []);
+
+  const deactivateWorkflow = useCallback(() => {
+    setActiveWorkflowId(null);
+    setStartAreaHint(null);
+    // 不主动清空 enabled_*：避免用户误触后丢失已勾选能力；仅解除“工作流门禁/路由”。
+    setWorkflowOpen(false);
+  }, []);
+
+  const buildPromptAddon = useCallback(() => {
+    const parts: string[] = [];
+    for (const pid of enabledPromptIds) {
+      const p = promptConfigs.find((x) => x.id === pid);
+      if (!p) continue;
+      const head = [p.id, p.label].filter(Boolean).join(" — ");
+      const bits = [p.summary, p.body].filter((x) => typeof x === "string" && x.trim());
+      parts.push(bits.length ? `${head}\n${bits.join("\n")}` : head);
+    }
+    return parts.join("\n\n---\n\n");
+  }, [enabledPromptIds, promptConfigs]);
+
   const handleAsk = async () => {
     const q = chatInput.trim();
     if (!q || chatLoading || composerUploading) return;
+    const excelSid =
+      excelParseSidRef.current?.trim() ||
+      activeExcelParseSessionId(composerAttachments) ||
+      dataParseSessionId ||
+      null;
     setChatLoading(true);
     setChatInput("");
     ensureActiveSession();
     setMessages((prev) => [...prev, { role: "user", content: q }]);
     try {
+      if (activeWorkflowId === WF_DATA_PARSE_EXCEL_ID && !excelSid) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content:
+              "当前为「电子表数据解析」工作流：请先用下方「+」→「上传文件」选择 .xlsx 或 .xls，等待解析完成后再提问。",
+            citations: [],
+          },
+        ]);
+        return;
+      }
+
+      // 电子表数据解析：已存在解析会话时走 /api/data-parse/chat（与 excel-kanban 同源）
+      if (excelSid && activeWorkflowId === WF_DATA_PARSE_EXCEL_ID) {
+        const dpSkills = enabledSkills.filter((id) => id.startsWith("skill.data_parse."));
+        const prompt_addon = buildPromptAddon().trim() || undefined;
+        const extra_session_ids = composerAttachments
+          .filter((a) => a.kind === "excel_parse" && a.phase === "done" && a.dataParseSessionId && a.dataParseSessionId !== excelSid)
+          .map((a) => String(a.dataParseSessionId || "").trim())
+          .filter(Boolean);
+        const res = await fetch("/api/data-parse/chat", {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            session_id: excelSid,
+            extra_session_ids: extra_session_ids.length ? extra_session_ids : undefined,
+            message: q,
+            enabled_skills: dpSkills.length ? dpSkills : undefined,
+            prompt_addon,
+          }),
+        });
+        const raw = (await res.json().catch(() => ({}))) as {
+          detail?: string;
+          reply?: string;
+          chart_spec?: Record<string, unknown> | null;
+          table_spec?: { columns: string[]; rows: string[][] } | null;
+        };
+        if (!res.ok) {
+          const deny = typeof raw.detail === "string" ? raw.detail : "数据解析对话失败";
+          setMessages((prev) => [...prev, { role: "assistant", content: deny, citations: [] }]);
+          return;
+        }
+        const reply = raw.reply ?? "";
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: reply,
+            citations: [],
+            chart_spec: raw.chart_spec ?? null,
+            table_spec: raw.table_spec ?? null,
+          },
+        ]);
+        return;
+      }
+
       const nextMessages = [...messages, { role: "user" as const, content: q }];
       const res = await fetch("/api/ai-interaction/chat", {
         method: "POST",
@@ -474,7 +1117,6 @@ export default function AiInteractionPage() {
             selected_table_ids: selectedTableIds.length ? selectedTableIds : undefined,
             selected_folder_ids: selectedFolderIds.length ? selectedFolderIds : undefined,
           },
-          // v1.2.2：后端会做 allow-list 强制；具体执行逻辑后续落地
           enabled_skills: enabledSkills.length ? enabledSkills : undefined,
           enabled_tools: enabledTools.length ? enabledTools : undefined,
         }),
@@ -496,41 +1138,19 @@ export default function AiInteractionPage() {
     }
   };
 
-  // v1.2.2：skills/tools allow-list（UI 先落地；后端执行后续补齐）
-  const ALL_SKILLS: SkillConfig[] = [
-    {
-      id: "skill.project_accounting_table.v1",
-      label: "基础数据生成项目核算表",
-      description: "根据项目与期间生成项目核算表（示例技能）。",
-      trigger_hint: "勾选技能后，在提问中包含“项目核算表/生成核算表”等关键词。",
-      example: "请生成项目核算表 projA 2026-04",
-    },
-  ];
-  const ALL_TOOLS: ToolConfig[] = [
-    { id: "tool.docling.convert", label: "Docling（文档解析/转换）", description: "在对话中引用 ud_xxx 并提到“docling/解析”时触发（最小闭环）。" },
-    { id: "tool.mcp.*", label: "MCP 工具（按配置）", description: "占位：后续可在此编辑/管理 MCP 工具配置。" },
-  ];
-  const ALL_WORKFLOWS: WorkflowConfig[] = [
-    {
-      id: "wf.nl_finance_process.v1",
-      label: "自然语言生成财务流程",
-      description: "把自然语言需求整理为可执行的财务流程步骤（占位工作流）。",
-      example_prompt: "把“月末结账”整理为可执行的财务流程清单，包含角色、输入输出与检查点。",
-    },
-  ];
-  const [enabledSkills, setEnabledSkills] = useState<string[]>([]);
-  const [enabledTools, setEnabledTools] = useState<string[]>([]);
-  const toggleEnabledSkill = (id: string) =>
-    setEnabledSkills((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  const toggleEnabledTool = (id: string) =>
-    setEnabledTools((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-
   const openConfigEditor = useCallback(
-    (kind: "skills" | "tools" | "workflows") => {
-      const value = kind === "skills" ? skillConfigs : kind === "tools" ? toolConfigs : workflowConfigs;
+    (kind: "skills" | "tools" | "workflows" | "prompts") => {
+      const value =
+        kind === "skills"
+          ? skillConfigs
+          : kind === "tools"
+            ? toolConfigs
+            : kind === "workflows"
+              ? workflowConfigs
+              : promptConfigs;
       setConfigModal({ kind, draftJson: JSON.stringify(value, null, 2) });
     },
-    [skillConfigs, toolConfigs, workflowConfigs]
+    [skillConfigs, toolConfigs, workflowConfigs, promptConfigs]
   );
 
   const saveConfigEditor = useCallback(() => {
@@ -546,10 +1166,14 @@ export default function AiInteractionPage() {
         const next = parsed as ToolConfig[];
         setToolConfigs(next);
         localStorage.setItem(TOOL_CONFIGS_LS_KEY, JSON.stringify(next));
-      } else {
+      } else if (configModal.kind === "workflows") {
         const next = parsed as WorkflowConfig[];
         setWorkflowConfigs(next);
         localStorage.setItem(WORKFLOW_CONFIGS_LS_KEY, JSON.stringify(next));
+      } else {
+        const next = parsed as PromptConfig[];
+        setPromptConfigs(next);
+        localStorage.setItem(PROMPT_CONFIGS_LS_KEY, JSON.stringify(next));
       }
       setConfigModal(null);
     } catch (e) {
@@ -559,18 +1183,47 @@ export default function AiInteractionPage() {
   }, [configModal]);
 
   useEffect(() => {
-    // 载入可编辑配置（默认用内置列表；本地有则覆盖）
+    // 载入可编辑配置（默认用内置列表；本地有则按 id 合并，保证新增内置条目仍出现）
     try {
       const rawSkills = localStorage.getItem(SKILL_CONFIGS_LS_KEY);
       const rawTools = localStorage.getItem(TOOL_CONFIGS_LS_KEY);
       const rawWfs = localStorage.getItem(WORKFLOW_CONFIGS_LS_KEY);
-      setSkillConfigs(rawSkills ? (JSON.parse(rawSkills) as SkillConfig[]) : ALL_SKILLS);
-      setToolConfigs(rawTools ? (JSON.parse(rawTools) as ToolConfig[]) : ALL_TOOLS);
-      setWorkflowConfigs(rawWfs ? (JSON.parse(rawWfs) as WorkflowConfig[]) : ALL_WORKFLOWS);
+      const rawPrompts = localStorage.getItem(PROMPT_CONFIGS_LS_KEY);
+      setSkillConfigs(mergeConfigById(ALL_SKILLS, rawSkills ? (JSON.parse(rawSkills) as SkillConfig[]) : null));
+      setToolConfigs(mergeConfigById(ALL_TOOLS, rawTools ? (JSON.parse(rawTools) as ToolConfig[]) : null));
+      let mergedWfs = mergeConfigById(ALL_WORKFLOWS, rawWfs ? (JSON.parse(rawWfs) as WorkflowConfig[]) : null);
+      let wfsPatched = false;
+      mergedWfs = mergedWfs.map((w) => {
+        if (w.id !== WF_DATA_PARSE_EXCEL_ID) return w;
+        const ids = [...(w.default_enabled_skill_ids ?? [])];
+        if (!ids.includes("skill.data_parse.xlsx.v1")) {
+          wfsPatched = true;
+          return { ...w, default_enabled_skill_ids: [...ids, "skill.data_parse.xlsx.v1"] };
+        }
+        return w;
+      });
+      setWorkflowConfigs(mergedWfs);
+      if (wfsPatched) {
+        try {
+          localStorage.setItem(WORKFLOW_CONFIGS_LS_KEY, JSON.stringify(mergedWfs));
+        } catch {
+          // ignore
+        }
+      }
+      setPromptConfigs(mergeConfigById(ALL_PROMPTS, rawPrompts ? (JSON.parse(rawPrompts) as PromptConfig[]) : null));
     } catch {
       setSkillConfigs(ALL_SKILLS);
       setToolConfigs(ALL_TOOLS);
-      setWorkflowConfigs(ALL_WORKFLOWS);
+      setWorkflowConfigs(
+        ALL_WORKFLOWS.map((w) => {
+          if (w.id !== WF_DATA_PARSE_EXCEL_ID) return w;
+          const ids = [...(w.default_enabled_skill_ids ?? [])];
+          return ids.includes("skill.data_parse.xlsx.v1")
+            ? w
+            : { ...w, default_enabled_skill_ids: [...ids, "skill.data_parse.xlsx.v1"] };
+        }),
+      );
+      setPromptConfigs(ALL_PROMPTS);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -579,7 +1232,7 @@ export default function AiInteractionPage() {
   useEffect(() => {
     if (activeLeftView !== "chat") return;
     if (configModal) return;
-    if (plusOpen || toolsOpen || skillsOpen || workflowOpen) return;
+    if (plusOpen || toolsOpen || skillsOpen || promptsOpen || workflowOpen) return;
     const el = textareaRef.current;
     if (!el) return;
     // 等待布局稳定后再 focus（避免首次渲染时被覆盖）
@@ -591,37 +1244,42 @@ export default function AiInteractionPage() {
       }
     }, 0);
     return () => window.clearTimeout(t);
-  }, [activeLeftView, messages.length, configModal, plusOpen, toolsOpen, skillsOpen, workflowOpen]);
+  }, [activeLeftView, messages.length, configModal, plusOpen, toolsOpen, skillsOpen, promptsOpen, workflowOpen]);
 
-  // 点击空白处关闭工具/skill 菜单
+  // 点击空白处关闭工具/skill/提示词/工作流 菜单
   useEffect(() => {
-    if (!toolsOpen && !skillsOpen && !plusOpen) return;
+    if (!toolsOpen && !skillsOpen && !promptsOpen && !plusOpen && !workflowOpen) return;
     const onDown = (ev: MouseEvent) => {
       const t = ev.target as HTMLElement | null;
       const toolsBtn = toolsBtnRef.current;
       const skillsBtn = skillsBtnRef.current;
+      const promptsBtn = promptsBtnRef.current;
       const plusBtn = plusBtnRef.current;
       const wfBtn = workflowBtnRef.current;
       if (toolsBtn && t && (toolsBtn === t || toolsBtn.contains(t))) return;
       if (skillsBtn && t && (skillsBtn === t || skillsBtn.contains(t))) return;
+      if (promptsBtn && t && (promptsBtn === t || promptsBtn.contains(t))) return;
       if (wfBtn && t && (wfBtn === t || wfBtn.contains(t))) return;
       if (plusBtn && t && (plusBtn === t || plusBtn.contains(t))) return;
       const toolsPop = document.getElementById("ai-tools-popover");
       const skillsPop = document.getElementById("ai-skills-popover");
+      const promptsPop = document.getElementById("ai-prompts-popover");
       const plusPop = document.getElementById("ai-plus-popover");
       const wfPop = document.getElementById("ai-workflow-popover");
       if (toolsPop && t && toolsPop.contains(t)) return;
       if (skillsPop && t && skillsPop.contains(t)) return;
+      if (promptsPop && t && promptsPop.contains(t)) return;
       if (wfPop && t && wfPop.contains(t)) return;
       if (plusPop && t && plusPop.contains(t)) return;
       setToolsOpen(false);
       setSkillsOpen(false);
+      setPromptsOpen(false);
       setWorkflowOpen(false);
       setPlusOpen(false);
     };
     window.addEventListener("mousedown", onDown, true);
     return () => window.removeEventListener("mousedown", onDown, true);
-  }, [toolsOpen, skillsOpen, plusOpen, workflowOpen]);
+  }, [toolsOpen, skillsOpen, promptsOpen, plusOpen, workflowOpen]);
 
   // 点击空白处关闭“会话更多”菜单
   useEffect(() => {
@@ -636,27 +1294,7 @@ export default function AiInteractionPage() {
     return () => window.removeEventListener("mousedown", onDown, true);
   }, [sessionMenuOpenId]);
 
-  // messages -> sessions（本地历史持久化）
-  useEffect(() => {
-    if (!activeSessionId) return;
-    setSessions((prev) => {
-      const idx = prev.findIndex((s) => s.id === activeSessionId);
-      if (idx < 0) return prev;
-      const current = prev[idx];
-      const title =
-        current.title && current.title !== "新对话"
-          ? current.title
-          : (() => {
-              const firstUser = messages.find((m) => m.role === "user")?.content?.trim();
-              return firstUser ? firstUser.slice(0, 20) : "新对话";
-            })();
-      const next: ChatSession = { ...current, title, updated_at: Date.now(), messages, attachments: current.attachments ?? [] };
-      const merged = [next, ...prev.filter((s) => s.id !== activeSessionId)].sort((a, b) => b.updated_at - a.updated_at);
-      return merged;
-    });
-  }, [messages, activeSessionId]);
-
-  // attachments -> sessions（仅持久化 done/error；uploading 不入库）
+  // 会话胶囊：消息、附件（done/error）、工作流与数据解析会话 id → 本地历史持久化
   useEffect(() => {
     if (!activeSessionId) return;
     const stable = composerAttachments
@@ -669,15 +1307,46 @@ export default function AiInteractionPage() {
         docId: a.docId,
         error: a.error,
         progress: 100,
+        ...(a.kind ? { kind: a.kind } : {}),
+        ...(a.dataParseSessionId ? { dataParseSessionId: a.dataParseSessionId } : {}),
       }));
     setSessions((prev) => {
       const idx = prev.findIndex((s) => s.id === activeSessionId);
       if (idx < 0) return prev;
       const current = prev[idx];
-      const next: ChatSession = { ...current, attachments: stable };
+      const title =
+        current.title && current.title !== "新对话"
+          ? current.title
+          : (() => {
+              const firstUser = messages.find((m) => m.role === "user")?.content?.trim();
+              return firstUser ? firstUser.slice(0, 20) : "新对话";
+            })();
+      const next: ChatSession = {
+        ...current,
+        title,
+        updated_at: Date.now(),
+        messages,
+        attachments: stable,
+        data_parse_session_id: dataParseSessionId,
+        active_workflow_id: activeWorkflowId,
+        enabled_skills: [...enabledSkills],
+        enabled_tools: [...enabledTools],
+        enabled_prompt_ids: [...enabledPromptIds],
+        start_area_hint: startAreaHint,
+      };
       return [next, ...prev.filter((s) => s.id !== activeSessionId)].sort((a, b) => b.updated_at - a.updated_at);
     });
-  }, [composerAttachments, activeSessionId]);
+  }, [
+    messages,
+    composerAttachments,
+    activeSessionId,
+    dataParseSessionId,
+    activeWorkflowId,
+    enabledSkills,
+    enabledTools,
+    enabledPromptIds,
+    startAreaHint,
+  ]);
 
   const startNewChat = () => {
     const id = `s_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -685,7 +1354,14 @@ export default function AiInteractionPage() {
     setActiveSessionId(id);
     setMessages([]);
     setComposerAttachments([]);
+    excelParseSidRef.current = null;
     setUploadHint(null);
+    setDataParseSessionId(null);
+    setActiveWorkflowId(null);
+    setEnabledSkills([]);
+    setEnabledTools([]);
+    setEnabledPromptIds([]);
+    setStartAreaHint(null);
     setSessions((prev) => [s, ...prev]);
   };
 
@@ -694,8 +1370,16 @@ export default function AiInteractionPage() {
     if (!s) return;
     setActiveSessionId(id);
     setMessages(s.messages || []);
-    setComposerAttachments((s.attachments as ComposerAttachment[] | undefined) ?? []);
+    const att = (s.attachments as ComposerAttachment[] | undefined) ?? [];
+    setComposerAttachments(att);
     setUploadHint(null);
+    setDataParseSessionId(activeExcelParseSessionId(att) ?? s.data_parse_session_id ?? null);
+    excelParseSidRef.current = activeExcelParseSessionId(att) ?? (typeof s.data_parse_session_id === "string" ? s.data_parse_session_id : null) ?? null;
+    setActiveWorkflowId(s.active_workflow_id ?? null);
+    setEnabledSkills(Array.isArray(s.enabled_skills) ? [...s.enabled_skills] : []);
+    setEnabledTools(Array.isArray(s.enabled_tools) ? [...s.enabled_tools] : []);
+    setEnabledPromptIds(Array.isArray(s.enabled_prompt_ids) ? [...s.enabled_prompt_ids] : []);
+    setStartAreaHint(s.start_area_hint ?? null);
   };
 
   const deleteSession = useCallback(
@@ -709,8 +1393,17 @@ export default function AiInteractionPage() {
         const next = remaining[0];
         setActiveSessionId(next.id);
         setMessages(next.messages || []);
-        setComposerAttachments((next.attachments as ComposerAttachment[] | undefined) ?? []);
+        const attN = (next.attachments as ComposerAttachment[] | undefined) ?? [];
+        setComposerAttachments(attN);
         setUploadHint(null);
+        setDataParseSessionId(activeExcelParseSessionId(attN) ?? next.data_parse_session_id ?? null);
+        excelParseSidRef.current =
+          activeExcelParseSessionId(attN) ?? (typeof next.data_parse_session_id === "string" ? next.data_parse_session_id : null) ?? null;
+        setActiveWorkflowId(next.active_workflow_id ?? null);
+        setEnabledSkills(Array.isArray(next.enabled_skills) ? [...next.enabled_skills] : []);
+        setEnabledTools(Array.isArray(next.enabled_tools) ? [...next.enabled_tools] : []);
+        setEnabledPromptIds(Array.isArray(next.enabled_prompt_ids) ? [...next.enabled_prompt_ids] : []);
+        setStartAreaHint(next.start_area_hint ?? null);
         setActiveLeftView("chat");
       } else {
         startNewChat();
@@ -782,6 +1475,84 @@ export default function AiInteractionPage() {
         return;
       }
 
+      const nameLow = (file.name || "").toLowerCase();
+      const isExcel = nameLow.endsWith(".xlsx") || nameLow.endsWith(".xls");
+      if (isExcel && activeWorkflowId === WF_DATA_PARSE_EXCEL_ID) {
+        ensureActiveSession();
+        const localId = `a_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        setComposerAttachments((prev) => [
+          ...prev,
+          {
+            localId,
+            name: file.name,
+            size: file.size,
+            phase: "uploading",
+            progress: 1,
+            kind: "excel_parse",
+          },
+        ]);
+        setUploadHint(null);
+        const form = new FormData();
+        form.append("file", file);
+        try {
+          const res = await fetch("/api/data-parse/upload", {
+            method: "POST",
+            body: form,
+            credentials: "include",
+            headers: getAuthHeaders(),
+          });
+          const data = (await res.json().catch(() => ({}))) as { detail?: string; session_id?: string; analysis?: string };
+          if (!res.ok) {
+            const msg = typeof data.detail === "string" ? data.detail : "电子表上传失败";
+            setUploadHint(msg);
+            setComposerAttachments((prev) =>
+              prev.map((a) => (a.localId === localId ? { ...a, phase: "error" as const, error: msg, progress: 100 } : a))
+            );
+            return;
+          }
+          const sid = typeof data.session_id === "string" ? data.session_id : "";
+          if (!sid) {
+            setUploadHint("上传成功但未返回 session_id");
+            setComposerAttachments((prev) =>
+              prev.map((a) =>
+                a.localId === localId ? { ...a, phase: "error" as const, error: "缺少 session_id", progress: 100 } : a
+              )
+            );
+            return;
+          }
+          excelParseSidRef.current = sid;
+          setDataParseSessionId(sid);
+          setComposerAttachments((prev) =>
+            prev.map((a) =>
+              a.localId === localId
+                ? { ...a, phase: "done" as const, progress: 100, dataParseSessionId: sid, kind: "excel_parse" as const }
+                : a
+            )
+          );
+          setUploadHint(`「${file.name}」已解析并激活，可在下方输入分析或画图需求（与知识库附件相同展示在输入区上方）。`);
+          // 按规划：AI 互动上传文档默认保留在私人知识库。电子表解析链路这里做异步归档，不阻塞对话可用性。
+          void (async () => {
+            try {
+              await uploadMyDocumentWithProgress(file, {
+                folderId: undefined,
+                onProgress: () => {},
+              });
+              await refreshKnowledgeOptions();
+              setUploadHint((prev) => (prev ? `${prev} 文件已同步归档到私人知识库。` : "文件已同步归档到私人知识库。"));
+            } catch {
+              // 归档失败不影响数据解析会话
+            }
+          })();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "电子表上传失败";
+          setUploadHint(msg);
+          setComposerAttachments((prev) =>
+            prev.map((a) => (a.localId === localId ? { ...a, phase: "error" as const, error: msg, progress: 100 } : a))
+          );
+        }
+        return;
+      }
+
       const localId = `a_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       // 默认上传到“私人知识库”（不传 folder_id），避免上传即隐式绑定 RAG 范围
       const bindFolder: string | undefined = undefined;
@@ -797,7 +1568,9 @@ export default function AiInteractionPage() {
         });
         setComposerAttachments((prev) =>
           prev.map((a) =>
-            a.localId === localId ? { ...a, phase: "done" as const, progress: 100, docId: doc_id } : a
+            a.localId === localId
+              ? { ...a, phase: "done" as const, progress: 100, docId: doc_id, kind: "kb_doc" as const }
+              : a
           )
         );
         await refreshKnowledgeOptions();
@@ -816,10 +1589,22 @@ export default function AiInteractionPage() {
         ? "w-full max-w-4xl rounded-2xl border border-zinc-800 bg-zinc-950/60 shadow-[0_10px_40px_rgba(0,0,0,0.35)]"
         : "w-full max-w-4xl rounded-2xl border border-zinc-800 bg-zinc-950/60";
     const sendDisabled = chatLoading || composerUploading || !chatInput.trim();
+    const waitingExcelUpload =
+      activeWorkflowId === WF_DATA_PARSE_EXCEL_ID &&
+      !composerAttachments.some((a) => a.kind === "excel_parse" && (a.phase === "uploading" || a.phase === "done"));
+    const taPlaceholder = waitingExcelUpload
+      ? "等待电子表：请用「+」→「上传文件」选择 .xlsx / .xls；上传成功后附件会显示在上方，再输入分析或画图需求。"
+      : "有什么我能帮您的吗？";
     return (
       <div className="w-full">
         <div className={`${boxClass} mx-auto`}>
           <div className="relative flex flex-col">
+            {waitingExcelUpload ? (
+              <div className="mx-3 mt-3 rounded-lg border border-amber-900/50 bg-amber-950/25 px-3 py-2 text-xs text-amber-200/90">
+                当前工作流：<span className="font-medium">电子表数据解析</span> — 处于<strong>等待上传</strong>
+                状态。请使用下方「+」→「上传文件」选择电子表；上传完成后文件将固定在输入区上方（与知识库附件一致），即可提问、画图或要表格。
+              </div>
+            ) : null}
             {uploadHint ? (
               <div
                 className={`px-3 pt-3 text-xs ${uploadHint.includes("失败") ? "text-red-400" : "text-emerald-400/90"}`}
@@ -833,15 +1618,27 @@ export default function AiInteractionPage() {
                 {composerAttachments.map((a) => (
                   <div
                     key={a.localId}
-                    className="flex min-w-[160px] max-w-[240px] flex-col gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/45 px-2 py-1.5"
+                    className={[
+                      "flex min-w-[160px] max-w-[260px] flex-col gap-1.5 rounded-lg border px-2 py-1.5",
+                      a.kind === "excel_parse" ? "border-emerald-900/50 bg-emerald-950/20" : "border-zinc-800 bg-zinc-900/45",
+                    ].join(" ")}
                   >
                     <div className="flex items-start gap-2">
-                      <FileText size={14} className="mt-0.5 shrink-0 text-zinc-400" aria-hidden />
+                      {a.kind === "excel_parse" ? (
+                        <Table size={14} className="mt-0.5 shrink-0 text-emerald-400/90" aria-hidden />
+                      ) : (
+                        <FileText size={14} className="mt-0.5 shrink-0 text-zinc-400" aria-hidden />
+                      )}
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-xs font-medium text-zinc-200" title={a.name}>
                           {a.name}
                         </div>
                         <div className="text-[11px] text-zinc-500">{formatBytes(a.size)}</div>
+                        {a.kind === "excel_parse" && a.phase === "done" && a.dataParseSessionId ? (
+                          <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-500" title={a.dataParseSessionId}>
+                            会话 {a.dataParseSessionId.slice(0, 10)}…
+                          </div>
+                        ) : null}
                       </div>
                       <button
                         type="button"
@@ -863,7 +1660,7 @@ export default function AiInteractionPage() {
                     {a.phase === "done" ? (
                       <div className="flex items-center gap-1 text-[11px] text-emerald-400/90">
                         <Check size={12} strokeWidth={3} aria-hidden />
-                        已上传
+                        {a.kind === "excel_parse" ? "已应用 · 电子表解析" : "已上传"}
                       </div>
                     ) : null}
                     {a.phase === "error" ? (
@@ -893,7 +1690,7 @@ export default function AiInteractionPage() {
                 void handleAsk();
               }
             }}
-            placeholder="有什么我能帮您的吗？"
+            placeholder={taPlaceholder}
             rows={1}
             className="w-full min-h-[52px] max-h-[320px] resize-none overflow-y-auto border-0 bg-transparent px-3 py-3 text-base text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:ring-0"
           />
@@ -934,7 +1731,9 @@ export default function AiInteractionPage() {
                             <Upload size={16} />
                             上传文件
                           </span>
-                          <span className="text-xs text-zinc-500">PDF/Doc</span>
+                          <span className="text-xs text-zinc-500">
+                            {activeWorkflowId === WF_DATA_PARSE_EXCEL_ID ? "PDF / Doc / Excel" : "PDF/Doc"}
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -1117,6 +1916,7 @@ export default function AiInteractionPage() {
                   onClick={() => {
                     setToolsOpen((v) => !v);
                     setSkillsOpen(false);
+                    setPromptsOpen(false);
                     setWorkflowOpen(false);
                   }}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950/40 text-zinc-200 hover:bg-zinc-900/60"
@@ -1165,6 +1965,7 @@ export default function AiInteractionPage() {
                   onClick={() => {
                     setSkillsOpen((v) => !v);
                     setToolsOpen(false);
+                    setPromptsOpen(false);
                     setWorkflowOpen(false);
                   }}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950/40 text-zinc-200 hover:bg-zinc-900/60"
@@ -1206,15 +2007,82 @@ export default function AiInteractionPage() {
                 )}
               </div>
 
+              <div className="relative">
+                <button
+                  ref={promptsBtnRef}
+                  type="button"
+                  onClick={() => {
+                    setPromptsOpen((v) => !v);
+                    setToolsOpen(false);
+                    setSkillsOpen(false);
+                    setWorkflowOpen(false);
+                  }}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950/40 text-zinc-200 hover:bg-zinc-900/60"
+                  title="提示词（注入数据解析等）"
+                >
+                  <ScrollText size={16} />
+                </button>
+                {promptsOpen && (
+                  <div
+                    id="ai-prompts-popover"
+                    className="absolute left-0 top-[calc(100%+10px)] z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+                  >
+                    <div className="text-xs text-zinc-500 mb-2">提示词（勾选后随「电子表数据解析」请求拼接为 prompt_addon）</div>
+                    <div className="max-h-64 space-y-2 overflow-y-auto">
+                      {promptConfigs.map((p) => (
+                        <label key={p.id} className="flex items-start gap-2 text-xs text-zinc-200">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={enabledPromptIds.includes(p.id)}
+                            onChange={() => toggleEnabledPrompt(p.id)}
+                          />
+                          <span className="min-w-0">
+                            <span className="font-medium">{p.label}</span>
+                            <span className="ml-1 text-zinc-500">{p.id}</span>
+                            {p.summary ? <div className="mt-0.5 text-[11px] text-zinc-500">{p.summary}</div> : null}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => openConfigEditor("prompts")}
+                        className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
+                      >
+                        编辑配置
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPromptsOpen(false)}
+                        className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
+                      >
+                        关闭
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {configModal ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
                   <div className="w-full max-w-3xl rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-[0_30px_90px_rgba(0,0,0,0.6)]">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-zinc-200">
-                          编辑配置：{configModal.kind === "skills" ? "技能" : configModal.kind === "tools" ? "工具" : "工作流"}
+                          编辑配置：
+                          {configModal.kind === "skills"
+                            ? "技能"
+                            : configModal.kind === "tools"
+                              ? "工具"
+                              : configModal.kind === "workflows"
+                                ? "工作流"
+                                : "提示词"}
                         </div>
-                        <div className="mt-1 text-xs text-zinc-500">保存后仅影响本机页面展示与勾选列表；执行逻辑后端后续再接。</div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          保存后影响本机展示与勾选；「电子表数据解析」工作流已接 /api/data-parse 上传与对话及 prompt_addon。
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -1259,6 +2127,7 @@ export default function AiInteractionPage() {
                     setWorkflowOpen((v) => !v);
                     setToolsOpen(false);
                     setSkillsOpen(false);
+                    setPromptsOpen(false);
                   }}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950/40 text-zinc-200 hover:bg-zinc-900/60"
                   title="工作流"
@@ -1277,13 +2146,21 @@ export default function AiInteractionPage() {
                           key={wf.id}
                           type="button"
                           onClick={() => {
-                            const prompt = (wf.example_prompt || "").trim();
-                            if (prompt) setChatInput((prev) => (prev ? `${prev}\n${prompt}` : prompt));
-                            setWorkflowOpen(false);
+                            if (activeWorkflowId === wf.id) {
+                              deactivateWorkflow();
+                              return;
+                            }
+                            applyWorkflow(wf);
                           }}
-                          className="w-full rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-left text-xs text-zinc-200 hover:bg-zinc-900/60"
+                          className={[
+                            "w-full rounded-lg border px-3 py-2 text-left text-xs hover:bg-zinc-900/60",
+                            activeWorkflowId === wf.id ? "border-emerald-800/60 bg-emerald-950/25 text-emerald-100" : "border-zinc-800 bg-zinc-950/40 text-zinc-200",
+                          ].join(" ")}
                         >
-                          <div className="font-medium">{wf.label}</div>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-medium">{wf.label}</div>
+                            {activeWorkflowId === wf.id ? <Check size={14} strokeWidth={3} aria-hidden /> : null}
+                          </div>
                           {wf.description ? <div className="mt-1 text-[11px] text-zinc-500 line-clamp-2">{wf.description}</div> : null}
                         </button>
                       ))}
@@ -1332,7 +2209,7 @@ export default function AiInteractionPage() {
                   ...workflowConfigs.slice(0, 3).map((wf) => ({
                     key: wf.id,
                     title: wf.label,
-                    subtitle: wf.description || "",
+                    subtitle: (wf.start_hint || wf.description || "").trim(),
                     prompt: wf.example_prompt || "",
                   })),
                   {
@@ -1352,6 +2229,24 @@ export default function AiInteractionPage() {
                     key={it.key}
                     type="button"
                     onClick={() => {
+                      const full = workflowConfigs.find((w) => w.id === it.key);
+                      if (full) {
+                        if (activeWorkflowId === full.id) {
+                          deactivateWorkflow();
+                        } else {
+                          applyWorkflow(full);
+                        }
+                        return;
+                      }
+                      setActiveWorkflowId(null);
+                      setDataParseSessionId(null);
+                      setEnabledPromptIds([]);
+                      setEnabledTools([]);
+                      if (it.key === "wf.project_accounting_table.quick") {
+                        setEnabledSkills(["skill.project_accounting_table.v1"]);
+                      } else {
+                        setEnabledSkills([]);
+                      }
                       const p = (it.prompt || "").trim();
                       if (p) setChatInput((prev) => (prev ? `${prev}\n${p}` : p));
                       if (it.subtitle) setStartAreaHint(it.subtitle);
@@ -1509,6 +2404,8 @@ export default function AiInteractionPage() {
                 {(
                   [
                     ["knowledge", "知识库"],
+                    ["pdf_packages", "大PDF文档包"],
+                    ["prompts", "提示词"],
                     ["skills", "技能"],
                     ["tools", "工具"],
                     ["workflows", "工作流"],
@@ -1562,6 +2459,28 @@ export default function AiInteractionPage() {
                         }}
                       >
                         {m.content}
+                        {m.role === "assistant" && m.chart_spec && Object.keys(m.chart_spec).length > 0 && (
+                          <div className="mt-2">
+                            <AiInlineChart spec={m.chart_spec} />
+                            <details className="mt-1 cursor-pointer">
+                              <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 chart_spec 原始数据</summary>
+                              <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
+                                {JSON.stringify(m.chart_spec, null, 2)}
+                              </pre>
+                            </details>
+                          </div>
+                        )}
+                        {m.role === "assistant" && m.table_spec && m.table_spec.columns?.length ? (
+                          <div className="mt-2">
+                            <AiInlineTable spec={m.table_spec} />
+                            <details className="mt-1 cursor-pointer">
+                              <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 table_spec 原始数据</summary>
+                              <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
+                                {JSON.stringify(m.table_spec, null, 2)}
+                              </pre>
+                            </details>
+                          </div>
+                        ) : null}
                         {m.role === "assistant" && m.citations && m.citations.length > 0 && (
                           <div className="mt-2">
                             <details className="cursor-pointer">
@@ -1587,7 +2506,7 @@ export default function AiInteractionPage() {
                         ...workflowConfigs.slice(0, 3).map((wf) => ({
                           key: wf.id,
                           label: wf.label,
-                          subtitle: wf.description || "",
+                          subtitle: (wf.start_hint || wf.description || "").trim(),
                           prompt: wf.example_prompt || "",
                         })),
                         {
@@ -1607,6 +2526,20 @@ export default function AiInteractionPage() {
                           key={it.key}
                           type="button"
                           onClick={() => {
+                            const full = workflowConfigs.find((w) => w.id === it.key);
+                            if (full) {
+                              applyWorkflow(full);
+                              return;
+                            }
+                            setActiveWorkflowId(null);
+                            setDataParseSessionId(null);
+                            setEnabledPromptIds([]);
+                            setEnabledTools([]);
+                            if (it.key === "wf.project_accounting_table.quick") {
+                              setEnabledSkills(["skill.project_accounting_table.v1"]);
+                            } else {
+                              setEnabledSkills([]);
+                            }
                             const p = (it.prompt || "").trim();
                             if (p) setChatInput((prev) => (prev ? `${prev}\n${p}` : p));
                             if (it.subtitle) setStartAreaHint(it.subtitle);
@@ -1642,10 +2575,67 @@ export default function AiInteractionPage() {
                   <KnowledgeWorkspacePanel mode="embedded" initialFolderId={null} />
                 </div>
               </div>
+            ) : workspaceTab === "pdf_packages" ? (
+              <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
+                <PdfPackagesPanel
+                  items={ragItems}
+                  busyPackageId={ragBusyId}
+                  onDownload={downloadRagExport}
+                  onDelete={deleteRagPackage}
+                />
+              </div>
+            ) : workspaceTab === "prompts" ? (
+              <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium text-zinc-200">提示词（全站）</div>
+                  <button
+                    type="button"
+                    onClick={() => openConfigEditor("prompts")}
+                    className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
+                  >
+                    编辑 JSON
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-zinc-500">
+                  术语与分层见仓库 <span className="font-mono text-zinc-400">docs/agent-skills-glossary.md</span>
+                  ：此处登记<strong>全站可复用</strong>的 Prompt 设计（摘要 + 可选正文）；成熟 prompt/口径素材可写入{" "}
+                  <span className="font-mono text-zinc-400">body</span> 或拆条。Agent Skill 正文见「技能」Tab 中的仓库{" "}
+                  <span className="font-mono text-zinc-400">SKILL.md</span>。
+                </p>
+                <div className="mt-3 space-y-2">
+                  {promptConfigs.map((p) => (
+                    <div key={p.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-zinc-200">{p.label}</div>
+                          <div className="mt-1 text-xs text-zinc-500 font-mono">{p.id}</div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2 text-[11px] text-zinc-500">
+                          {p.role ? (
+                            <span className="rounded border border-zinc-800 px-1.5 py-0.5 font-mono">{p.role}</span>
+                          ) : null}
+                          {p.scope ? (
+                            <span className="rounded border border-zinc-800 px-1.5 py-0.5 font-mono">{p.scope}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                      {p.description ? <div className="mt-2 text-xs text-zinc-400">{p.description}</div> : null}
+                      {p.summary ? <div className="mt-2 text-[11px] text-zinc-500">摘要：{p.summary}</div> : null}
+                      {p.body && p.body.trim() ? (
+                        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300">
+                          {p.body}
+                        </pre>
+                      ) : (
+                        <div className="mt-2 text-[11px] text-zinc-600">（正文可在「编辑 JSON」中填写 body 字段）</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
             ) : workspaceTab === "skills" ? (
               <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium text-zinc-200">技能配置</div>
+                  <div className="text-sm font-medium text-zinc-200">技能（SKILL.md）</div>
                   <button
                     type="button"
                     onClick={() => openConfigEditor("skills")}
@@ -1654,24 +2644,55 @@ export default function AiInteractionPage() {
                     编辑 JSON
                   </button>
                 </div>
+                <p className="mt-2 text-xs text-zinc-500">
+                  正文来自后端{" "}
+                  <span className="font-mono text-zinc-400">backend/data/agent_skills/&lt;skill_id&gt;/SKILL.md</span>（
+                  <span className="font-mono text-zinc-400">manifest.json</span> 登记）。勾选「启用」后，对应文档会注入当前对话的 system，模型须按文档约束执行。
+                </p>
+                {skillCatalogLoading ? (
+                  <div className="mt-3 text-xs text-zinc-500">正在加载 SKILL.md…</div>
+                ) : skillCatalogError ? (
+                  <div className="mt-3 text-xs text-amber-400">{skillCatalogError}</div>
+                ) : null}
                 <div className="mt-3 space-y-2">
-                  {skillConfigs.map((s) => (
-                    <div key={s.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-zinc-200">{s.label}</div>
-                          <div className="mt-1 text-xs text-zinc-500 font-mono">{s.id}</div>
+                  {skillConfigs.map((s) => {
+                    const doc = skillCatalog?.find((d) => d.id === s.id);
+                    return (
+                      <div key={s.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-zinc-200">{s.label}</div>
+                            <div className="mt-1 text-xs text-zinc-500 font-mono">{s.id}</div>
+                          </div>
+                          <label className="flex items-center gap-2 text-xs text-zinc-200">
+                            <input type="checkbox" checked={enabledSkills.includes(s.id)} onChange={() => toggleEnabledSkill(s.id)} />
+                            启用
+                          </label>
                         </div>
-                        <label className="flex items-center gap-2 text-xs text-zinc-200">
-                          <input type="checkbox" checked={enabledSkills.includes(s.id)} onChange={() => toggleEnabledSkill(s.id)} />
-                          启用
-                        </label>
+                        {doc?.name && doc.name !== s.id ? (
+                          <div className="mt-1 text-[11px] text-zinc-500">SKILL 名：{doc.name}</div>
+                        ) : null}
+                        {doc?.description ? <div className="mt-1 text-[11px] text-zinc-500">{doc.description}</div> : null}
+                        {s.description ? <div className="mt-2 text-xs text-zinc-400">{s.description}</div> : null}
+                        {s.trigger_hint ? <div className="mt-1 text-[11px] text-zinc-500">触发：{s.trigger_hint}</div> : null}
+                        {s.example ? <div className="mt-2 rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300">{s.example}</div> : null}
+                        <details className="mt-2 rounded border border-zinc-900 bg-zinc-950/40">
+                          <summary className="cursor-pointer select-none px-2 py-1.5 text-[11px] text-zinc-400 hover:text-zinc-300">
+                            查看 SKILL.md 全文
+                          </summary>
+                          {doc?.raw_markdown ? (
+                            <pre className="max-h-[min(70vh,520px)] overflow-auto whitespace-pre-wrap border-t border-zinc-900 p-2 text-[11px] leading-relaxed text-zinc-300">
+                              {doc.raw_markdown}
+                            </pre>
+                          ) : (
+                            <div className="border-t border-zinc-900 px-2 py-2 text-[11px] text-zinc-600">
+                              未找到该技能的 SKILL.md（请检查后端 manifest 与文件路径）。
+                            </div>
+                          )}
+                        </details>
                       </div>
-                      {s.description ? <div className="mt-2 text-xs text-zinc-400">{s.description}</div> : null}
-                      {s.trigger_hint ? <div className="mt-1 text-[11px] text-zinc-500">触发：{s.trigger_hint}</div> : null}
-                      {s.example ? <div className="mt-2 rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300">{s.example}</div> : null}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ) : workspaceTab === "tools" ? (
@@ -1704,7 +2725,7 @@ export default function AiInteractionPage() {
                   ))}
                 </div>
               </div>
-            ) : (
+            ) : workspaceTab === "workflows" ? (
               <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-medium text-zinc-200">工作流</div>
@@ -1739,7 +2760,7 @@ export default function AiInteractionPage() {
                   ))}
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
         )}
       </main>
