@@ -1,0 +1,135 @@
+# Orient-G（财务信息内网）- 生产环境仅内网部署
+# 使用方式：在 Portainer 中上传本文件并配置环境变量；更新镜像建议按服务 pull（见 README），勿对仅本地构建的 docling 执行 pull
+# backend/frontend 镜像来自 ghcr.io，可在 .env 中设置 BACKEND_IMAGE、FRONTEND_IMAGE 覆盖
+# 反向代理与业务服务应只绑定内网 IP（见规划文档第三节）
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mgmt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-mgmt_web}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    # 健康检查：确认 PostgreSQL 已就绪，backend 的 depends_on 会等此通过后再启动
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mgmt}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Docling：CPU 解析侧车；生产环境 GPU 预留给 Ollama，本服务不申请 GPU
+  # image + pull_policy: never：避免 docker compose pull 将短名镜像当成 docker.io/library/* 去拉取（本地 build 即可）
+  docling:
+    image: ${DOCLING_IMAGE:-orientg-docling-sidecar:local}
+    pull_policy: never
+    # 资源上限（docker compose 非 swarm 场景下，优先使用 cpus/mem_limit 约束；避免解析任务把整机拖垮）
+    # 生产建议：先保守限制，按实际吞吐再调大
+    cpus: ${DOCLING_CPUS:-2.0}
+    mem_limit: ${DOCLING_MEM_LIMIT:-4g}
+    build:
+      context: docker/docling-sidecar
+      dockerfile: Dockerfile
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+        SKIP_MODEL_DOWNLOAD: ${SKIP_MODEL_DOWNLOAD:-1}
+    # 为便于开发机复用生产侧车：发布到宿主机内网 IP（默认用 BIND_IP；未设则仅本机可访问）
+    ports:
+      - "${BIND_IP:-127.0.0.1}:8080:8080"
+    environment:
+      # docling-tools models download 产物（离线模型目录）；生产侧车无法访问 Hugging Face 时必须挂载
+      DOCLING_ARTIFACTS_PATH: ${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
+      # 单个文件解析的 docling CLI 超时（秒）
+      DOCLING_CLI_TIMEOUT_S: ${DOCLING_CLI_TIMEOUT_S}
+    volumes:
+      - ./docling-artifacts:${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
+    restart: unless-stopped
+
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/jairwye/orient-g-backend:latest}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mgmt}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-mgmt_web}
+      UPLOAD_DIR: /app/uploads
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      AUTH_SECRET: ${AUTH_SECRET:-orient-g-auth-secret-change-in-production}
+      DOCLING_MODE: ${DOCLING_MODE:-http}
+      DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:8080}
+      DOCLING_HTTP_TIMEOUT_S: ${DOCLING_HTTP_TIMEOUT_S:-600}
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      db: { condition: service_healthy }
+      docling:
+        condition: service_started
+    restart: unless-stopped
+    # 健康检查：容器内请求本机 /api/health，返回 2xx 则视为健康；供编排/监控判断 backend 是否可用（不依赖 GPU/Ollama）
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5); exit(0 if 200<=r.getcode()<300 else 1)\" || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/jairwye/orient-g-frontend:latest}
+    environment:
+      API_URL: http://backend:8000
+      API_BASE_SERVER: http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Ollama（可选）：生产构建/运行时启用；需宿主机 NVIDIA 驱动 + NVIDIA Container Toolkit。与本栈约定一致时由本服务独占 GPU，Docling 仅 CPU
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    # 资源上限：推理服务可能突发占用内存/CPU；建议生产先给上限，避免 OOM 拖死宿主机
+    cpus: ${OLLAMA_CPUS:-6.0}
+    mem_limit: ${OLLAMA_MEM_LIMIT:-12g}
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - OLLAMA_NUM_GPU=1
+
+  # 反向代理：生产环境应只监听内网 IP（在部署时通过 Portainer 或 compose 覆盖）
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      # 域名访问时用：CADDY_DOMAIN=你的域名，CADDY_BACKEND_HOST=服务器 IP（与 BIND_IP 一致），避免 502；不设则用默认
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
+      CADDY_BACKEND_HOST: ${CADDY_BACKEND_HOST:-127.0.0.1}
+    ports:
+      - "${BIND_IP:-127.0.0.1}:443:443"
+      - "${BIND_IP:-127.0.0.1}:80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}
+  uploads_data: {}
+  caddy_data: {}
+  ollama_data: {}

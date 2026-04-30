@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
 import { KbInProgressBanner } from "../components/KbInProgressBanner";
+import { useSmartPoll } from "../lib/smartPoll";
 import {
   buildAiInteractionHref,
   writeKbScopeCapsule,
