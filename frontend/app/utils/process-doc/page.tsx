@@ -131,9 +131,9 @@ export default function ProcessDocPage() {
   useEffect(() => {
     fetch("/api/process-doc/schema", { credentials: "include" })
       .then((r) => r.ok ? r.json() : {})
-      .then((data: { feishu_configured?: boolean; ollama_configured?: boolean }) => {
+      .then((data: { feishu_configured?: boolean; chat_available?: boolean; ollama_configured?: boolean }) => {
         setFeishuAvailable(!!data.feishu_configured);
-        setOllamaConfigured(!!data.ollama_configured);
+        setOllamaConfigured(!!(data.chat_available ?? data.ollama_configured));
       })
       .catch(() => {});
   }, []);

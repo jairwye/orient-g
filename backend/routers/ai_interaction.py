@@ -200,12 +200,14 @@ def ai_interaction_chat(request: Request, body: ChatBody):
             }
 
     # --- 纯对话：未显式选择 KB 范围时，不做 RAG 检索 ---
-    model = (body.model or settings.ollama_model or "").strip() or settings.ollama_model
+    model = (body.model or "").strip() or (
+        (settings.llm_model or "").strip() if settings.llm_chat_configured else (settings.ollama_model or "").strip()
+    ) or settings.ollama_model
     if not explicit_scope_selected:
-        if not settings.ollama_configured:
+        if not settings.chat_llm_available:
             return {
                 "denied": False,
-                "reply": "当前未选择知识库范围；且 Ollama 未配置，无法进行纯对话生成。",
+                "reply": "当前未选择知识库范围；且未配置对话 LLM（请设置 LLM_BASE_URL+LLM_MODEL 或 OLLAMA_URL）。",
                 "citations": [],
                 "tool_calls": tool_calls,
             }
@@ -241,9 +243,9 @@ def ai_interaction_chat(request: Request, body: ChatBody):
 
     # --- LLM：基于证据生成最终答复（v1.2.2：AI互动需要调用 LLM） ---
     # 说明：ask_knowledge 的 reply 仅用于检索可观测；最终面向用户的回答由 LLM 在证据约束下生成。
-    if not settings.ollama_configured:
+    if not settings.chat_llm_available:
         res["tool_calls"] = tool_calls
-        res["reply"] = (res.get("reply") or "") + "（Ollama 未配置，当前仅返回检索结果摘要）"
+        res["reply"] = (res.get("reply") or "") + "（未配置对话 LLM，当前仅返回检索结果摘要）"
         return res
     try:
         from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
@@ -286,7 +288,13 @@ def ai_interaction_models(request: Request):
     if not _get_token_from_request(request):
         raise HTTPException(status_code=401, detail="not authenticated")
     items: list[dict[str, Any]] = []
-    if settings.ollama_configured:
+    default_id = settings.ollama_model
+    if settings.llm_chat_configured:
+        mid = (settings.llm_model or "").strip()
+        if mid:
+            items = [{"id": mid, "label": mid}]
+        default_id = mid or default_id
+    elif settings.ollama_configured:
         try:
             from backend.services.ollama_tags import list_models
 
@@ -294,6 +302,11 @@ def ai_interaction_models(request: Request):
         except Exception:
             items = []
     if not items:
-        items = [{"id": settings.ollama_model, "label": settings.ollama_model}]
-    return {"items": items, "default": settings.ollama_model}
+        default_id = (
+            (settings.llm_model or "").strip()
+            if settings.llm_chat_configured
+            else (settings.ollama_model or "").strip()
+        ) or "model"
+        items = [{"id": default_id, "label": default_id}]
+    return {"items": items, "default": default_id}
 

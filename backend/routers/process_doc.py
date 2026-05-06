@@ -63,10 +63,10 @@ def get_rules():
 @router.post("/rules/suggest-from-natural-language")
 def suggest_from_natural_language(body: SuggestFromNaturalLanguageBody):
     """根据用户自然语言描述，用 LLM 生成建议的 prompt_instruction 与可选的 output_schema。"""
-    if not settings.ollama_configured:
+    if not settings.chat_llm_available:
         raise HTTPException(
             status_code=503,
-            detail="Ollama 未配置，请在 .env 中设置 OLLAMA_URL 后重试",
+            detail="LLM 未配置：请在 .env 设置 LLM_BASE_URL + LLM_MODEL（OpenAI 兼容），或设置 OLLAMA_URL 使用 Ollama。",
         )
     text = (body.natural_language or "").strip()
     if not text:
@@ -78,7 +78,7 @@ def suggest_from_natural_language(body: SuggestFromNaturalLanguageBody):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("根据自然语言生成规则建议失败")
-        raise HTTPException(status_code=500, detail="生成建议失败，请检查 Ollama 服务")
+        raise HTTPException(status_code=500, detail="生成建议失败，请检查 LLM 或 Ollama 服务")
 
 
 @router.put("/rules")
@@ -103,6 +103,8 @@ def get_schema():
     types_list = rules.get("process_types") or []
     return {
         "ollama_configured": settings.ollama_configured,
+        "llm_chat_configured": settings.llm_chat_configured,
+        "chat_available": settings.chat_llm_available,
         "feishu_configured": settings.feishu_configured,
         "process_types": [
             {
@@ -118,10 +120,10 @@ def get_schema():
 @router.post("/generate")
 def generate(body: GenerateBody):
     """根据自然语言描述生成流程文档，返回结构化数据与 Markdown。"""
-    if not settings.ollama_configured:
+    if not settings.chat_llm_available:
         raise HTTPException(
             status_code=503,
-            detail="Ollama 未配置，请在 .env 中设置 OLLAMA_URL 后重试",
+            detail="LLM 未配置：请在 .env 设置 LLM_BASE_URL + LLM_MODEL（OpenAI 兼容），或设置 OLLAMA_URL 使用 Ollama。",
         )
     text = (body.natural_language or "").strip()
     if not text:
@@ -133,7 +135,7 @@ def generate(body: GenerateBody):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("流程文档生成失败")
-        raise HTTPException(status_code=500, detail="生成失败，请检查 Ollama 服务与规则配置")
+        raise HTTPException(status_code=500, detail="生成失败，请检查 LLM/Ollama 服务与规则配置")
 
 
 @router.post("/sync-feishu")

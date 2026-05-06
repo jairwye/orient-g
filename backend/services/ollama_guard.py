@@ -31,34 +31,53 @@ class CircuitState:
 
 
 _circuit_lock = threading.Lock()
-_circuit = CircuitState()
+# Ollama（嵌入/可选旧对话）与远程 LLM（OpenAI 兼容）分开展示与熔断，避免一侧失败拖死另一侧
+_circuit_ollama = CircuitState()
+_circuit_llm = CircuitState()
 
 
 def _now() -> float:
     return time.time()
 
 
-def _circuit_is_open(now: float | None = None) -> bool:
+def _circuit_bucket(circuit_scope: str) -> CircuitState:
+    return _circuit_llm if circuit_scope == "llm" else _circuit_ollama
+
+
+def _circuit_is_open(circuit_scope: str, now: float | None = None) -> bool:
     t = _now() if now is None else now
     with _circuit_lock:
-        return bool(_circuit.open_until_ts and t < _circuit.open_until_ts)
+        c = _circuit_bucket(circuit_scope)
+        return bool(c.open_until_ts and t < c.open_until_ts)
 
 
-def _circuit_note_success() -> None:
+def _circuit_note_success(circuit_scope: str) -> None:
     with _circuit_lock:
-        _circuit.consecutive_failures = 0
-        _circuit.open_until_ts = 0.0
-        _circuit.last_error = None
+        c = _circuit_bucket(circuit_scope)
+        c.consecutive_failures = 0
+        c.open_until_ts = 0.0
+        c.last_error = None
 
 
-def _circuit_note_failure(err: Exception) -> None:
+def _circuit_note_failure(circuit_scope: str, err: Exception) -> None:
     now = _now()
     with _circuit_lock:
-        _circuit.consecutive_failures += 1
-        _circuit.last_error = str(err) or repr(err)
-        if _circuit.consecutive_failures >= max(1, int(settings.ollama_circuit_fail_threshold)):
+        c = _circuit_bucket(circuit_scope)
+        c.consecutive_failures += 1
+        c.last_error = str(err) or repr(err)
+        if c.consecutive_failures >= max(1, int(settings.ollama_circuit_fail_threshold)):
             open_s = max(1, int(settings.ollama_circuit_open_seconds))
-            _circuit.open_until_ts = max(_circuit.open_until_ts, now + open_s)
+            c.open_until_ts = max(c.open_until_ts, now + open_s)
+
+
+def _circuit_snapshot(c: CircuitState, *, now: float) -> dict[str, Any]:
+    open_until = float(c.open_until_ts or 0.0)
+    return {
+        "circuit_open": bool(open_until and now < open_until),
+        "circuit_open_seconds_remaining": max(0.0, open_until - now) if open_until else 0.0,
+        "circuit_consecutive_failures": int(c.consecutive_failures),
+        "circuit_last_error": c.last_error,
+    }
 
 
 _gpu_sem = threading.Semaphore(max(1, int(settings.gpu_max_concurrency)))
@@ -68,17 +87,29 @@ def get_ollama_guard_state() -> dict[str, Any]:
     """给 /api/queue/stats 等观测端使用。"""
     now = _now()
     with _circuit_lock:
-        open_until = float(_circuit.open_until_ts or 0.0)
-        return {
-            "circuit_open": bool(open_until and now < open_until),
-            "circuit_open_seconds_remaining": max(0.0, open_until - now) if open_until else 0.0,
-            "circuit_consecutive_failures": int(_circuit.consecutive_failures),
-            "circuit_last_error": _circuit.last_error,
+        o = _circuit_snapshot(_circuit_ollama, now=now)
+        llm = _circuit_snapshot(_circuit_llm, now=now)
+        out: dict[str, Any] = {
+            **o,
             "gpu_max_concurrency": int(settings.gpu_max_concurrency),
+            "llm_circuit_open": llm["circuit_open"],
+            "llm_circuit_open_seconds_remaining": llm["circuit_open_seconds_remaining"],
+            "llm_circuit_consecutive_failures": llm["circuit_consecutive_failures"],
+            "llm_circuit_last_error": llm["circuit_last_error"],
         }
+        out["llm_guard"] = llm
+        return out
 
 
-def post_json_with_guard(*, url: str, payload: dict[str, Any], timeout_s: float, kind: str) -> dict[str, Any]:
+def post_json_with_guard(
+    *,
+    url: str,
+    payload: dict[str, Any],
+    timeout_s: float,
+    kind: str,
+    headers: dict[str, str] | None = None,
+    circuit_scope: str = "ollama",
+) -> dict[str, Any]:
     """
     统一封装 Ollama POST 调用：
     - 熔断打开时快速失败
@@ -86,23 +117,24 @@ def post_json_with_guard(*, url: str, payload: dict[str, Any], timeout_s: float,
     - 调用成功：复位熔断
     - 调用失败：累计失败并可能打开熔断
     """
-    if _circuit_is_open():
-        raise OllamaCircuitOpen(f"Ollama 熔断已打开（{kind}），请稍后重试")
+    label = "LLM" if circuit_scope == "llm" else "Ollama"
+    if _circuit_is_open(circuit_scope):
+        raise OllamaCircuitOpen(f"{label} 熔断已打开（{kind}），请稍后重试")
 
     acquired = _gpu_sem.acquire(timeout=max(0.1, float(settings.gpu_acquire_timeout_s)))
     if not acquired:
         raise TimeoutError("推理资源繁忙（GPU semaphore acquire timeout），请稍后重试")
     try:
         with httpx.Client(timeout=timeout_s) as client:
-            resp = client.post(url, json=payload)
+            resp = client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
         if not isinstance(data, dict):
-            raise RuntimeError("Ollama 响应不是 JSON 对象")
-        _circuit_note_success()
+            raise RuntimeError(f"{label} 响应不是 JSON 对象")
+        _circuit_note_success(circuit_scope)
         return data
     except Exception as e:
-        _circuit_note_failure(e)
+        _circuit_note_failure(circuit_scope, e)
         raise
     finally:
         try:

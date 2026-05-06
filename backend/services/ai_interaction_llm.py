@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from backend.config import settings
 from backend.database import get_db
+from backend.services.openai_compatible_llm import chat_completions_ollama_shaped
 from backend.services.ollama_guard import post_json_with_guard
 from backend.services.upstream_guard import assert_upstream_allowed
 
@@ -55,10 +56,20 @@ def generate_chat_reply(
             continue
         msgs.append({"role": role, "content": content[:8000]})
 
-    payload = {"model": model, "messages": msgs, "stream": False}
-    base = _ollama_base()
-    url = f"{base}/api/chat"
-    out = post_json_with_guard(url=url, payload=payload, timeout_s=90.0, kind="ai_interaction.chat")
+    use_model = (model or "").strip() or (settings.llm_model or "").strip()
+    if settings.llm_chat_configured:
+        out = chat_completions_ollama_shaped(
+            messages=msgs,
+            tools=None,
+            model=use_model,
+            timeout_s=90.0,
+            kind="ai_interaction.chat",
+        )
+    else:
+        payload = {"model": use_model or settings.ollama_model, "messages": msgs, "stream": False}
+        base = _ollama_base()
+        url = f"{base}/api/chat"
+        out = post_json_with_guard(url=url, payload=payload, timeout_s=90.0, kind="ai_interaction.chat")
     msg = out.get("message") or {}
     return (msg.get("content") or "").strip() or "未能生成回答。"
 
@@ -197,10 +208,25 @@ def generate_answer_with_evidence(
     evidence_text = "\n".join(evidence_blocks) if evidence_blocks else "(无证据片段)"
     user = f"问题：{q}\n\n证据：\n{evidence_text}\n\n请给出答案。"
 
-    payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}], "stream": False}
-    base = _ollama_base()
-    url = f"{base}/api/chat"
-    out = post_json_with_guard(url=url, payload=payload, timeout_s=90.0, kind="ai_interaction.chat")
+    ev_msgs: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    use_model = (model or "").strip() or (settings.llm_model or "").strip()
+    if settings.llm_chat_configured:
+        out = chat_completions_ollama_shaped(
+            messages=ev_msgs,
+            tools=None,
+            model=use_model,
+            timeout_s=90.0,
+            kind="ai_interaction.evidence_chat",
+        )
+    else:
+        payload = {
+            "model": use_model or settings.ollama_model,
+            "messages": ev_msgs,
+            "stream": False,
+        }
+        base = _ollama_base()
+        url = f"{base}/api/chat"
+        out = post_json_with_guard(url=url, payload=payload, timeout_s=90.0, kind="ai_interaction.evidence_chat")
     msg = out.get("message") or {}
     return (msg.get("content") or "").strip() or "未能生成回答。"
 

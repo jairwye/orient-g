@@ -20,7 +20,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Docling：CPU 解析侧车；生产环境 GPU 预留给 Ollama，本服务不申请 GPU
+  # Docling：CPU 解析侧车；不申请 GPU（与 Ollama CPU 嵌入侧车、外置 LLM 解耦）
   # image + pull_policy: never：避免 docker compose pull 将短名镜像当成 docker.io/library/* 去拉取（本地 build 即可）
   docling:
     image: ${DOCLING_IMAGE:-orientg-docling-sidecar:local}
@@ -88,27 +88,20 @@ services:
       - backend
     restart: unless-stopped
 
-  # Ollama（可选）：生产构建/运行时启用；需宿主机 NVIDIA 驱动 + NVIDIA Container Toolkit。与本栈约定一致时由本服务独占 GPU，Docling 仅 CPU
+  # Ollama（可选）：主要用于知识库 embeddings（CPU，不申请 GPU；移除 Oculink/eGPU 后仍可在同机跑嵌入）
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
-    # 资源上限：推理服务可能突发占用内存/CPU；建议生产先给上限，避免 OOM 拖死宿主机
+    # 资源上限：嵌入/小模型 CPU 推理可能占用较多内存；建议生产先给上限，避免 OOM 拖死宿主机
     cpus: ${OLLAMA_CPUS:-6.0}
     mem_limit: ${OLLAMA_MEM_LIMIT:-12g}
     volumes:
       - ollama_data:/root/.ollama
     ports:
       - "127.0.0.1:11434:11434"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     environment:
-      - OLLAMA_NUM_GPU=1
+      - OLLAMA_NUM_GPU=0
 
   # 反向代理：生产环境应只监听内网 IP（在部署时通过 Portainer 或 compose 覆盖）
   caddy:

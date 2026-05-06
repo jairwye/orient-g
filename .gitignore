@@ -52,6 +52,13 @@ docs/assets/github-*.png
 # 本地 IDE/MCP 状态（不入库）
 .cursor/
 .playwright-mcp/
+.sisyphus/
+.superpowers/
+
+# 编辑器与插件本地设置（不同步 Git；团队若需共享 tasks 可再单独用 ! 放行个别文件）
+.vscode/
+.idea/
+*.code-workspace
 
 # 敏感配置与数据（防外泄，勿提交）
 .env
@@ -61,3 +68,12 @@ docs/assets/github-*.png
 Thumbs.db
 # 发布时本地用的提交信息草稿，不提交
 COMMIT_SUMMARY*.txt
+
+# 代码审核生成的临时文件
+review_diff.txt
+
+# CLAUDE.md 本地开发协作约定（不同步）
+CLAUDE.md
+
+# 数据解析会话本地缓存（运行时生成，不同步）
+backend/data/.data_parse_sessions/

@@ -14,7 +14,7 @@
 ## 2. 安全与合规（硬约束）
 
 - **仅内网**：不得把业务数据发送到公网第三方服务。
-- **LLM 仅走本地 Ollama**：如需模型推理，必须通过后端调用 `settings.ollama_url` 指向的 Ollama。
+- **LLM 走受控上游**：默认通过后端调用 OpenAI 兼容服务（`settings.llm_base_url` / `settings.llm_model` 等）；未配置时可回退 `settings.ollama_url`。禁止将业务数据发往不可信公网第三方；嵌入向量仍可通过同一仓库约定的 Ollama 路径生成。
 - **最小权限**：
   - 必须在执行前计算 ACL（例如 `compute_acl_scope()`）。
   - 写入目标集合必须属于 `writable_collection_ids`。

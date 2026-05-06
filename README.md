@@ -238,7 +238,7 @@ Environment="NO_PROXY=localhost,127.0.0.1,::1"
 
 Compose 中 `docling` 服务已配置 `build.context: docker/docling-sidecar`、默认 `image: orientg-docling-sidecar:local` 与 **`pull_policy: never`**（避免误从 registry 拉取）。`docker compose build docling` 会将构建结果打为该镜像名；若你沿用 README 下方的 `-t orientg-docling-sidecar:temp`，在 `.env` 中设置 `DOCLING_IMAGE=orientg-docling-sidecar:temp` 与手工 tag 对齐即可。
 
-Sidecar Dockerfile 与 [Docling 官方镜像](https://github.com/docling-project/docling/blob/main/Dockerfile) 对齐思路：基础镜像为 **`python:3.12-slim-bookworm`**、`pip` 使用 **`--extra-index-url https://download.pytorch.org/whl/cpu`**、环境变量 `HF_HOME`/`TORCH_HOME`/`OMP_NUM_THREADS`。构建参数 **`SKIP_MODEL_DOWNLOAD` 默认为 `1`**：默认**不**执行 `docling-tools models download`（避免构建期访问 Hugging Face；首次解析时再由运行时拉取或挂载缓存）。若需与官方一致把模型打进镜像，构建时传 **`--build-arg SKIP_MODEL_DOWNLOAD=0`**（需联网；镜像更大）。并与 **生产环境 GPU 由 Ollama 独占** 的约定一致：`docling` 服务不申请 GPU，文档解析走 CPU。
+Sidecar Dockerfile 与 [Docling 官方镜像](https://github.com/docling-project/docling/blob/main/Dockerfile) 对齐思路：基础镜像为 **`python:3.12-slim-bookworm`**、`pip` 使用 **`--extra-index-url https://download.pytorch.org/whl/cpu`**、环境变量 `HF_HOME`/`TORCH_HOME`/`OMP_NUM_THREADS`。构建参数 **`SKIP_MODEL_DOWNLOAD` 默认为 `1`**：默认**不**执行 `docling-tools models download`（避免构建期访问 Hugging Face；首次解析时再由运行时拉取或挂载缓存）。若需与官方一致把模型打进镜像，构建时传 **`--build-arg SKIP_MODEL_DOWNLOAD=0`**（需联网；镜像更大）。**`docling` 服务不申请 GPU**，文档解析走 CPU（与栈内 Ollama 仅 CPU 嵌入、外置 LLM 的部署方式一致）。
 
 Docling 构建常见问题的**排查顺序**推荐如下：
 
@@ -308,12 +308,12 @@ docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 - **FRONTEND_ORIGIN**：浏览器实际访问的地址（如 `http://192.168.1.100` 或 `https://192.168.1.100`），用于后端 CORS。未设置时默认为 `http://localhost:3000`，若用户通过内网 IP 访问则跨域请求会被拒绝。
 - **AUTH_SECRET**：页面登录 JWT 签名密钥；生产环境务必设置为强随机字符串，勿使用默认值，防止 token 被伪造。
 
-## 开发/生产与 Ollama（GPU）
+## 开发/生产与 LLM / Ollama
 
-- **生产环境约定**：`docker-compose.yml` 中启用 Ollama 时，由 **Ollama 容器独占 GPU**（`deploy.resources.reservations.devices` 等），用于推理；**Docling sidecar 仅 CPU**，不与 Ollama 争用 GPU。单机单卡时请勿再给 `docling`/`backend` 挂载 NVIDIA 设备。
-- **Ollama 与 GPU 为可选**：流程文档生成等 AI 能力依赖 Ollama；未配置 `OLLAMA_URL` 时，相关功能会提示「未配置」或返回 503，其余功能（经营数据、汇率、新闻、知识库等）正常可用。
-- **开发机无 GPU、生产机有 GPU 且同一局域网**：可在开发环境 `.env` 中设置 `OLLAMA_URL=http://生产机内网IP:11434`，让开发环境复用生产机上的 Ollama（需生产机开放 11434 仅对内网或指定 IP）。这样开发时无需在本机跑 GPU，也不需在开发机做 GPU 相关测试。
-- **从 GitHub 克隆使用的用户**：可不配置 Ollama，直接使用非 AI 功能；若本机或局域网内有 Ollama 实例，在 `.env` 中设置 `OLLAMA_URL` 即可启用流程文档等 AI 功能。CI/自动化测试可不包含依赖 GPU 或 Ollama 的用例。
+- **对话与工具链（推荐）**：在 `.env` 配置 **OpenAI 兼容** 推理服务：`LLM_BASE_URL`（可含或不含 `/v1` 后缀）、`LLM_MODEL`、`LLM_API_KEY`（可选）。后端会请求 `{base}/v1/chat/completions`。若上游主机不在默认白名单，请设置 `AI_UPSTREAM_ALLOWED_HOSTS` 或按需关闭 `AI_UPSTREAM_BLOCK_REMOTE`（见 `.env.example`）。
+- **嵌入（向量）仍走 Ollama**：知识库 `KB_VECTOR_ENABLED=true` 时，嵌入请求使用 `OLLAMA_URL`（如 `http://ollama:11434`）。`docker-compose.yml` 中 **Ollama 默认 CPU**（`OLLAMA_NUM_GPU=0`、不挂载 NVIDIA），便于在无 eGPU/Oculink 的机器上部署；CPU 嵌入较慢，可按机器资源调大 `OLLAMA_CPUS` / `OLLAMA_MEM_LIMIT`。
+- **回退**：未配置 `LLM_*` 时，对话/流程文档等仍可使用 **仅 Ollama**（`OLLAMA_URL` + `ollama_model`），行为与旧版一致。
+- **从 GitHub 克隆**：可不配置任何 LLM，非 AI 功能照常；按需二选一或同时配置 **LLM_***（对话）与 **OLLAMA_URL**（嵌入）。
 
 ## Docling 长任务与队列治理
 

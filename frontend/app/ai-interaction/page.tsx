@@ -1362,6 +1362,9 @@ export default function AiInteractionPage() {
     setEnabledTools([]);
     setEnabledPromptIds([]);
     setStartAreaHint(null);
+    setSelectedCollectionIds([]);
+    setSelectedTableIds([]);
+    setSelectedFolderIds([]);
     setSessions((prev) => [s, ...prev]);
   };
 
@@ -2572,7 +2575,7 @@ export default function AiInteractionPage() {
             {workspaceTab === "knowledge" ? (
               <div className="relative min-h-[70vh] overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950/40">
                 <div className="p-4">
-                  <KnowledgeWorkspacePanel mode="embedded" initialFolderId={null} />
+                  <KnowledgeWorkspacePanel />
                 </div>
               </div>
             ) : workspaceTab === "pdf_packages" ? (

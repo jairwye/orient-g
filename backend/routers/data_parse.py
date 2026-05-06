@@ -3,7 +3,7 @@
 
 合规说明（与 规则/规则.md 对齐）：
 - 仅内网服务，不暴露公网；Excel 仅上传至本机/内网，无第三方数据上传。
-- LLM 仅调用本地 Ollama（OLLAMA_URL），不依赖公网 AI。
+- LLM 默认调用 OpenAI 兼容服务（LLM_BASE_URL / LLM_MODEL 等）；未配置时可回退 Ollama（OLLAMA_URL）。嵌入仍走 Ollama。
 - 技术栈为成熟开源（openpyxl、Recharts 等），代码可继承。
 """
 import logging
@@ -81,12 +81,12 @@ async def upload_excel(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
     session_id = create_session(pipeline_result)
     analysis = ""
-    if settings.ollama_configured:
+    if settings.chat_llm_available:
         try:
             analysis = data_parse_chat.generate_analysis(session_id)
         except Exception as e:
             logger.warning("首轮解读失败: %s", e)
-            analysis = "解读生成失败，请检查 Ollama 服务。"
+            analysis = "解读生成失败，请检查 LLM（OpenAI 兼容）或 Ollama 服务。"
     return {
         "session_id": session_id,
         "table_schemas": pipeline_result.get("table_schemas") or [],
@@ -153,8 +153,11 @@ def persist_table(request: Request, body: PersistTableBody):
 @router.post("/chat")
 def chat_endpoint(body: ChatBody):
     """自然语言问答；返回 reply、chart_spec、table_spec（可选）。"""
-    if not settings.ollama_configured:
-        raise HTTPException(status_code=503, detail="Ollama 未配置，请在 .env 中设置 OLLAMA_URL 后使用对话功能")
+    if not settings.chat_llm_available:
+        raise HTTPException(
+            status_code=503,
+            detail="对话 LLM 未配置：请在 .env 设置 LLM_BASE_URL + LLM_MODEL（OpenAI 兼容），或设置 OLLAMA_URL 使用 Ollama。",
+        )
     extra = [str(x).strip() for x in (body.extra_session_ids or []) if str(x).strip()]
     session_ids = [str(body.session_id).strip(), *extra]
     result = data_parse_chat.chat_multi(
@@ -168,8 +171,12 @@ def chat_endpoint(body: ChatBody):
 
 @router.get("/status")
 def status():
-    """供前端判断 Ollama 是否可用（对话与解读依赖）。"""
-    return {"ollama_configured": settings.ollama_configured}
+    """供前端判断对话/解读 LLM 是否可用；ollama_configured 表示嵌入侧 Ollama 是否可连。"""
+    return {
+        "ollama_configured": settings.ollama_configured,
+        "llm_chat_configured": settings.llm_chat_configured,
+        "chat_available": settings.chat_llm_available,
+    }
 
 
 @router.get("/prompt-summary")

@@ -1,5 +1,5 @@
 """
-数据解析对话：Ollama /api/chat + 工具（read_metrics, template_render, generate_chart, generate_table）。
+数据解析对话：优先 OpenAI 兼容 /v1/chat/completions，否则 Ollama /api/chat；工具（read_metrics, template_render, generate_chart, generate_table）。
 仅基于 session 内聚合数据，不把原始行级数据拼进 prompt。
 """
 import json
@@ -880,7 +880,18 @@ def execute_tool(session_id: str, name: str, arguments: dict) -> dict[str, Any]:
 
 
 def _call_ollama_chat(messages: list[dict], tools: list[dict] | None = None) -> dict:
-    """调用 Ollama POST /api/chat，返回完整 response（含 message）。"""
+    """调用聊天补全：优先 OpenAI 兼容（LLM_*），否则 Ollama POST /api/chat；返回含 message 的响应。"""
+    if settings.llm_chat_configured:
+        from backend.services.openai_compatible_llm import chat_completions_ollama_shaped
+
+        model = (settings.llm_model or "").strip() or DEFAULT_MODEL
+        return chat_completions_ollama_shaped(
+            messages=messages,
+            tools=tools,
+            model=model,
+            timeout_s=90.0,
+            kind="data_parse.chat",
+        )
     base = _ollama_base()
     url = f"{base}/api/chat"
     model = getattr(settings, "ollama_model", None) or DEFAULT_MODEL
@@ -977,21 +988,39 @@ def generate_analysis(session_id: str) -> str:
     schemas = get_table_schemas(session_id)
     if not schemas:
         return "当前无解析数据，请先上传并解析 Excel。"
-    base = _ollama_base()
-    url = f"{base}/api/generate"
     model = getattr(settings, "ollama_model", None) or DEFAULT_MODEL
     skills = _load_skills()
     system = _build_system_prompt(skills)
     data_summary = json.dumps([{"sheet_name": s.get("sheet_name"), "headers": s.get("headers"), "row_count": s.get("row_count")} for s in schemas], ensure_ascii=False, indent=0)
-    prompt = f"{system}\n\n请根据以下表格结构摘要（仅表名、列名、行数，无原始行）给出简要概述：有哪些表、主要列含义、可做哪些分析。禁止编造具体数值。\n\n结构摘要：\n{data_summary}\n\n请用简洁的 Markdown 输出：## 概述 / ## 可分析方向。"
-    payload = {"model": model, "prompt": prompt, "stream": False}
+    user = (
+        "请根据以下表格结构摘要（仅表名、列名、行数，无原始行）给出简要概述：有哪些表、主要列含义、可做哪些分析。禁止编造具体数值。\n\n"
+        f"结构摘要：\n{data_summary}\n\n请用简洁的 Markdown 输出：## 概述 / ## 可分析方向。"
+    )
     try:
-        out_json = post_json_with_guard(url=url, payload=payload, timeout_s=60.0, kind="data_parse.analysis")
-        out = (out_json.get("response") or "").strip()
+        if settings.llm_chat_configured:
+            from backend.services.openai_compatible_llm import chat_completions_ollama_shaped
+
+            llm_model = (settings.llm_model or "").strip() or model
+            out_json = chat_completions_ollama_shaped(
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                tools=None,
+                model=llm_model,
+                timeout_s=60.0,
+                kind="data_parse.analysis",
+            )
+            msg = out_json.get("message") or {}
+            out = (msg.get("content") or "").strip()
+        else:
+            base = _ollama_base()
+            url = f"{base}/api/generate"
+            prompt = f"{system}\n\n{user}"
+            payload = {"model": model, "prompt": prompt, "stream": False}
+            out_json = post_json_with_guard(url=url, payload=payload, timeout_s=60.0, kind="data_parse.analysis")
+            out = (out_json.get("response") or "").strip()
         return out or "未能生成解读。"
     except Exception as e:
-        logger.warning("Ollama 解读失败: %s", e)
-        return "解读生成失败，请检查 Ollama 服务。"
+        logger.warning("首轮解读 LLM 失败: %s", e)
+        return "解读生成失败，请检查 LLM（OpenAI 兼容）或 Ollama 服务。"
 
 
 def chat(
@@ -1065,8 +1094,8 @@ def chat(
         try:
             resp = _call_ollama_chat(messages, tools=tools_def)
         except Exception as e:
-            logger.warning("Ollama chat 失败: %s", e)
-            return {"reply": "对话请求失败，请检查 Ollama 服务。", "chart_spec": None, "table_spec": None}
+            logger.warning("数据解析聊天 LLM 失败: %s", e)
+            return {"reply": "对话请求失败，请检查 LLM（OpenAI 兼容）或 Ollama 服务。", "chart_spec": None, "table_spec": None}
 
         msg = resp.get("message") or {}
         content = (msg.get("content") or "").strip()

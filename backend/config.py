@@ -24,11 +24,17 @@ class Settings(BaseSettings):
     freshrss_fetch_interval_minutes: int = 10
     freshrss_cache_ttl_seconds: int = 600  # 10 分钟
 
-    # Ollama（自然语言→流程文档等）：未配置则流程文档生成不可用
+    # Ollama：主要用于 embeddings（/api/embed）；可选仍用于对话/生成（未配置 LLM_* 时）
     ollama_url: Optional[str] = None
     ollama_model: str = "qwen3:8b-q4_K_M"
     # Ollama embeddings：用于 RAG 向量化（默认可与对话模型不同）
     ollama_embed_model: str = "bge-m3"
+
+    # OpenAI 兼容 LLM（对话、数据解析工具链、流程文档生成等）：LLM_BASE_URL + LLM_MODEL 同时配置则优先使用
+    # LLM_API_KEY 可选（部分本机网关可不校验）
+    llm_base_url: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
 
     # Knowledge RAG（向量检索）开关：默认关闭，走 keyword-only（更适合“小文档海”）
     kb_vector_enabled: bool = False
@@ -74,6 +80,15 @@ class Settings(BaseSettings):
     @property
     def ollama_configured(self) -> bool:
         return bool(self.ollama_url)
+
+    @property
+    def llm_chat_configured(self) -> bool:
+        return bool((self.llm_base_url or "").strip() and (self.llm_model or "").strip())
+
+    @property
+    def chat_llm_available(self) -> bool:
+        """对话/解读/流程文档等「聊天类」能力是否可用（OpenAI 兼容 或 回退 Ollama）。"""
+        return self.llm_chat_configured or self.ollama_configured
 
     # 飞书（流程文档同步）：未配置则同步飞书不可用
     feishu_app_id: Optional[str] = None

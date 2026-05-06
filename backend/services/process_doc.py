@@ -1,6 +1,6 @@
 """
 自然语言 → 标准财务业务流程文档。
-规则来自 backend/data/process_rules.json，可配置可更新；调用本地 Ollama 生成结构化输出后按模板渲染为 Markdown。
+规则来自 backend/data/process_rules.json，可配置可更新；调用 OpenAI 兼容 LLM 或 Ollama 生成结构化输出后按模板渲染为 Markdown。
 """
 import json
 import logging
@@ -40,7 +40,20 @@ def save_rules(rules: dict) -> None:
 
 
 def _call_ollama(prompt: str, model: Optional[str] = None) -> str:
-    """调用 Ollama /api/generate，返回完整响应文本。"""
+    """优先 OpenAI 兼容 chat；否则调用 Ollama /api/generate，返回完整响应文本。"""
+    if settings.llm_chat_configured:
+        from backend.services.openai_compatible_llm import chat_completions_ollama_shaped
+
+        use_model = (model or settings.llm_model or "").strip() or (settings.llm_model or "").strip()
+        data = chat_completions_ollama_shaped(
+            messages=[{"role": "user", "content": prompt}],
+            tools=None,
+            model=use_model,
+            timeout_s=60.0,
+            kind="process_doc.generate",
+        )
+        msg = data.get("message") or {}
+        return (msg.get("content") or "").strip()
     base = (settings.ollama_url or "").rstrip("/")
     if not base:
         raise ValueError("Ollama 未配置，请在 .env 中设置 OLLAMA_URL")

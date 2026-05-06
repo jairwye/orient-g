@@ -217,7 +217,9 @@ export default function ExcelKanbanPage() {
   useEffect(() => {
     fetch("/api/data-parse/status", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : {}))
-      .then((data: { ollama_configured?: boolean }) => setOllamaConfigured(!!data.ollama_configured))
+      .then((data: { chat_available?: boolean; ollama_configured?: boolean }) =>
+        setOllamaConfigured(!!(data.chat_available ?? data.ollama_configured)),
+      )
       .catch(() => {});
   }, []);
 
