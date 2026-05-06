@@ -1,1 +1,0 @@
-{"tables": {"Sheet1": {"headers": ["流水", "破天一剑"], "rows": [["本年累计", 10], ["目标", 100]]}}, "table_schemas": [{"sheet_name": "Sheet1", "headers": ["流水", "破天一剑"], "row_count": 2, "is_main_sheet": true}], "column_profiles": {}, "aggregations": {}, "auto_dashboards": [], "kanban_config": [], "validation_summary": {}, "created_at": 1777433520.4826074, "chat_history": []}
