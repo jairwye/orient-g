@@ -13,6 +13,7 @@ import {
 } from "../lib/kb_scope_capsule";
 import {
   ArrowUp,
+  Bot,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -309,6 +310,57 @@ function AiInlineChart({ spec }: { spec: Record<string, unknown> }) {
           </BarChart>
         )}
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+/** AI 对手方头像 + 名称 + 动态状态（参考 Open-WebUI） */
+function AiAvatar({ status }: { status?: "idle" | "thinking" | "typing" }) {
+  const statusText =
+    status === "thinking" ? "思考中…" : status === "typing" ? "正在输入…" : null;
+  return (
+    <div className="flex items-center gap-2">
+      <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+        <Bot size={15} strokeWidth={2} />
+        {status === "thinking" && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs font-medium text-zinc-300">AI 助手</span>
+        {statusText ? (
+          <span className="text-[11px] text-emerald-400/80 animate-pulse">{statusText}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** 打字机动画（三个跳动圆点） */
+function TypingIndicator() {
+  return (
+    <div className="flex items-center gap-1 px-1 py-2">
+      <span
+        className="inline-block h-1.5 w-1.5 rounded-full bg-zinc-400"
+        style={{ animation: "typingBounce 1.4s infinite ease-in-out both", animationDelay: "0ms" }}
+      />
+      <span
+        className="inline-block h-1.5 w-1.5 rounded-full bg-zinc-400"
+        style={{ animation: "typingBounce 1.4s infinite ease-in-out both", animationDelay: "160ms" }}
+      />
+      <span
+        className="inline-block h-1.5 w-1.5 rounded-full bg-zinc-400"
+        style={{ animation: "typingBounce 1.4s infinite ease-in-out both", animationDelay: "320ms" }}
+      />
+      <style jsx>{`
+        @keyframes typingBounce {
+          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+          40% { transform: scale(1); opacity: 1; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -2454,47 +2506,78 @@ export default function AiInteractionPage() {
                 <div className="mx-auto max-w-3xl space-y-3">
                   {messages.map((m, idx) => (
                     <div key={idx} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
-                      <div
-                        className="max-w-[85%] rounded-2xl px-4 py-2 text-sm leading-relaxed"
-                        style={{
-                          backgroundColor: m.role === "user" ? "#3b82f6" : "#27272a",
-                          color: "#e4e4e7",
-                        }}
-                      >
-                        {m.content}
-                        {m.role === "assistant" && m.chart_spec && Object.keys(m.chart_spec).length > 0 && (
-                          <div className="mt-2">
-                            <AiInlineChart spec={m.chart_spec} />
-                            <details className="mt-1 cursor-pointer">
-                              <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 chart_spec 原始数据</summary>
-                              <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
-                                {JSON.stringify(m.chart_spec, null, 2)}
-                              </pre>
-                            </details>
+                      {m.role === "assistant" ? (
+                        <div className="flex max-w-[85%] gap-3">
+                          <div className="shrink-0 pt-1">
+                            <AiAvatar status={chatLoading && idx === messages.length - 1 ? "thinking" : "idle"} />
                           </div>
-                        )}
-                        {m.role === "assistant" && m.table_spec && m.table_spec.columns?.length ? (
-                          <div className="mt-2">
-                            <AiInlineTable spec={m.table_spec} />
-                            <details className="mt-1 cursor-pointer">
-                              <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 table_spec 原始数据</summary>
-                              <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
-                                {JSON.stringify(m.table_spec, null, 2)}
-                              </pre>
-                            </details>
+                          <div
+                            className="rounded-2xl px-4 py-2 text-sm leading-relaxed"
+                            style={{ backgroundColor: "#27272a", color: "#e4e4e7" }}
+                          >
+                            {m.content ? (
+                              m.content
+                            ) : chatLoading && idx === messages.length - 1 ? (
+                              <TypingIndicator />
+                            ) : null}
+                            {m.chart_spec && Object.keys(m.chart_spec).length > 0 && (
+                              <div className="mt-2">
+                                <AiInlineChart spec={m.chart_spec} />
+                                <details className="mt-1 cursor-pointer">
+                                  <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 chart_spec 原始数据</summary>
+                                  <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
+                                    {JSON.stringify(m.chart_spec, null, 2)}
+                                  </pre>
+                                </details>
+                              </div>
+                            )}
+                            {m.table_spec && m.table_spec.columns?.length ? (
+                              <div className="mt-2">
+                                <AiInlineTable spec={m.table_spec} />
+                                <details className="mt-1 cursor-pointer">
+                                  <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 table_spec 原始数据</summary>
+                                  <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
+                                    {JSON.stringify(m.table_spec, null, 2)}
+                                  </pre>
+                                </details>
+                              </div>
+                            ) : null}
+                            {m.citations && m.citations.length > 0 && (
+                              <div className="mt-2">
+                                <details className="cursor-pointer">
+                                  <summary className="text-xs text-zinc-200/80 hover:text-zinc-100">citations（{m.citations.length}）</summary>
+                                  <pre className="mt-2 whitespace-pre-wrap text-xs text-zinc-200/80">{JSON.stringify(m.citations, null, 2)}</pre>
+                                </details>
+                              </div>
+                            )}
                           </div>
-                        ) : null}
-                        {m.role === "assistant" && m.citations && m.citations.length > 0 && (
-                          <div className="mt-2">
-                            <details className="cursor-pointer">
-                              <summary className="text-xs text-zinc-200/80 hover:text-zinc-100">citations（{m.citations.length}）</summary>
-                              <pre className="mt-2 whitespace-pre-wrap text-xs text-zinc-200/80">{JSON.stringify(m.citations, null, 2)}</pre>
-                            </details>
-                          </div>
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <div
+                          className="max-w-[85%] rounded-2xl px-4 py-2 text-sm leading-relaxed"
+                          style={{ backgroundColor: "#3b82f6", color: "#e4e4e7" }}
+                        >
+                          {m.content}
+                        </div>
+                      )}
                     </div>
                   ))}
+                  {/* AI 正在思考/输入时的占位消息（还没有 assistant 消息时） */}
+                  {chatLoading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
+                    <div className="flex justify-start">
+                      <div className="flex max-w-[85%] gap-3">
+                        <div className="shrink-0 pt-1">
+                          <AiAvatar status="thinking" />
+                        </div>
+                        <div
+                          className="rounded-2xl px-4 py-2 text-sm leading-relaxed"
+                          style={{ backgroundColor: "#27272a", color: "#e4e4e7" }}
+                        >
+                          <TypingIndicator />
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

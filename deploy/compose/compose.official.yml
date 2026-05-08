@@ -1,0 +1,54 @@
+# ==============================================================================
+# Orient-G — Docling 官方镜像 docker-compose
+# ==============================================================================
+# 用途：当本地 build 的 docling 侧车不稳定时，用此文件替换默认 docker-compose.yml
+#       中的 docling service，使用官方 quay.io/docling-project/docling-serve 镜像。
+#
+# 使用方式：
+#   cd ~/docker/orient-g
+#   docker compose -f docker-compose.yml -f deploy/compose/compose.official.yml up -d docling
+#
+# 说明：
+#   - 此文件仅定义 docling service，不包含 db / backend / frontend / ollama / caddy
+#   - backend 的 DOCLING_HTTP_BASE_URL=http://docling:8080 无需修改
+#   - 端口映射：容器内 5001 → 宿主机 8080（与本地 build 版一致）
+#   - CPU 模式（无 GPU）；如需 GPU 支持使用 tag cu128
+#
+# GPU 版本（当前 OCuLink 已断开，不适用）：
+#   镜像改为 quay.io/docling-project/docling-serve-cu128:1.16.0
+#   并在 deploy.resources.reservations.devices 中加入 nvidia 配置
+# ==============================================================================
+
+services:
+  docling:
+    image: quay.io/docling-project/docling-serve:1.16.0
+    container_name: orientg-docling-sidecar
+    # 端口映射：宿主机 8080 → 容器内 5001
+    #   backend 通过 http://docling:8080 调用，与本地 build 版的 DOCLING_HTTP_BASE_URL 兼容
+    ports:
+      - "${BIND_IP:-127.0.0.1}:8080:5001"
+    environment:
+      # 仅 API 模式（不需要 UI）
+      - DOCLING_SERVE_ENABLE_UI=0
+      # 启动时不加载模型（按需加载，减少启动内存峰值）
+      - DOCLING_SERVE_LOAD_MODELS_AT_BOOT=false
+      # 纯本地解析，不请求远程服务
+      - DOCLING_SERVE_ENABLE_REMOTE_SERVICES=false
+      # CPU 线程数（建议 <= 4，避免高负载触发系统冻结）
+      - DOCLING_NUM_THREADS=4
+      # 明确指定 CPU（非 cuda）
+      - DOCLING_DEVICE=cpu
+    deploy:
+      resources:
+        limits:
+          # 保守内存限制：4GB 足够 docling PDF 解析使用
+          memory: 4g
+          # 2 核并发解析，避免 CPU 过载导致冻结
+          cpus: "2"
+        reservations:
+          memory: 1g
+          cpus: "2"
+    # 挂载模型缓存目录（如有离线 artifacts 则使用；无需 Hugging Face 访问）
+    volumes:
+      - ./docling-artifacts:/models/docling-artifacts
+    restart: unless-stopped

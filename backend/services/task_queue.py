@@ -144,7 +144,7 @@ def enqueue_bigpdf_task(tenant_id: str, owner_username: str, task_id: str) -> bo
         from backend.services.bigpdf_tasks import process_bigpdf_task
 
         return submit(
-            Priority.LOW,
+            Priority.HIGH,  # bigpdf 高优先级，优先于 user_doc_parse
             process_bigpdf_task,
             tenant_id,
             task_id,
@@ -152,8 +152,9 @@ def enqueue_bigpdf_task(tenant_id: str, owner_username: str, task_id: str) -> bo
             task_id=task_id,
             task_type=TASK_PDF_PARSE_DOCLING,
         )
-    qsz = kb_tasks.count_queue(priority=kb_tasks.QUEUE_PRIORITY_LOW)
-    if qsz >= max(1, int(settings.queue_max_size_low)):
+    # bigpdf 使用 HIGH 优先级，确保在 user_doc_parse 之前被处理
+    qsz = kb_tasks.count_queue(priority=kb_tasks.QUEUE_PRIORITY_HIGH)
+    if qsz >= max(1, int(settings.queue_max_size_high)):
         return False
     kb_tasks.update_task(
         tenant_id,
@@ -162,6 +163,7 @@ def enqueue_bigpdf_task(tenant_id: str, owner_username: str, task_id: str) -> bo
         stage="queued",
         progress=0,
         payload={"task_id": str(task_id), "owner_username": str(owner_username)},
+        priority=kb_tasks.QUEUE_PRIORITY_HIGH,
     )
     return True
 

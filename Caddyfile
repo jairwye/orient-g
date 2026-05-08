@@ -7,15 +7,22 @@
 :80 {
 	@domain host {env.CADDY_DOMAIN}
 	handle @domain {
-		reverse_proxy /api/* backend:8000
+		reverse_proxy /api/* backend:8000 {
+			# 启动时 backend 可能未就绪，增加重试避免瞬时 502
+			lb_retries 3
+		}
 		reverse_proxy frontend:3000 {
 			header_up Host {env.CADDY_BACKEND_HOST}
+			lb_retries 3
 		}
 	}
 	handle {
-		reverse_proxy /api/* backend:8000
+		reverse_proxy /api/* backend:8000 {
+			lb_retries 3
+		}
 		reverse_proxy frontend:3000 {
 			header_up Host {env.CADDY_BACKEND_HOST}
+			lb_retries 3
 		}
 	}
 }

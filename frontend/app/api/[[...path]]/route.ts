@@ -88,6 +88,8 @@ async function proxy(
       const ab = await request.arrayBuffer();
       init.body = Buffer.from(ab);
       headers.delete("content-length");
+      // multipart/form-data 的 boundary 必须随 body 一起正确生成；
+      // 原请求头中的 content-type 包含 boundary，保留它即可让后端正确解析
     } else if (request.body) {
       init.body = request.body;
       (init as RequestInit & { duplex?: string }).duplex = "half"; // Node fetch 要求流式 body 时设置

@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,9 @@ import httpx
 
 from backend.config import settings
 from backend.services.upstream_guard import assert_upstream_allowed
+
+# docling 并发控制：同一时刻只允许一个 docling 请求，防止多进程同时高负载触发 CPU 冻结
+_docling_semaphore = threading.Semaphore(1)
 
 @dataclass(frozen=True)
 class DoclingResult:
@@ -183,7 +187,9 @@ def convert_to_md_and_json(
     t = timeout_s if timeout_s is not None else settings.docling_http_timeout_s
     mode = (settings.docling_mode or "local").strip().lower()
     if mode == "http":
-        return _convert_http(source_path, output_dir, t)
+        with _docling_semaphore:
+            return _convert_http(source_path, output_dir, t)
     if mode != "local":
         raise RuntimeError(f"未知 DOCLING_MODE={mode!r}，仅支持 local | http")
-    return _convert_local(source_path, output_dir, t)
+    with _docling_semaphore:
+        return _convert_local(source_path, output_dir, t)

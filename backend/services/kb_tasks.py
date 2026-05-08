@@ -517,6 +517,7 @@ def update_task(
     detail: str | None = None,
     result_package_id: str | None = None,
     payload: dict[str, Any] | None = None,
+    priority: int | None = None,
 ) -> None:
     sets: list[str] = ["updated_at=CURRENT_TIMESTAMP"]
     params: dict[str, Any] = {"tid": tenant_id, "id": task_id}
@@ -539,6 +540,9 @@ def update_task(
         if supports_persisted_queue():
             sets.append("payload_json=:pj")
             params["pj"] = json.dumps(payload, ensure_ascii=False)
+    if priority is not None and supports_persisted_queue():
+        sets.append("queue_priority=:pri")
+        params["pri"] = priority
     sql = "UPDATE kb_tasks SET " + ", ".join(sets) + " WHERE tenant_id=:tid AND task_id=:id"
     with get_db() as db:
         db.execute(text(sql), params)

@@ -22,6 +22,8 @@ services:
 
   # Docling：CPU 解析侧车；不申请 GPU（与 Ollama CPU 嵌入侧车、外置 LLM 解耦）
   # image + pull_policy: never：避免 docker compose pull 将短名镜像当成 docker.io/library/* 去拉取（本地 build 即可）
+  # >>> 方案 B（官方 docling-serve）：把 compose.official.yml 覆盖到同目录，执行 `docker compose -f compose.official.yml up -d` 即可切换
+  # >>> 详情见 deploy/compose/ 目录下的 compose.official.yml 及相关说明
   docling:
     image: ${DOCLING_IMAGE:-orientg-docling-sidecar:local}
     pull_policy: never
@@ -44,7 +46,7 @@ services:
       # docling-tools models download 产物（离线模型目录）；生产侧车无法访问 Hugging Face 时必须挂载
       DOCLING_ARTIFACTS_PATH: ${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
       # 单个文件解析的 docling CLI 超时（秒）
-      DOCLING_CLI_TIMEOUT_S: ${DOCLING_CLI_TIMEOUT_S}
+      DOCLING_CLI_TIMEOUT_S: ${DOCLING_CLI_TIMEOUT_S:-1800}
     volumes:
       - ./docling-artifacts:${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
     restart: unless-stopped
@@ -60,6 +62,12 @@ services:
       DOCLING_MODE: ${DOCLING_MODE:-http}
       DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:8080}
       DOCLING_HTTP_TIMEOUT_S: ${DOCLING_HTTP_TIMEOUT_S:-600}
+      DOCLING_HTTP_CONNECT_TIMEOUT_S: ${DOCLING_HTTP_CONNECT_TIMEOUT_S:-10}
+      DOCLING_HTTP_READ_TIMEOUT_S: ${DOCLING_HTTP_READ_TIMEOUT_S:-600}
+      DOCLING_HTTP_WRITE_TIMEOUT_S: ${DOCLING_HTTP_WRITE_TIMEOUT_S:-60}
+      QUEUE_WORKER_LEASE_SECONDS: ${QUEUE_WORKER_LEASE_SECONDS:-600}
+      QUEUE_WORKER_HEARTBEAT_SECONDS: ${QUEUE_WORKER_HEARTBEAT_SECONDS:-60}
+      QUEUE_RUNNING_TIMEOUT_SECONDS: ${QUEUE_RUNNING_TIMEOUT_SECONDS:-1800}
     volumes:
       - uploads_data:/app/uploads
     depends_on:
@@ -117,9 +125,15 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
     depends_on:
-      - frontend
-      - backend
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    # 注意：Caddy 不配置 healthcheck，原因：
+    # 1. caddy:2-alpine 镜像的 healthcheck 命令曾多次导致 SIGALRM 杀死 Caddy 进程
+    # 2. restart: unless-stopped + depends_on: backend: service_healthy 已足够保障
+    # 3. 生产环境可通过 /api/health 间接监控 Caddy 状态
 
 volumes:
   pgdata: {}
