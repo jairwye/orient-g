@@ -548,12 +548,65 @@ def update_task(
         db.execute(text(sql), params)
 
 
+def cancel_bigpdf_task(tenant_id: str, task_id: str) -> bool:
+    """
+    Cancel a bigpdf task if it is still queued or running.
+    Sets status to 'cancelled' and releases the worker lease.
+    Returns True if the task was found and cancelled, False otherwise.
+    """
+    if not supports_persisted_queue():
+        return False
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                UPDATE kb_tasks
+                SET status='cancelled',
+                    stage='cancelled',
+                    detail='cancelled by user',
+                    worker_id=NULL,
+                    lease_until=NULL,
+                    heartbeat_at=CURRENT_TIMESTAMP,
+                    finished_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE tenant_id=:t AND task_id=:id AND status IN ('queued', 'running')
+                RETURNING task_id
+                """
+            ),
+            {"t": tenant_id, "id": task_id},
+        ).fetchone()
+    return row is not None
+
+
+def is_task_cancelled(tenant_id: str, task_id: str) -> bool:
+    """Check if a task has been cancelled."""
+    if not supports_persisted_queue():
+        return False
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                SELECT status FROM kb_tasks
+                WHERE tenant_id=:t AND task_id=:id
+                """
+            ),
+            {"t": tenant_id, "id": task_id},
+        ).fetchone()
+    if not row:
+        return False
+    return str(row[0] or "").strip().lower() == "cancelled"
+
+
 def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
     with get_db() as db:
         row = db.execute(
             text(
                 """
-                SELECT task_id, kind, status, stage, progress, detail, result_package_id, created_at, updated_at
+                SELECT
+                    task_id, kind, status, stage, progress, detail, result_package_id,
+                    file_name, file_size, page_count, docling_task_id, estimated_duration,
+                    started_at, completed_at, cancelled_by, cancel_type,
+                    created_at, updated_at
                 FROM kb_tasks
                 WHERE tenant_id=:t AND task_id=:id
                 """
@@ -570,8 +623,17 @@ def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
         "progress": int(row[4] or 0),
         "detail": str(row[5] or "") if row[5] else None,
         "result_package_id": str(row[6] or "") if row[6] else None,
-        "created_at": row[7].isoformat() if row[7] else None,
-        "updated_at": row[8].isoformat() if row[8] else None,
+        "file_name": str(row[7] or "") if row[7] else None,
+        "file_size": int(row[8] or 0) if row[8] else None,
+        "page_count": int(row[9] or 0) if row[9] else None,
+        "docling_task_id": str(row[10] or "") if row[10] else None,
+        "estimated_duration": int(row[11] or 0) if row[11] else None,
+        "started_at": row[12].isoformat() if row[12] else None,
+        "completed_at": row[13].isoformat() if row[13] else None,
+        "cancelled_by": str(row[14] or "") if row[14] else None,
+        "cancel_type": str(row[15] or "") if row[15] else None,
+        "created_at": row[16].isoformat() if row[16] else None,
+        "updated_at": row[17].isoformat() if row[17] else None,
     }
 
 
@@ -610,4 +672,225 @@ def list_my_tasks(tenant_id: str, owner_username: str, *, kind: str | None = Non
             }
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: bigpdf queue management enhancements
+# ---------------------------------------------------------------------------
+
+
+def get_running_task(tenant_id: str) -> dict[str, Any] | None:
+    """Get the currently running bigpdf task for a tenant."""
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                SELECT
+                    task_id, owner_username, status, stage, progress, detail,
+                    file_name, file_size, page_count, estimated_duration, started_at
+                FROM kb_tasks
+                WHERE tenant_id=:t AND kind='bigpdf' AND status='running'
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            ),
+            {"t": tenant_id},
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "task_id": str(row[0]),
+        "owner_username": str(row[1] or ""),
+        "status": str(row[2] or ""),
+        "stage": str(row[3] or ""),
+        "progress": int(row[4] or 0),
+        "detail": str(row[5] or "") if row[5] else None,
+        "file_name": str(row[6] or "") if row[6] else None,
+        "file_size": int(row[7] or 0) if row[7] else None,
+        "page_count": int(row[8] or 0) if row[8] else None,
+        "estimated_duration": int(row[9] or 0) if row[9] else None,
+        "started_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def get_queue_length(tenant_id: str) -> int:
+    """Get total number of queued bigpdf tasks for a tenant."""
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM kb_tasks
+                WHERE tenant_id=:t AND kind='bigpdf' AND status='queued'
+                """
+            ),
+            {"t": tenant_id},
+        ).fetchone()
+    return int(row[0] if row else 0)
+
+
+def get_user_queued_task(tenant_id: str, owner_username: str) -> dict[str, Any] | None:
+    """Get the queued position for a specific user's bigpdf task."""
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT task_id, created_at
+                FROM kb_tasks
+                WHERE tenant_id=:t AND kind='bigpdf' AND status='queued'
+                ORDER BY created_at ASC
+                """
+            ),
+            {"t": tenant_id},
+        ).fetchall()
+    for idx, r in enumerate(rows, start=1):
+        if str(r[0] or "") == "":
+            continue
+        # We need to check if this task belongs to the user
+        # Re-query for the specific task
+        with get_db() as db:
+            task_row = db.execute(
+                text(
+                    """
+                    SELECT task_id, created_at
+                    FROM kb_tasks
+                    WHERE tenant_id=:t AND owner_username=:u AND kind='bigpdf' AND status='queued'
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """
+                ),
+                {"t": tenant_id, "u": owner_username},
+            ).fetchone()
+        if not task_row:
+            return None
+        # Find position
+        for pos, qr in enumerate(rows, start=1):
+            if str(qr[0] or "") == str(task_row[0] or ""):
+                return {"position": pos}
+        return None
+    return None
+
+
+def get_queued_tasks(tenant_id: str) -> list[dict[str, Any]]:
+    """Get all queued bigpdf tasks for a tenant, ordered by creation time."""
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT
+                    task_id, owner_username, detail, file_name, created_at
+                FROM kb_tasks
+                WHERE tenant_id=:t AND kind='bigpdf' AND status='queued'
+                ORDER BY created_at ASC
+                """
+            ),
+            {"t": tenant_id},
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for idx, r in enumerate(rows, start=1):
+        out.append(
+            {
+                "task_id": str(r[0]),
+                "owner_username": str(r[1] or ""),
+                "detail": str(r[2] or "") if r[2] else None,
+                "file_name": str(r[3] or "") if r[3] else None,
+                "queued_at": r[4].isoformat() if r[4] else None,
+                "position": idx,
+            }
+        )
+    return out
+
+
+def estimate_duration(file_size_bytes: int) -> int:
+    """Estimate parsing duration in seconds based on file size.
+
+    Rough heuristic: ~3 minutes per MB, minimum 5 minutes.
+    """
+    size_mb = file_size_bytes / (1024 * 1024)
+    duration = max(300, size_mb * 180)
+    return int(duration)
+
+
+def update_task_with_file_info(
+    tenant_id: str,
+    task_id: str,
+    *,
+    file_name: str | None = None,
+    file_size: int | None = None,
+    page_count: int | None = None,
+    estimated_duration: int | None = None,
+) -> None:
+    """Update task with file metadata."""
+    sets: list[str] = ["updated_at=CURRENT_TIMESTAMP"]
+    params: dict[str, Any] = {"tid": tenant_id, "id": task_id}
+    if file_name is not None:
+        sets.append("file_name=:fn")
+        params["fn"] = file_name
+    if file_size is not None:
+        sets.append("file_size=:fs")
+        params["fs"] = file_size
+    if page_count is not None:
+        sets.append("page_count=:pc")
+        params["pc"] = page_count
+    if estimated_duration is not None:
+        sets.append("estimated_duration=:ed")
+        params["ed"] = estimated_duration
+    sql = "UPDATE kb_tasks SET " + ", ".join(sets) + " WHERE tenant_id=:tid AND task_id=:id"
+    with get_db() as db:
+        db.execute(text(sql), params)
+
+
+def soft_cancel_task(tenant_id: str, task_id: str, cancelled_by: str, cancel_type: str = "soft") -> bool:
+    """Soft cancel a task (mark as user_abandoned or cancelled)."""
+    if not supports_persisted_queue():
+        return False
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                UPDATE kb_tasks
+                SET status='cancelled',
+                    stage='cancelled',
+                    cancelled_by=:cb,
+                    cancel_type=:ct,
+                    detail='cancelled by user',
+                    worker_id=NULL,
+                    lease_until=NULL,
+                    heartbeat_at=CURRENT_TIMESTAMP,
+                    finished_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE tenant_id=:t AND task_id=:id AND status IN ('queued', 'running')
+                RETURNING task_id
+                """
+            ),
+            {"t": tenant_id, "id": task_id, "cb": cancelled_by, "ct": cancel_type},
+        ).fetchone()
+    return row is not None
+
+
+def force_cancel_task(tenant_id: str, task_id: str, cancelled_by: str) -> bool:
+    """Force cancel a task (mark as force_cancelled)."""
+    if not supports_persisted_queue():
+        return False
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                UPDATE kb_tasks
+                SET status='force_cancelled',
+                    stage='force_cancelled',
+                    cancelled_by=:cb,
+                    cancel_type='force',
+                    detail='force cancelled',
+                    worker_id=NULL,
+                    lease_until=NULL,
+                    heartbeat_at=CURRENT_TIMESTAMP,
+                    finished_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE tenant_id=:t AND task_id=:id AND status IN ('queued', 'running')
+                RETURNING task_id
+                """
+            ),
+            {"t": tenant_id, "id": task_id, "cb": cancelled_by},
+        ).fetchone()
+    return row is not None
 

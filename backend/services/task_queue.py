@@ -258,7 +258,7 @@ def _run_next_memory() -> bool:
     return False
 
 
-def _dispatch_persisted_task(task: dict[str, Any]) -> None:
+def _dispatch_persisted_task(task: dict[str, Any], is_cancelled=None) -> None:
     kind = str(task.get("kind") or "")
     tenant_id = str(task.get("tenant_id") or "")
     task_id = str(task.get("task_id") or "")
@@ -270,12 +270,12 @@ def _dispatch_persisted_task(task: dict[str, Any]) -> None:
         doc_id = str(payload.get("doc_id") or "")
         if not doc_id:
             raise RuntimeError("missing doc_id in payload")
-        kb_documents.process_uploaded_document_task(tenant_id, doc_id)
+        kb_documents.process_uploaded_document_task(tenant_id, doc_id, is_cancelled=is_cancelled)
         return
     if kind == TASK_KIND_BIGPDF_PARSE:
         from backend.services.bigpdf_tasks import process_bigpdf_task
 
-        process_bigpdf_task(tenant_id, task_id, owner)
+        process_bigpdf_task(tenant_id, task_id, owner, is_cancelled=is_cancelled)
         return
     raise RuntimeError(f"unsupported persisted task kind: {kind}")
 
@@ -300,6 +300,10 @@ def _run_next_persisted() -> bool:
     def _hb() -> None:
         while not hb_stop.wait(timeout=max(3, int(settings.queue_worker_heartbeat_seconds))):
             try:
+                # Check if task was cancelled; if so, signal main thread to stop
+                if kb_tasks.is_task_cancelled(tenant_id, task_id):
+                    hb_stop.set()
+                    return
                 kb_tasks.heartbeat_task(
                     tenant_id,
                     task_id,
@@ -312,7 +316,19 @@ def _run_next_persisted() -> bool:
     hb = threading.Thread(target=_hb, daemon=True, name=f"task-hb-{task_id[:8]}")
     hb.start()
     try:
-        _dispatch_persisted_task(task)
+        # Skip if task was cancelled before we started
+        if kb_tasks.is_task_cancelled(tenant_id, task_id):
+            kb_tasks.finish_task(
+                tenant_id,
+                task_id,
+                worker_id=_worker_id,
+                status="cancelled",
+                stage="cancelled",
+                progress=0,
+                detail="cancelled before processing started",
+            )
+            return True
+        _dispatch_persisted_task(task, is_cancelled=lambda: kb_tasks.is_task_cancelled(tenant_id, task_id))
         kb_tasks.finish_task(
             tenant_id,
             task_id,

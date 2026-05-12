@@ -20,33 +20,57 @@ services:
       timeout: 5s
       retries: 5
 
-  # Docling：CPU 解析侧车；不申请 GPU（与 Ollama CPU 嵌入侧车、外置 LLM 解耦）
-  # image + pull_policy: never：避免 docker compose pull 将短名镜像当成 docker.io/library/* 去拉取（本地 build 即可）
-  # >>> 方案 B（官方 docling-serve）：把 compose.official.yml 覆盖到同目录，执行 `docker compose -f compose.official.yml up -d` 即可切换
-  # >>> 详情见 deploy/compose/ 目录下的 compose.official.yml 及相关说明
+  # =============================================================================
+  # Docling 侧车：本地 build 版本（当前生产使用）
+  # 切换方式：在 .env 中设置 DOCLING_IMAGE=orientg-docling-sidecar:temp
+  # =============================================================================
+  # docling:
+  #   image: ${DOCLING_IMAGE:-orientg-docling-sidecar:local}
+  #   pull_policy: never
+  #   cpus: ${DOCLING_CPUS:-2.0}
+  #   mem_limit: ${DOCLING_MEM_LIMIT:-4g}
+  #   build:
+  #     context: docker/docling-sidecar
+  #     dockerfile: Dockerfile
+  #     args:
+  #       DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+  #       PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+  #       PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+  #       SKIP_MODEL_DOWNLOAD: ${SKIP_MODEL_DOWNLOAD:-1}
+  #   ports:
+  #     - "${BIND_IP:-127.0.0.1}:8080:8080"
+  #   environment:
+  #     DOCLING_ARTIFACTS_PATH: ${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
+  #     DOCLING_CLI_TIMEOUT_S: ${DOCLING_CLI_TIMEOUT_S:-3600}
+  #   volumes:
+  #     - ./docling-artifacts:${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
+  #   restart: unless-stopped
+
+  # =============================================================================
+  # Docling 侧车：官方 docling-serve 镜像（备选，用于对比测试或替换本地 build）
+  # 切换方式：在 .env 中设置 DOCLING_IMAGE=quay.io/docling-project/docling-serve:latest
+  #         并移除本地上下文的 build 段落，保留 image + pull_policy
+  # 官方镜像端口：容器内 5001，compose 通过 "8080:5001" 映射与 backend 的 :8080 对齐
+  # 官方镜像默认已包含模型，无需 huggingface 缓存卷
+  # =============================================================================
   docling:
-    image: ${DOCLING_IMAGE:-orientg-docling-sidecar:local}
-    pull_policy: never
-    # 资源上限（docker compose 非 swarm 场景下，优先使用 cpus/mem_limit 约束；避免解析任务把整机拖垮）
-    # 生产建议：先保守限制，按实际吞吐再调大
+    image: ${DOCLING_IMAGE:-quay.io/docling-project/docling-serve:latest}
+    pull_policy: if_not_present
     cpus: ${DOCLING_CPUS:-2.0}
     mem_limit: ${DOCLING_MEM_LIMIT:-4g}
-    build:
-      context: docker/docling-sidecar
-      dockerfile: Dockerfile
-      args:
-        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
-        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
-        SKIP_MODEL_DOWNLOAD: ${SKIP_MODEL_DOWNLOAD:-1}
-    # 为便于开发机复用生产侧车：发布到宿主机内网 IP（默认用 BIND_IP；未设则仅本机可访问）
     ports:
-      - "${BIND_IP:-127.0.0.1}:8080:8080"
+      - "${BIND_IP:-127.0.0.1}:8080:5001"
     environment:
-      # docling-tools models download 产物（离线模型目录）；生产侧车无法访问 Hugging Face 时必须挂载
-      DOCLING_ARTIFACTS_PATH: ${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
-      # 单个文件解析的 docling CLI 超时（秒）
-      DOCLING_CLI_TIMEOUT_S: ${DOCLING_CLI_TIMEOUT_S:-1800}
+      # 代理（官方镜像拉取/运行时下载模型可能需要）
+      HTTP_PROXY: ${HTTP_PROXY:-http://192.168.104.108:7890}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://192.168.104.108:7890}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      # 官方镜像默认走 HTTP 模式
+      DOCLING_MODE: http
+      # 大 PDF / 扫描件建议超时 >= 3600s
+      DOCLING_CLI_TIMEOUT_S: ${DOCLING_CLI_TIMEOUT_S:-3600}
     volumes:
       - ./docling-artifacts:${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
     restart: unless-stopped
@@ -61,13 +85,13 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:-orient-g-auth-secret-change-in-production}
       DOCLING_MODE: ${DOCLING_MODE:-http}
       DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:8080}
-      DOCLING_HTTP_TIMEOUT_S: ${DOCLING_HTTP_TIMEOUT_S:-600}
+      DOCLING_HTTP_TIMEOUT_S: ${DOCLING_HTTP_TIMEOUT_S:-3600}
       DOCLING_HTTP_CONNECT_TIMEOUT_S: ${DOCLING_HTTP_CONNECT_TIMEOUT_S:-10}
-      DOCLING_HTTP_READ_TIMEOUT_S: ${DOCLING_HTTP_READ_TIMEOUT_S:-600}
+      DOCLING_HTTP_READ_TIMEOUT_S: ${DOCLING_HTTP_READ_TIMEOUT_S:-5400}
       DOCLING_HTTP_WRITE_TIMEOUT_S: ${DOCLING_HTTP_WRITE_TIMEOUT_S:-60}
-      QUEUE_WORKER_LEASE_SECONDS: ${QUEUE_WORKER_LEASE_SECONDS:-600}
+      QUEUE_WORKER_LEASE_SECONDS: ${QUEUE_WORKER_LEASE_SECONDS:-3600}
       QUEUE_WORKER_HEARTBEAT_SECONDS: ${QUEUE_WORKER_HEARTBEAT_SECONDS:-60}
-      QUEUE_RUNNING_TIMEOUT_SECONDS: ${QUEUE_RUNNING_TIMEOUT_SECONDS:-1800}
+      QUEUE_RUNNING_TIMEOUT_SECONDS: ${QUEUE_RUNNING_TIMEOUT_SECONDS:-7200}
     volumes:
       - uploads_data:/app/uploads
     depends_on:

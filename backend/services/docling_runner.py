@@ -127,13 +127,49 @@ def _convert_local(source_path: Path, output_dir: Path, timeout_s: int) -> Docli
     )
 
 
-def _convert_http(source_path: Path, output_dir: Path, timeout_s: int) -> DoclingResult:
+def _convert_http(
+    source_path: Path,
+    output_dir: Path,
+    timeout_s: int,
+    *,
+    is_cancelled = None,
+) -> DoclingResult:
     base = (settings.docling_http_base_url or "").strip().rstrip("/")
     if not base:
         raise RuntimeError("DOCLING_MODE=http 但未配置 DOCLING_HTTP_BASE_URL")
     assert_upstream_allowed(base, service_name="Docling")
     output_dir.mkdir(parents=True, exist_ok=True)
-    url = f"{base}/convert"
+
+    # 官方 docling-serve 用 /v1/convert/file；本地侧车（旧）用 /convert
+    is_official_api = "/v1" in base
+    if is_official_api:
+        url = f"{base}/convert/file"
+        files_key = "files"
+        # 官方 API：响应是 {"document": {"md_content": ..., "json_content": ...}, ...}
+        # 字段映射：md_content → markdown，json_content → document
+        def _extract(data: dict) -> tuple[str, dict]:
+            doc_obj = data.get("document") or {}
+            md = doc_obj.get("md_content", "") or ""
+            json_str = doc_obj.get("json_content")
+            if isinstance(json_str, str):
+                try:
+                    json_obj = json.loads(json_str)
+                except Exception:
+                    json_obj = {"raw": json_str}
+            elif isinstance(json_str, dict):
+                json_obj = json_str
+            else:
+                json_obj = {"raw": str(json_str) if json_str is not None else ""}
+            return md, json_obj
+    else:
+        url = f"{base}/convert"
+        files_key = "file"
+        # 本地侧车（旧）API：响应是 {"markdown": ..., "document": ...}
+        def _extract(data: dict) -> tuple[str, dict]:
+            md = data.get("markdown") or ""
+            doc = data.get("document") or {}
+            return md, doc
+
     read_timeout = max(1, int(getattr(settings, "docling_http_read_timeout_s", timeout_s) or timeout_s))
     timeout = httpx.Timeout(
         connect=max(1.0, float(getattr(settings, "docling_http_connect_timeout_s", 10))),
@@ -145,32 +181,85 @@ def _convert_http(source_path: Path, output_dir: Path, timeout_s: int) -> Doclin
     backoff = max(0.1, float(getattr(settings, "docling_http_retry_backoff_s", 1.5)))
     last_exc: Exception | None = None
     data: dict | None = None
-    for i in range(max_retries + 1):
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                with source_path.open("rb") as f:
-                    r = client.post(url, files={"file": (source_path.name, f, "application/octet-stream")})
-                r.raise_for_status()
-                data = r.json()
-            break
-        except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.HTTPStatusError) as e:
-            last_exc = e
-            if i >= max_retries:
+    
+    # 官方 docling-serve 使用 async API 避免同步超时（默认 120s）
+    if is_official_api:
+        async_url = f"{base}/convert/file/async"
+        poll_url_base = f"{base}/status/poll"
+        result_url_base = f"{base}/result"
+        
+        for i in range(max_retries + 1):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    # 1. 提交异步任务
+                    with source_path.open("rb") as f:
+                        r = client.post(async_url, files={files_key: (source_path.name, f, "application/octet-stream")})
+                    r.raise_for_status()
+                    task = r.json()
+                    task_id = task.get("task_id")
+                    if not task_id:
+                        raise RuntimeError("Docling async 响应缺少 task_id")
+                    
+                    # 2. 轮询任务状态（支持取消）
+                    poll_interval = 5
+                    elapsed = 0
+                    while elapsed < timeout_s:
+                        time.sleep(poll_interval)
+                        elapsed += poll_interval
+                        # 检查是否被取消
+                        if is_cancelled is not None and is_cancelled():
+                            raise RuntimeError("任务已取消")
+                        r = client.get(f"{poll_url_base}/{task_id}")
+                        r.raise_for_status()
+                        status = r.json()
+                        task_status = status.get("task_status")
+                        if task_status == "success":
+                            # 3. 获取结果
+                            r = client.get(f"{result_url_base}/{task_id}")
+                            r.raise_for_status()
+                            data = r.json()
+                            break
+                        elif task_status == "failure":
+                            errors = status.get("errors", [])
+                            raise RuntimeError(f"Docling 任务失败: {errors}")
+                    else:
+                        raise RuntimeError(f"Docling 任务轮询超时 ({timeout_s}s)")
                 break
-            time.sleep(backoff * (2**i))
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.HTTPStatusError) as e:
+                last_exc = e
+                if i >= max_retries:
+                    break
+                time.sleep(backoff * (2**i))
+    else:
+        # 本地侧车（旧）API：同步调用
+        for i in range(max_retries + 1):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    with source_path.open("rb") as f:
+                        r = client.post(url, files={files_key: (source_path.name, f, "application/octet-stream")})
+                    r.raise_for_status()
+                    data = r.json()
+                break
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.HTTPStatusError) as e:
+                last_exc = e
+                if i >= max_retries:
+                    break
+                time.sleep(backoff * (2**i))
+    
     if data is None:
         raise RuntimeError(f"Docling HTTP 调用失败（重试后）: {last_exc}") from last_exc
     if not isinstance(data, dict):
         raise RuntimeError("Docling HTTP 响应不是 JSON 对象")
-    md = data.get("markdown")
-    doc = data.get("document")
+
+    md, doc = _extract(data)
     if md is None or doc is None:
         raise RuntimeError("Docling HTTP 响应缺少 markdown 或 document 字段")
+
     full_md = output_dir / "full.md"
     full_json = output_dir / "full.json"
     full_md.write_text(str(md), encoding="utf-8")
     full_json.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-    ver = data.get("docling_version")
+    ver = data.get("docling_version") or data.get("version")
     return DoclingResult(
         markdown_path=full_md,
         json_path=full_json,
@@ -182,13 +271,14 @@ def convert_to_md_and_json(
     source_path: Path,
     *,
     output_dir: Path,
-    timeout_s: int | None = None,
+    timeout_s = None,
+    is_cancelled = None,
 ) -> DoclingResult:
     t = timeout_s if timeout_s is not None else settings.docling_http_timeout_s
     mode = (settings.docling_mode or "local").strip().lower()
     if mode == "http":
         with _docling_semaphore:
-            return _convert_http(source_path, output_dir, t)
+            return _convert_http(source_path, output_dir, t, is_cancelled=is_cancelled)
     if mode != "local":
         raise RuntimeError(f"未知 DOCLING_MODE={mode!r}，仅支持 local | http")
     with _docling_semaphore:

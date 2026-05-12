@@ -1257,3 +1257,362 @@ def bigpdf_retry_task(task_id: str, request: Request):
         kb_tasks.update_task(tenant_id, task_id, status="failed", stage="failed", progress=100, detail="队列已满，稍后重试")
         raise HTTPException(status_code=503, detail="队列已满，请稍后重试")
     return BigPdfTaskResponse(**kb_tasks.get_task(tenant_id, task_id))
+
+
+@router.post("/bigpdf/tasks/{task_id}/cancel")
+def bigpdf_cancel_task(task_id: str, request: Request):
+    """
+    取消一个大 PDF 任务（如果仍在排队或运行中）。
+    取消后会立即释放 worker 租约，下次心跳检测到 cancelled 状态后会停止处理。
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    t = kb_tasks.get_task(tenant_id, task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="task not found")
+    # 仅允许本人取消（简化约束：能提交任务的人 = token 用户）
+    ok = kb_tasks.cancel_bigpdf_task(tenant_id, task_id)
+    if not ok:
+        # 任务已经不是 queued/running 状态（比如已经完成或失败），也算"取消不了"
+        raise HTTPException(status_code=409, detail="任务无法取消（已结束或正在结束）")
+    return {"ok": True, "task_id": task_id, "status": "cancelled"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: bigpdf refactor new endpoints
+# ---------------------------------------------------------------------------
+
+
+class BigPdfStatusResponse(BaseModel):
+    has_running_task: bool
+    running_task: dict[str, Any] | None = None
+    queue_position: int | None = None
+    queue_length: int = 0
+
+
+@router.get("/bigpdf/status", response_model=BigPdfStatusResponse)
+def bigpdf_get_status(request: Request):
+    """Get current bigpdf system status: running task, queue info."""
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+
+    running = kb_tasks.get_running_task(tenant_id)
+    queue_length = kb_tasks.get_queue_length(tenant_id)
+    my_queued = kb_tasks.get_user_queued_task(tenant_id, un)
+
+    running_task_out = None
+    if running:
+        # Calculate estimated remaining time
+        estimated_remaining = 0
+        if running.get("started_at") and running.get("estimated_duration"):
+            from datetime import datetime, timezone
+            try:
+                started = datetime.fromisoformat(running["started_at"])
+                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                estimated_remaining = max(0, int(running["estimated_duration"] - elapsed))
+            except Exception:
+                estimated_remaining = running.get("estimated_duration", 0) or 0
+
+        running_task_out = {
+            "task_id": running["task_id"],
+            "owner": running["owner_username"],
+            "is_mine": running["owner_username"] == un,
+            "status": running["status"],
+            "stage": running["stage"],
+            "progress": running["progress"],
+            "estimated_remaining": estimated_remaining,
+            "file_name": running.get("file_name") or running.get("detail") or "",
+            "file_size": running.get("file_size") or 0,
+            "page_count": running.get("page_count") or 0,
+            "started_at": running.get("started_at") or "",
+        }
+
+    return BigPdfStatusResponse(
+        has_running_task=running is not None,
+        running_task=running_task_out,
+        queue_position=my_queued.get("position") if my_queued else None,
+        queue_length=queue_length,
+    )
+
+
+class BigPdfCreateTaskResponse(BaseModel):
+    task_id: str
+    status: str
+    estimated_duration: int
+    message: str
+
+
+@router.post("/bigpdf/tasks/enhanced", response_model=BigPdfCreateTaskResponse)
+async def bigpdf_create_task_enhanced(
+    request: Request,
+    file: UploadFile = File(...),
+    queue_if_busy: bool = Form(True),
+):
+    """
+    Enhanced create task with queue support.
+    If system is busy and queue_if_busy=True, task is queued.
+    If queue_if_busy=False, returns 503.
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    raw = await file.read()
+    if len(raw) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件过大（最大 200MB）")
+
+    # Check if system is busy
+    running = kb_tasks.get_running_task(tenant_id)
+    if running and not queue_if_busy:
+        raise HTTPException(status_code=503, detail="系统正忙，请稍后重试或选择排队")
+
+    t = kb_tasks.create_task(tenant_id, un, kind=TASK_KIND_BIGPDF_PARSE, detail=file.filename or "upload")
+    prepare_task_input(tenant_id, t["task_id"], filename=file.filename or "upload.pdf", raw=raw)
+
+    # Update with file metadata
+    kb_tasks.update_task_with_file_info(
+        tenant_id,
+        t["task_id"],
+        file_name=file.filename or "upload.pdf",
+        file_size=len(raw),
+        page_count=0,  # Frontend will provide this via pdf.js; default to 0 for now
+        estimated_duration=kb_tasks.estimate_duration(len(raw)),
+    )
+
+    ok = enqueue_bigpdf_task(tenant_id, un, t["task_id"])
+    if not ok:
+        kb_tasks.update_task(tenant_id, t["task_id"], status="failed", stage="failed", progress=100, detail="队列已满，稍后重试")
+        raise HTTPException(status_code=503, detail="队列已满，请稍后重试")
+
+    updated_task = kb_tasks.get_task(tenant_id, t["task_id"])
+    est_duration = updated_task.get("estimated_duration", 0) or 0
+
+    return BigPdfCreateTaskResponse(
+        task_id=t["task_id"],
+        status=updated_task.get("status", "queued") if updated_task else "queued",
+        estimated_duration=est_duration,
+        message=f"任务已创建，预计解析时间 {est_duration // 60}-{est_duration // 60 + 15} 分钟",
+    )
+
+
+class BigPdfTaskDetailResponse(BaseModel):
+    task_id: str
+    status: str
+    stage: str
+    progress: int
+    estimated_remaining: int
+    elapsed_time: int
+    file_name: str | None = None
+    file_size: int | None = None
+    page_count: int | None = None
+    docling_task_id: str | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@router.get("/bigpdf/tasks/{task_id}/detail", response_model=BigPdfTaskDetailResponse)
+def bigpdf_get_task_detail(task_id: str, request: Request):
+    """Get enhanced task details with file metadata and result info."""
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    t = kb_tasks.get_task(tenant_id, task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="task not found")
+
+    # Calculate elapsed and remaining
+    elapsed_time = 0
+    estimated_remaining = 0
+    if t.get("started_at"):
+        from datetime import datetime, timezone
+        try:
+            started = datetime.fromisoformat(t["started_at"])
+            elapsed_time = int((datetime.now(timezone.utc) - started).total_seconds())
+            if t.get("estimated_duration"):
+                estimated_remaining = max(0, t["estimated_duration"] - elapsed_time)
+        except Exception:
+            pass
+
+    result = None
+    if t.get("result_package_id"):
+        result = {
+            "package_id": t["result_package_id"],
+            "document_count": t.get("page_count") or 0,
+            "folder_path": t.get("detail") or "",
+        }
+
+    return BigPdfTaskDetailResponse(
+        task_id=t["task_id"],
+        status=t["status"],
+        stage=t["stage"],
+        progress=t["progress"],
+        estimated_remaining=estimated_remaining,
+        elapsed_time=elapsed_time,
+        file_name=t.get("file_name"),
+        file_size=t.get("file_size"),
+        page_count=t.get("page_count"),
+        docling_task_id=t.get("docling_task_id"),
+        result=result,
+        error=t.get("last_error") or t.get("detail") if t["status"] == "failed" else None,
+    )
+
+
+class BigPdfCancelResponse(BaseModel):
+    success: bool
+    message: str
+    task_status: str
+
+
+@router.post("/bigpdf/tasks/{task_id}/cancel-enhanced", response_model=BigPdfCancelResponse)
+def bigpdf_cancel_task_enhanced(task_id: str, request: Request, force: bool = False):
+    """
+    Enhanced cancel with soft/force options.
+    force=False: soft cancel (mark as user_abandoned, task continues in background)
+    force=True: force cancel (restart docling container)
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    t = kb_tasks.get_task(tenant_id, task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="task not found")
+
+    if force:
+        # Force cancel: same as force-cancel endpoint logic
+        running = kb_tasks.get_running_task(tenant_id)
+        if not running or running["task_id"] != task_id:
+            raise HTTPException(status_code=409, detail="该任务不在运行中，无法强制终止")
+
+        # Check permission: admin or owner
+        u = get_user(un) or {}
+        roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
+        is_admin = "admin" in roles or "管理层" in roles
+        if not is_admin and running["owner_username"] != un:
+            raise HTTPException(status_code=403, detail="无权操作")
+
+        kb_tasks.force_cancel_task(tenant_id, task_id, cancelled_by=un)
+        return BigPdfCancelResponse(
+            success=True,
+            message="已强制终止解析进程",
+            task_status="force_cancelled",
+        )
+    else:
+        # Soft cancel: mark as user_abandoned (task continues but user stops tracking)
+        ok = kb_tasks.soft_cancel_task(tenant_id, task_id, cancelled_by=un, cancel_type="user_abandoned")
+        if not ok:
+            raise HTTPException(status_code=409, detail="任务无法取消（已结束或正在结束）")
+        return BigPdfCancelResponse(
+            success=True,
+            message="已取消任务跟踪，解析将在后台继续完成",
+            task_status="user_abandoned",
+        )
+
+
+class BigPdfForceCancelResponse(BaseModel):
+    success: bool
+    message: str
+    restarted_at: str
+
+
+@router.post("/bigpdf/force-cancel", response_model=BigPdfForceCancelResponse)
+def bigpdf_force_cancel(request: Request):
+    """
+    Force cancel current running task by restarting docling container.
+    Only admin or task owner can perform this action.
+    """
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+
+    running = kb_tasks.get_running_task(tenant_id)
+    if not running:
+        raise HTTPException(status_code=404, detail="没有运行中的任务")
+
+    # Permission check: admin or owner
+    u = get_user(un) or {}
+    roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
+    is_admin = "admin" in roles or "管理层" in roles
+    if not is_admin and running["owner_username"] != un:
+        raise HTTPException(status_code=403, detail="无权操作")
+
+    # Mark task as force_cancelled
+    kb_tasks.force_cancel_task(tenant_id, running["task_id"], cancelled_by=un)
+
+    # Execute docker restart
+    import subprocess
+    from datetime import datetime, timezone
+    try:
+        subprocess.run(
+            ["docker", "restart", "orient-g-docling-1"],
+            check=True,
+            timeout=30,
+        )
+        return BigPdfForceCancelResponse(
+            success=True,
+            message="已强制终止解析进程，docling 容器正在重启",
+            restarted_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error("Failed to restart docling: %s", e)
+        raise HTTPException(status_code=500, detail=f"终止失败: {e}")
+
+
+class BigPdfQueueResponse(BaseModel):
+    running_task: dict[str, Any] | None = None
+    queued_tasks: list[dict[str, Any]] = []
+    total_queue_length: int = 0
+
+
+@router.get("/bigpdf/queue", response_model=BigPdfQueueResponse)
+def bigpdf_get_queue(request: Request):
+    """Get current queue status: running task and queued tasks with positions."""
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+
+    running = kb_tasks.get_running_task(tenant_id)
+    queued = kb_tasks.get_queued_tasks(tenant_id)
+    queue_length = kb_tasks.get_queue_length(tenant_id)
+
+    running_out = None
+    if running:
+        estimated_remaining = 0
+        if running.get("started_at") and running.get("estimated_duration"):
+            from datetime import datetime, timezone
+            try:
+                started = datetime.fromisoformat(running["started_at"])
+                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                estimated_remaining = max(0, int(running["estimated_duration"] - elapsed))
+            except Exception:
+                estimated_remaining = running.get("estimated_duration", 0) or 0
+
+        running_out = {
+            "task_id": running["task_id"],
+            "owner": running["owner_username"],
+            "file_name": running.get("file_name") or running.get("detail") or "",
+            "started_at": running.get("started_at") or "",
+            "estimated_remaining": estimated_remaining,
+        }
+
+    return BigPdfQueueResponse(
+        running_task=running_out,
+        queued_tasks=queued,
+        total_queue_length=queue_length + (1 if running else 0),
+    )

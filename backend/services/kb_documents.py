@@ -250,7 +250,7 @@ def _parse_and_package_document(
             )
             parser_version = "builtin-text"
         else:
-            res = convert_to_md_and_json(raw_path, output_dir=archive_dir)
+            res = convert_to_md_and_json(raw_path, output_dir=archive_dir, is_cancelled=is_cancelled)
             # 统一命名
             if res.markdown_path != full_md:
                 if full_md.exists():
@@ -492,7 +492,7 @@ def upload_user_document_async(
     }
 
 
-def process_uploaded_document_task(tenant_id: str, doc_id: str) -> None:
+def process_uploaded_document_task(tenant_id: str, doc_id: str, is_cancelled=None) -> None:
     with get_db() as db:
         row = db.execute(
             text(

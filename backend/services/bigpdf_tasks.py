@@ -121,7 +121,7 @@ def _insert_rag_package(
         )
 
 
-def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str) -> None:
+def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_cancelled=None) -> None:
     """
     worker 执行：Docling -> 标准产物包 -> 注册为 RAG 包。
     """
@@ -138,7 +138,7 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str) -> No
 
     update_task(tenant_id, task_id, status="running", stage="parsing", progress=stage_to_progress("parsing"))
     archive_dir = root / "archive"
-    res = convert_to_md_and_json(raw_path, output_dir=archive_dir)
+    res = convert_to_md_and_json(raw_path, output_dir=archive_dir, is_cancelled=is_cancelled)
     full_md = archive_dir / "full.md"
     full_json = archive_dir / "full.json"
     if res.markdown_path != full_md:
@@ -209,4 +209,110 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str) -> No
         result_package_id=package_id,
         detail=None,
     )
+
+    # -----------------------------------------------------------------------
+    # Phase 1: Auto-organize into Private knowledge base folder
+    # -----------------------------------------------------------------------
+    _auto_organize_to_private_kb(
+        tenant_id,
+        task_id,
+        owner_username,
+        package_id,
+        manifest,
+        section_items,
+    )
+
+    update_task(
+        tenant_id,
+        task_id,
+        status="done",
+        stage="done",
+        progress=100,
+        detail="completed",
+    )
+
+
+def _auto_organization_folder_name(title: str) -> str:
+    """Generate folder name from PDF title, truncated to avoid overly long names."""
+    base = (title or "").strip() or "未命名"
+    # Truncate to 50 chars to keep folder names reasonable
+    truncated = base[:50]
+    return f"大PDF-{truncated}"
+
+
+def _auto_organize_to_private_kb(
+    tenant_id: str,
+    task_id: str,
+    owner_username: str,
+    package_id: str,
+    manifest: dict[str, Any],
+    section_items: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """
+    Auto-create a folder in the owner's Private kb_kind and bind the RAG package.
+    Returns folder info or None on failure (non-blocking).
+    """
+    from backend.services.kb_collections import dynamic_private_collection_id
+    from backend.services.kb_acl_store import set_private_owner, set_resource_assignments
+    from backend.services.kb_folders import create_folder, bind_resource_to_folder, set_folder_collections
+
+    try:
+        private_collection_id = dynamic_private_collection_id(owner_username)
+
+        # Ensure private collection owner mapping exists
+        set_private_owner(tenant_id, private_collection_id, owner_username)
+
+        # Create folder in Private knowledge base
+        title = manifest.get("name") or f"大文档包-{package_id[-6:]}"
+        folder_name = _auto_organization_folder_name(title)
+        folder_info = create_folder(
+            tenant_id,
+            name=folder_name,
+            created_by=owner_username,
+            kind="Private",
+            scope={},
+            owner_username=owner_username,
+        )
+        folder_id = folder_info["folder_id"]
+
+        # Bind folder to private collection
+        set_folder_collections(tenant_id, folder_id=folder_id, collection_ids=[private_collection_id])
+
+        # Bind RAG package as a resource to the folder
+        # We use the package_id as a "doc" resource for folder binding
+        bind_resource_to_folder(
+            tenant_id,
+            folder_id=folder_id,
+            resource_type="doc",
+            resource_id=package_id,
+        )
+
+        # Set resource assignments so the package is searchable in private collection
+        set_resource_assignments(
+            tenant_id,
+            resource_type="doc",
+            resource_id=package_id,
+            collection_ids=[private_collection_id],
+        )
+
+        # Update task result with folder path info
+        from backend.services.kb_tasks import update_task
+        update_task(
+            tenant_id,
+            task_id,
+            detail=f"folder:{folder_id}",
+        )
+
+        return {
+            "folder_id": folder_id,
+            "folder_name": folder_name,
+            "package_id": package_id,
+            "private_collection_id": private_collection_id,
+        }
+    except Exception as e:
+        # Auto-organization is best-effort; don't fail the whole task
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("Auto-organization failed for task %s: %s", task_id, e)
+        return None
 
