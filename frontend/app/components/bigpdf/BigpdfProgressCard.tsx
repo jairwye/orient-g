@@ -148,17 +148,6 @@ export function BigpdfProgressCard({
           {/* Info grid */}
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="text-zinc-500">
-              已用时：<span className="text-zinc-300">{formatDuration(task.elapsedTime)}</span>
-            </div>
-            {!isTerminal && (
-              <div className="text-zinc-500">
-                预计剩余：
-                <span className="text-zinc-300">
-                  {formatDuration(task.estimatedRemaining)}
-                </span>
-              </div>
-            )}
-            <div className="text-zinc-500">
               页数：<span className="text-zinc-300">{task.pageCount} 页</span>
             </div>
             <div className="text-zinc-500">
