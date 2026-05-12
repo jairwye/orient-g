@@ -102,13 +102,9 @@ class Settings(BaseSettings):
     # Docling：local=本进程 CLI（开发机）；http=独立 sidecar（Docker 生产推荐）
     docling_mode: str = "local"
     docling_http_base_url: Optional[str] = None
-    docling_http_timeout_s: int = 600
+    # 普通文档解析的 HTTP 连接参数（大 PDF 已改为异步队列 + 轮询，不依赖这些超时）
     docling_http_connect_timeout_s: int = 10
-    docling_http_read_timeout_s: int = 600
     docling_http_write_timeout_s: int = 60
-    docling_http_pool_timeout_s: int = 30
-    docling_http_max_retries: int = 2
-    docling_http_retry_backoff_s: float = 1.5
     # 上游地址保护：默认阻断“开发机误连生产 AI 服务”
     ai_upstream_block_remote: bool = True
     ai_upstream_allowed_hosts: str = "localhost,127.0.0.1,::1,ollama,docling,host.docker.internal"

@@ -79,11 +79,10 @@ class TestConvertHttp(unittest.TestCase):
 
         with patch.object(dr.settings, "docling_mode", "http"):
             with patch.object(dr.settings, "docling_http_base_url", "http://docling:8080"):
-                with patch.object(dr.settings, "docling_http_timeout_s", 30):
-                    with patch.object(dr.httpx, "Client", FakeClient):
-                        arc = out / "archive"
-                        arc.mkdir(exist_ok=True)
-                        res = dr.convert_to_md_and_json(src, output_dir=arc)
+                with patch.object(dr.httpx, "Client", FakeClient):
+                    arc = out / "archive"
+                    arc.mkdir(exist_ok=True)
+                    res = dr.convert_to_md_and_json(src, output_dir=arc)
         self.assertEqual(res.markdown_path, arc / "full.md")
         self.assertEqual(res.json_path, arc / "full.json")
         self.assertEqual((arc / "full.md").read_text(encoding="utf-8"), "# Title\n")

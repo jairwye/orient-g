@@ -170,15 +170,15 @@ def _convert_http(
             doc = data.get("document") or {}
             return md, doc
 
-    read_timeout = max(1, int(getattr(settings, "docling_http_read_timeout_s", timeout_s) or timeout_s))
+    # 普通文档解析使用基础超时参数；大 PDF 已改为异步队列 + 轮询，不依赖这些设置
     timeout = httpx.Timeout(
         connect=max(1.0, float(getattr(settings, "docling_http_connect_timeout_s", 10))),
-        read=max(1.0, float(min(timeout_s, read_timeout))),
+        read=max(1.0, float(timeout_s)),
         write=max(1.0, float(getattr(settings, "docling_http_write_timeout_s", 60))),
-        pool=max(1.0, float(getattr(settings, "docling_http_pool_timeout_s", 30))),
+        pool=30.0,
     )
-    max_retries = max(0, int(getattr(settings, "docling_http_max_retries", 2)))
-    backoff = max(0.1, float(getattr(settings, "docling_http_retry_backoff_s", 1.5)))
+    max_retries = 2
+    backoff = 1.5
     last_exc: Exception | None = None
     data: dict | None = None
     
@@ -274,7 +274,9 @@ def convert_to_md_and_json(
     timeout_s = None,
     is_cancelled = None,
 ) -> DoclingResult:
-    t = timeout_s if timeout_s is not None else settings.docling_http_timeout_s
+    # 大 PDF 已改为异步队列 + 轮询，不再使用同步 HTTP 超时
+    # 普通文档解析使用默认 600s 超时
+    t = timeout_s if timeout_s is not None else 600
     mode = (settings.docling_mode or "local").strip().lower()
     if mode == "http":
         with _docling_semaphore:
