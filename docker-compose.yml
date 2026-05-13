@@ -89,14 +89,6 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:-orient-g-auth-secret-change-in-production}
       DOCLING_MODE: ${DOCLING_MODE:-http}
       DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:5001}
-      # 大 PDF 解析已改为异步队列（kb_tasks）+ 轮询状态，无需超长 HTTP 超时
-      # 保留基础连接参数供普通文档解析使用
-      DOCLING_HTTP_CONNECT_TIMEOUT_S: ${DOCLING_HTTP_CONNECT_TIMEOUT_S:-10}
-      DOCLING_HTTP_WRITE_TIMEOUT_S: ${DOCLING_HTTP_WRITE_TIMEOUT_S:-60}
-      # 队列租约与心跳：bigpdf 任务由持久化队列调度，worker 按心跳续租
-      QUEUE_WORKER_LEASE_SECONDS: ${QUEUE_WORKER_LEASE_SECONDS:-3600}
-      QUEUE_WORKER_HEARTBEAT_SECONDS: ${QUEUE_WORKER_HEARTBEAT_SECONDS:-60}
-      QUEUE_RUNNING_TIMEOUT_SECONDS: ${QUEUE_RUNNING_TIMEOUT_SECONDS:-7200}
     volumes:
       - uploads_data:/app/uploads
     depends_on:
