@@ -52,12 +52,14 @@ services:
   #         并移除本地上下文的 build 段落，保留 image + pull_policy
   # 官方镜像端口：容器内 5001，compose 通过 "8080:5001" 映射与 backend 的 :8080 对齐
   # 官方镜像默认已包含模型，无需 huggingface 缓存卷
+  # 官方镜像使用 CPU-only PyTorch（无 GPU 时自动 fallback，无需特殊处理）
+  # CPU 线程控制：DOCLING_NUM_THREADS（默认 4），DOCLING_PERF_PAGE_BATCH_SIZE（默认 4）
   # =============================================================================
   docling:
     image: ${DOCLING_IMAGE:-quay.io/docling-project/docling-serve:latest}
-    pull_policy: if_not_present
-    cpus: ${DOCLING_CPUS:-2.0}
-    mem_limit: ${DOCLING_MEM_LIMIT:-4g}
+    pull_policy: ${DOCLING_PULL_POLICY:-if_not_present}
+    cpus: ${DOCLING_CPUS:-4.0}
+    mem_limit: ${DOCLING_MEM_LIMIT:-8g}
     ports:
       - "${BIND_IP:-127.0.0.1}:8080:5001"
     environment:
@@ -69,6 +71,10 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
       # 官方镜像默认走 HTTP 模式
       DOCLING_MODE: http
+      # CPU 线程控制：减少可避免与其他进程 CPU 争抢
+      DOCLING_NUM_THREADS: ${DOCLING_NUM_THREADS:-4}
+      # 页面批处理大小：减少可降低内存峰值（大 PDF 建议 2）
+      DOCLING_PERF_PAGE_BATCH_SIZE: ${DOCLING_PERF_PAGE_BATCH_SIZE:-2}
     volumes:
       - ./docling-artifacts:${DOCLING_ARTIFACTS_PATH:-/models/docling-artifacts}
     restart: unless-stopped

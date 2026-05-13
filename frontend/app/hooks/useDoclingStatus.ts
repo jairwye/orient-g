@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useBigpdfStore, type BigpdfSystemStatus, type BigpdfQueueStatus } from "../stores/bigpdfStore";
 import { getAuthHeaders } from "../lib/auth";
 
@@ -18,12 +18,17 @@ export function useDoclingStatus(options: UseDoclingStatusOptions = {}) {
   const [error, setError] = useState<string | null>(null);
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
 
+  // Concurrency guard: prevent overlapping fetch requests
+  const inFlightRef = useRef(false);
+
   const systemStatus = useBigpdfStore((s) => s.systemStatus);
   const queueStatus = useBigpdfStore((s) => s.queueStatus);
   const setSystemStatus = useBigpdfStore((s) => s.setSystemStatus);
   const setQueueStatus = useBigpdfStore((s) => s.setQueueStatus);
 
   const fetchStatus = useCallback(async () => {
+    if (inFlightRef.current) return null;
+    inFlightRef.current = true;
     setIsLoading(true);
     setError(null);
     try {
@@ -42,10 +47,13 @@ export function useDoclingStatus(options: UseDoclingStatusOptions = {}) {
       return null;
     } finally {
       setIsLoading(false);
+      inFlightRef.current = false;
     }
   }, [setSystemStatus]);
 
   const fetchQueue = useCallback(async () => {
+    if (inFlightRef.current) return null;
+    inFlightRef.current = true;
     try {
       const res = await fetch("/api/knowledge/bigpdf/queue", {
         credentials: "include",
@@ -59,6 +67,8 @@ export function useDoclingStatus(options: UseDoclingStatusOptions = {}) {
       const msg = e instanceof Error ? e.message : "队列查询失败";
       setError(msg);
       return null;
+    } finally {
+      inFlightRef.current = false;
     }
   }, [setQueueStatus]);
 
