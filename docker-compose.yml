@@ -88,7 +88,7 @@ services:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       AUTH_SECRET: ${AUTH_SECRET:-orient-g-auth-secret-change-in-production}
       DOCLING_MODE: ${DOCLING_MODE:-http}
-      DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:8080}
+      DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:5001}
       # 大 PDF 解析已改为异步队列（kb_tasks）+ 轮询状态，无需超长 HTTP 超时
       # 保留基础连接参数供普通文档解析使用
       DOCLING_HTTP_CONNECT_TIMEOUT_S: ${DOCLING_HTTP_CONNECT_TIMEOUT_S:-10}

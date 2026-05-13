@@ -170,24 +170,25 @@ def _convert_http(
             doc = data.get("document") or {}
             return md, doc
 
-    # 普通文档解析使用基础超时参数；大 PDF 已改为异步队列 + 轮询，不依赖这些设置
+    # 不设任何 HTTP 超时，依赖 queue lease 心跳 + is_cancelled 机制控制
+    # connect 超时保留用于网络故障快速失败
     timeout = httpx.Timeout(
         connect=max(1.0, float(getattr(settings, "docling_http_connect_timeout_s", 10))),
-        read=max(1.0, float(timeout_s)),
-        write=max(1.0, float(getattr(settings, "docling_http_write_timeout_s", 60))),
+        read=None,
+        write=None,
         pool=30.0,
     )
     max_retries = 2
     backoff = 1.5
     last_exc: Exception | None = None
     data: dict | None = None
-    
-    # 官方 docling-serve 使用 async API 避免同步超时（默认 120s）
+
+    # 官方 docling-serve 使用 async API 避免同步超时
     if is_official_api:
         async_url = f"{base}/convert/file/async"
         poll_url_base = f"{base}/status/poll"
         result_url_base = f"{base}/result"
-        
+
         for i in range(max_retries + 1):
             try:
                 with httpx.Client(timeout=timeout) as client:
@@ -199,14 +200,11 @@ def _convert_http(
                     task_id = task.get("task_id")
                     if not task_id:
                         raise RuntimeError("Docling async 响应缺少 task_id")
-                    
-                    # 2. 轮询任务状态（支持取消）
+
+                    # 2. 轮询任务状态（无限时硬上限，由 is_cancelled + queue lease 控制）
                     poll_interval = 5
-                    elapsed = 0
-                    while elapsed < timeout_s:
+                    while True:
                         time.sleep(poll_interval)
-                        elapsed += poll_interval
-                        # 检查是否被取消
                         if is_cancelled is not None and is_cancelled():
                             raise RuntimeError("任务已取消")
                         r = client.get(f"{poll_url_base}/{task_id}")
@@ -222,8 +220,7 @@ def _convert_http(
                         elif task_status == "failure":
                             errors = status.get("errors", [])
                             raise RuntimeError(f"Docling 任务失败: {errors}")
-                    else:
-                        raise RuntimeError(f"Docling 任务轮询超时 ({timeout_s}s)")
+                        # pending / processing → 继续轮询
                 break
             except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.HTTPStatusError) as e:
                 last_exc = e
