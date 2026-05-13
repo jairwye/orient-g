@@ -218,6 +218,7 @@ def _parse_and_package_document(
     raw_path: Path,
     source_hash: str,
     private_collection_id: str,
+    is_cancelled: callable | None = None,
 ) -> dict[str, Any]:
     root = _doc_root(tenant_id, doc_id)
     archive_dir = root / "archive"

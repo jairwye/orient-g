@@ -17,7 +17,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # kb_tasks 新增字段
+    # === 持久化队列必需列（enqueue_bigpdf_task 走 kb_tasks 表的先决条件）===
+    op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS queue_priority INTEGER DEFAULT 1")
+    op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS payload_json TEXT")
+    op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS lease_until TIMESTAMP NULL")
+    op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0")
+    op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 3")
+    op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+    # kb_tasks 新增字段（bigpdf 增强）
     op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS file_name VARCHAR(255)")
     op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS file_size BIGINT")
     op.execute("ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS page_count INTEGER")
@@ -54,3 +62,9 @@ def downgrade() -> None:
     op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS page_count")
     op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS file_size")
     op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS file_name")
+    op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS next_run_at")
+    op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS max_attempts")
+    op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS attempts")
+    op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS lease_until")
+    op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS payload_json")
+    op.execute("ALTER TABLE kb_tasks DROP COLUMN IF EXISTS queue_priority")
