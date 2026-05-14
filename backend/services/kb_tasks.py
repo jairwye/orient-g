@@ -608,7 +608,7 @@ def is_task_cancelled(tenant_id: str, task_id: str) -> bool:
 
 def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
     with get_db() as db:
-        # 优先尝试含新列的 SELECT，失败则回退到不含 task_position 的版本
+        # 优先尝试含新列的 SELECT，失败则回退（先 rollback 清理事务）
         try:
             row = db.execute(
                 text(
@@ -626,6 +626,7 @@ def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
             ).fetchone()
             has_task_position = True
         except Exception:
+            db.rollback()
             row = db.execute(
                 text(
                     """
