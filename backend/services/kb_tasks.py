@@ -57,7 +57,7 @@ def create_task(
                     INSERT INTO kb_tasks
                         (task_id, tenant_id, owner_username, kind, status, stage, progress, detail, queue_priority, attempts, max_attempts, next_run_at, created_at, updated_at)
                     VALUES
-                        (:id, :tid, :u, :k, 'queued', 'queued', 0, :d, :pri, 0, :max_attempts, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        (:id, :tid, :u, :k, 'created', 'created', 0, :d, :pri, 0, :max_attempts, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """
                 ),
                 {
@@ -77,12 +77,12 @@ def create_task(
                     INSERT INTO kb_tasks
                         (task_id, tenant_id, owner_username, kind, status, stage, progress, detail, created_at, updated_at)
                     VALUES
-                        (:id, :tid, :u, :k, 'queued', 'queued', 0, :d, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        (:id, :tid, :u, :k, 'created', 'created', 0, :d, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """
                 ),
                 {"id": task_id, "tid": tenant_id, "u": owner_username, "k": kind, "d": (detail or "").strip() or None},
             )
-    return {"task_id": task_id, "kind": kind, "status": "queued", "stage": "queued", "progress": 0, "detail": detail}
+    return {"task_id": task_id, "kind": kind, "status": "created", "stage": "created", "progress": 0, "detail": detail}
 
 
 def enqueue_task(
