@@ -12,6 +12,7 @@ import { BigpdfQueueStatus } from "../../components/bigpdf/BigpdfQueueStatus";
 import { GlobalNotification } from "../../components/bigpdf/GlobalNotification";
 import { useDoclingStatus } from "../../hooks/useDoclingStatus";
 import { useBigpdfTask } from "../../hooks/useBigpdfTask";
+import { useBigpdfStore } from "../../stores/bigpdfStore";
 
 
 type BigPdfTask = {
@@ -91,9 +92,9 @@ export default function PdfKnowledgePage() {
       if (!data?.task_id) throw new Error("任务查询返回无效");
       return data;
     },
-    isTerminal: (data) => data.status === "done" || data.status === "failed" || data.status === "cancelled",
+    isTerminal: (data) => data.status === "completed" || data.status === "done" || data.status === "failed" || data.status === "cancelled",
     isActive: (data) => {
-      if (data.status === "done" || data.status === "failed" || data.status === "cancelled") return false;
+      if (data.status === "completed" || data.status === "done" || data.status === "failed" || data.status === "cancelled") return false;
       const stage = (data.stage || "").toLowerCase();
       if (!stage) return true;
       return !["queued", "queue", "waiting", "pending"].includes(stage);
@@ -166,6 +167,8 @@ export default function PdfKnowledgePage() {
       const data = (await res.json().catch(() => ({}))) as BigPdfTask & { detail?: string };
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "创建任务失败");
       setTask(data);
+      setRestoredTaskId(data.task_id);
+      useBigpdfStore.getState().persistTaskId(data.task_id);
       setMsg({ type: "success", text: "任务已创建，开始处理…" });
     } catch (e) {
       setMsg({ type: "error", text: e instanceof Error ? e.message : "上传失败" });
