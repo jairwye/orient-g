@@ -608,23 +608,42 @@ def is_task_cancelled(tenant_id: str, task_id: str) -> bool:
 
 def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
     with get_db() as db:
-        row = db.execute(
-            text(
-                """
-                SELECT
-                    task_id, owner_username, kind, status, stage, progress, detail, result_package_id,
-                    file_name, file_size, page_count, docling_task_id, task_position, estimated_duration,
-                    started_at, completed_at, cancelled_by, cancel_type,
-                    created_at, updated_at
-                FROM kb_tasks
-                WHERE tenant_id=:t AND task_id=:id
-                """
-            ),
-            {"t": tenant_id, "id": task_id},
-        ).fetchone()
+        # 优先尝试含新列的 SELECT，失败则回退到不含 task_position 的版本
+        try:
+            row = db.execute(
+                text(
+                    """
+                    SELECT
+                        task_id, owner_username, kind, status, stage, progress, detail, result_package_id,
+                        file_name, file_size, page_count, docling_task_id, task_position, estimated_duration,
+                        started_at, completed_at, cancelled_by, cancel_type,
+                        created_at, updated_at
+                    FROM kb_tasks
+                    WHERE tenant_id=:t AND task_id=:id
+                    """
+                ),
+                {"t": tenant_id, "id": task_id},
+            ).fetchone()
+            has_task_position = True
+        except Exception:
+            row = db.execute(
+                text(
+                    """
+                    SELECT
+                        task_id, owner_username, kind, status, stage, progress, detail, result_package_id,
+                        file_name, file_size, page_count, docling_task_id, estimated_duration,
+                        started_at, completed_at, cancelled_by, cancel_type,
+                        created_at, updated_at
+                    FROM kb_tasks
+                    WHERE tenant_id=:t AND task_id=:id
+                    """
+                ),
+                {"t": tenant_id, "id": task_id},
+            ).fetchone()
+            has_task_position = False
     if not row:
         return None
-    return {
+    result = {
         "task_id": str(row[0]),
         "owner_username": str(row[1] or ""),
         "kind": str(row[2] or ""),
@@ -637,15 +656,25 @@ def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
         "file_size": int(row[9] or 0) if row[9] else None,
         "page_count": int(row[10] or 0) if row[10] else None,
         "docling_task_id": str(row[11] or "") if row[11] else None,
-        "task_position": int(row[12] or 0) if row[12] else None,
-        "estimated_duration": int(row[13] or 0) if row[13] else None,
-        "started_at": row[14].isoformat() if row[14] else None,
-        "completed_at": row[15].isoformat() if row[15] else None,
-        "cancelled_by": str(row[16] or "") if row[16] else None,
-        "cancel_type": str(row[17] or "") if row[17] else None,
-        "created_at": row[18].isoformat() if row[18] else None,
-        "updated_at": row[19].isoformat() if row[19] else None,
     }
+    if has_task_position:
+        result["task_position"] = int(row[12] or 0) if row[12] else None
+        result["estimated_duration"] = int(row[13] or 0) if row[13] else None
+        result["started_at"] = row[14].isoformat() if row[14] else None
+        result["completed_at"] = row[15].isoformat() if row[15] else None
+        result["cancelled_by"] = str(row[16] or "") if row[16] else None
+        result["cancel_type"] = str(row[17] or "") if row[17] else None
+        result["created_at"] = row[18].isoformat() if row[18] else None
+        result["updated_at"] = row[19].isoformat() if row[19] else None
+    else:
+        result["estimated_duration"] = int(row[12] or 0) if row[12] else None
+        result["started_at"] = row[13].isoformat() if row[13] else None
+        result["completed_at"] = row[14].isoformat() if row[14] else None
+        result["cancelled_by"] = str(row[15] or "") if row[15] else None
+        result["cancel_type"] = str(row[16] or "") if row[16] else None
+        result["created_at"] = row[17].isoformat() if row[17] else None
+        result["updated_at"] = row[18].isoformat() if row[18] else None
+    return result
 
 
 def list_my_tasks(tenant_id: str, owner_username: str, *, kind: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
