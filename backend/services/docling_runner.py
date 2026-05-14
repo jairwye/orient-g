@@ -23,6 +23,7 @@ class DoclingResult:
     markdown_path: Path
     json_path: Path
     docling_version: str | None
+    docling_task_id: str | None = None
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, timeout_s: int = 600) -> subprocess.CompletedProcess[str]:
@@ -127,11 +128,31 @@ def _convert_local(source_path: Path, output_dir: Path, timeout_s: int) -> Docli
     )
 
 
+def _save_docling_task_id(tenant_id: str, kb_task_id: str, docling_task_id: str, task_position: int | None) -> None:
+    """Save the docling task ID to kb_tasks immediately after submission."""
+    try:
+        from backend.services.kb_tasks import update_task
+        update_task(tenant_id, kb_task_id, docling_task_id=docling_task_id, task_position=task_position)
+    except Exception:
+        pass  # best-effort; don't fail the conversion
+
+
+def _save_task_position(tenant_id: str, kb_task_id: str, task_position: int) -> None:
+    """Update the task_position in kb_tasks during polling."""
+    try:
+        from backend.services.kb_tasks import update_task
+        update_task(tenant_id, kb_task_id, task_position=task_position)
+    except Exception:
+        pass
+
+
 def _convert_http(
     source_path: Path,
     output_dir: Path,
     *,
     is_cancelled = None,
+    tenant_id: str = "",
+    kb_task_id: str = "",
 ) -> DoclingResult:
     base = (settings.docling_http_base_url or "").strip().rstrip("/")
     if not base:
@@ -155,6 +176,7 @@ def _convert_http(
     backoff = 1.5
     last_exc: Exception | None = None
     data: dict | None = None
+    docling_task_id: str | None = None
 
     for i in range(max_retries + 1):
         try:
@@ -164,22 +186,30 @@ def _convert_http(
                     r = client.post(async_url, files={"files": (source_path.name, f, "application/octet-stream")})
                 r.raise_for_status()
                 task = r.json()
-                task_id = task.get("task_id")
-                if not task_id:
+                docling_task_id = task.get("task_id")
+                if not docling_task_id:
                     raise RuntimeError("Docling async 响应缺少 task_id")
+
+                # 立即保存 docling_task_id 到 kb_tasks，防止重启丢失
+                if tenant_id and kb_task_id:
+                    _save_docling_task_id(tenant_id, kb_task_id, docling_task_id, task.get("task_position"))
 
                 # 2. 轮询任务状态（无限时硬上限，由 is_cancelled + queue lease 控制）
                 while True:
                     time.sleep(5)
                     if is_cancelled is not None and is_cancelled():
                         raise RuntimeError("任务已取消")
-                    r = client.get(f"{poll_url_base}/{task_id}")
+                    r = client.get(f"{poll_url_base}/{docling_task_id}")
                     r.raise_for_status()
                     status = r.json()
                     task_status = status.get("task_status")
+                    task_position = status.get("task_position")
+                    # 更新排队位置
+                    if tenant_id and kb_task_id and task_position is not None:
+                        _save_task_position(tenant_id, kb_task_id, task_position)
                     if task_status == "success":
                         # 3. 获取结果
-                        r = client.get(f"{result_url_base}/{task_id}")
+                        r = client.get(f"{result_url_base}/{docling_task_id}")
                         r.raise_for_status()
                         data = r.json()
                         break
@@ -224,6 +254,7 @@ def _convert_http(
         markdown_path=full_md,
         json_path=full_json,
         docling_version=str(ver) if ver is not None else None,
+        docling_task_id=docling_task_id,
     )
 
 
@@ -232,11 +263,13 @@ def convert_to_md_and_json(
     *,
     output_dir: Path,
     is_cancelled = None,
+    tenant_id: str = "",
+    kb_task_id: str = "",
 ) -> DoclingResult:
     mode = (settings.docling_mode or "local").strip().lower()
     if mode == "http":
         with _docling_semaphore:
-            return _convert_http(source_path, output_dir, is_cancelled=is_cancelled)
+            return _convert_http(source_path, output_dir, is_cancelled=is_cancelled, tenant_id=tenant_id, kb_task_id=kb_task_id)
     if mode != "local":
         raise RuntimeError(f"未知 DOCLING_MODE={mode!r}，仅支持 local | http")
     with _docling_semaphore:

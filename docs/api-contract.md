@@ -79,6 +79,7 @@
 - **单条详情**：`GET /api/policy-news/item`
   - **必需查询参数**：`id`（条目 id，与 list 返回的 `id` 一致）。
   - **用途**：供详情页 `/policy-news/item?id=xxx` 展示完整内容（含 HTML）。
+  - **前端安全约束**：详情页渲染前会做白名单 HTML 清洗（拦截 `script`、事件属性、`javascript:` 链接等）。
   - **响应**：与 list 中单条结构类似，增加 `content` 等完整字段；404 表示未找到。
 
 - **说明**：数据来自 FreshRSS GReader API 定时拉取，内存缓存不写库；侧栏入口为「新闻政策」，页上三按钮「观点 / 新闻 / AI」对应三类；详见规划/新闻页方案.md。
@@ -189,6 +190,8 @@
 ---
 
 ## 5. 流程文档规则（读写）
+
+> 权限要求：以下接口均为**管理员（admin/管理层）**可用，未登录返回 401，非管理员返回 403。
 
 - **读取规则**：`GET /api/process-doc/rules`
   - **用途**：供流程文档页「规则管理」区块展示与编辑；返回完整 `process_rules.json` 内容。
@@ -398,3 +401,4 @@
 - **分析**：`GET /api/equity/analysis/summary`、`GET /api/equity/analysis/compare`
 - **导出**：`GET /api/equity/export/subgraph`、`GET /api/equity/export/csv`
 - **管理导入**（内网后台/运维）：`POST /api/equity/admin/import*` 系列（CSV/压缩包/天眼导出等，详见实现与 README）
+  - **权限要求**：管理员（admin/管理层）；未登录 401，非管理员 403。

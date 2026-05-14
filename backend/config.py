@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     frontend_origin: str = "http://localhost:3000"
     auth_secret: str = "orient-g-auth-secret-change-in-production"
+    # 运行环境：development / production
+    app_env: str = "development"
+    # 显式安全守卫：拒绝使用默认 AUTH_SECRET 启动（可与 app_env=production 叠加）
+    enforce_non_default_auth_secret: bool = False
+    # 兼容旧 data-parse session（无 owner）：允许首次访问时绑定 owner
+    data_parse_legacy_session_claim_enabled: bool = True
 
     # FreshRSS（新闻政策页）：未配置则新闻政策模块不拉取、接口返回空
     freshrss_api_url: Optional[str] = None

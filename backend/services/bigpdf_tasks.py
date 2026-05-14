@@ -64,6 +64,7 @@ def stage_to_progress(stage: str) -> int:
         "parsing": 30,
         "packaging": 70,
         "done": 100,
+        "completed": 100,
         "failed": 100,
     }
     return int(m.get(stage, 0))
@@ -138,7 +139,7 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
 
     update_task(tenant_id, task_id, status="running", stage="parsing", progress=stage_to_progress("parsing"))
     archive_dir = root / "archive"
-    res = convert_to_md_and_json(raw_path, output_dir=archive_dir, is_cancelled=is_cancelled)
+    res = convert_to_md_and_json(raw_path, output_dir=archive_dir, is_cancelled=is_cancelled, tenant_id=tenant_id, kb_task_id=task_id)
     full_md = archive_dir / "full.md"
     full_json = archive_dir / "full.json"
     if res.markdown_path != full_md:
@@ -213,6 +214,18 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
     # -----------------------------------------------------------------------
     # Phase 1: Auto-organize into Private knowledge base folder
     # -----------------------------------------------------------------------
+    # Extract a meaningful title from the first heading in the parsed markdown,
+    # or fall back to the original filename
+    pdf_title = ""
+    try:
+        first_line = md_text.strip().split("\n")[0]
+        if first_line.startswith("#"):
+            pdf_title = first_line.lstrip("#").strip()[:50]
+    except Exception:
+        pass
+    if not pdf_title:
+        pdf_title = raw_path.stem  # fallback: "original" → not great
+
     _auto_organize_to_private_kb(
         tenant_id,
         task_id,
@@ -220,22 +233,26 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
         package_id,
         manifest,
         section_items,
+        original_filename=pdf_title,
+        full_md_path=full_md,
     )
 
     update_task(
         tenant_id,
         task_id,
-        status="done",
-        stage="done",
+        status="completed",
+        stage="completed",
         progress=100,
-        detail="completed",
+        detail=None,
     )
 
 
 def _auto_organization_folder_name(title: str) -> str:
-    """Generate folder name from PDF title, truncated to avoid overly long names."""
+    """Generate folder name from original PDF filename, truncated."""
     base = (title or "").strip() or "未命名"
-    # Truncate to 50 chars to keep folder names reasonable
+    # Remove file extension for cleaner display
+    if "." in base:
+        base = base.rsplit(".", 1)[0]
     truncated = base[:50]
     return f"大PDF-{truncated}"
 
@@ -247,24 +264,28 @@ def _auto_organize_to_private_kb(
     package_id: str,
     manifest: dict[str, Any],
     section_items: list[dict[str, Any]],
+    *,
+    original_filename: str = "",
+    full_md_path: Path | None = None,
 ) -> dict[str, Any] | None:
     """
     Auto-create a folder in the owner's Private kb_kind and bind the RAG package.
+    Also creates a kb_user_documents record from the full markdown so the folder
+    shows actual content in the knowledge base UI.
     Returns folder info or None on failure (non-blocking).
     """
     from backend.services.kb_collections import dynamic_private_collection_id
     from backend.services.kb_acl_store import set_private_owner, set_resource_assignments
     from backend.services.kb_folders import create_folder, bind_resource_to_folder, set_folder_collections
+    from backend.services.kb_documents import _create_user_document_record
 
     try:
         private_collection_id = dynamic_private_collection_id(owner_username)
-
-        # Ensure private collection owner mapping exists
         set_private_owner(tenant_id, private_collection_id, owner_username)
 
-        # Create folder in Private knowledge base
-        title = manifest.get("name") or f"大文档包-{package_id[-6:]}"
-        folder_name = _auto_organization_folder_name(title)
+        # Folder name: use original PDF filename, trimmed
+        folder_title = (original_filename or "未命名").strip()
+        folder_name = _auto_organization_folder_name(folder_title)
         folder_info = create_folder(
             tenant_id,
             name=folder_name,
@@ -274,20 +295,15 @@ def _auto_organize_to_private_kb(
             owner_username=owner_username,
         )
         folder_id = folder_info["folder_id"]
-
-        # Bind folder to private collection
         set_folder_collections(tenant_id, folder_id=folder_id, collection_ids=[private_collection_id])
 
-        # Bind RAG package as a resource to the folder
-        # We use the package_id as a "doc" resource for folder binding
+        # Bind RAG package to folder
         bind_resource_to_folder(
             tenant_id,
             folder_id=folder_id,
             resource_type="doc",
             resource_id=package_id,
         )
-
-        # Set resource assignments so the package is searchable in private collection
         set_resource_assignments(
             tenant_id,
             resource_type="doc",
@@ -295,13 +311,61 @@ def _auto_organize_to_private_kb(
             collection_ids=[private_collection_id],
         )
 
-        # Update task result with folder path info
+        # Create a kb_user_documents record for the full markdown content
+        # so the folder shows actual content in the knowledge base UI
+        user_doc_id = ""
+        if full_md_path and full_md_path.exists():
+            try:
+                md_text = full_md_path.read_text(encoding="utf-8", errors="replace")
+                md_bytes = md_text.encode("utf-8")
+                safe_name = Path(folder_title).name.replace("..", "_") or "parsed"
+                if not safe_name.endswith(".md"):
+                    safe_name = f"{safe_name}.md"
+                doc_meta = _create_user_document_record(
+                    tenant_id,
+                    owner_username,
+                    filename=safe_name,
+                    raw=md_bytes,
+                    initial_status="active",  # already parsed
+                )
+                user_doc_id = str(doc_meta["doc_id"])
+                # Bind the user document to this folder
+                bind_resource_to_folder(
+                    tenant_id,
+                    folder_id=folder_id,
+                    resource_type="doc",
+                    resource_id=user_doc_id,
+                )
+                set_resource_assignments(
+                    tenant_id,
+                    resource_type="doc",
+                    resource_id=user_doc_id,
+                    collection_ids=[private_collection_id],
+                )
+                # Write the markdown content to the user document's archive
+                from pathlib import Path as _Path
+                doc_root = _Path(settings.upload_dir).resolve() / "kb_user_documents" / tenant_id / user_doc_id
+                archive_dir = doc_root / "archive"
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                (archive_dir / "full.md").write_text(md_text, encoding="utf-8")
+                # Update status to packaged/active
+                from backend.database import get_db
+                from sqlalchemy import text
+                with get_db() as db:
+                    db.execute(
+                        text("UPDATE kb_user_documents SET status='active', manifest_json=:mj WHERE tenant_id=:t AND doc_id=:d"),
+                        {"t": tenant_id, "d": user_doc_id, "mj": json.dumps(manifest, ensure_ascii=False)},
+                    )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to create user doc for bigpdf task %s: %s", task_id, e)
+
+        # Update task with folder info
         from backend.services.kb_tasks import update_task
-        update_task(
-            tenant_id,
-            task_id,
-            detail=f"folder:{folder_id}",
-        )
+        detail_parts = [f"folder:{folder_id}"]
+        if user_doc_id:
+            detail_parts.append(f"user_doc:{user_doc_id}")
+        update_task(tenant_id, task_id, detail="; ".join(detail_parts))
 
         return {
             "folder_id": folder_id,

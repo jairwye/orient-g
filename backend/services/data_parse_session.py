@@ -4,6 +4,7 @@
 """
 import json
 import logging
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # key=session_id, value={ tables, table_schemas, column_profiles, aggregations, auto_dashboards, kanban_config, created_at, chat_history }
 _sessions: dict[str, dict[str, Any]] = {}
+_sessions_lock = threading.Lock()
 MAX_SESSIONS = 50
 _SESSIONS_DIR = Path(__file__).resolve().parent.parent / "data" / ".data_parse_sessions"
 _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -54,10 +56,10 @@ def _prune_session_files(max_files: int = MAX_SESSIONS * 2) -> None:
             pass
 
 
-def create_session(pipeline_result: dict[str, Any]) -> str:
+def create_session(pipeline_result: dict[str, Any], owner_username: str | None = None) -> str:
     """创建 session，返回 session_id。"""
     session_id = str(uuid.uuid4())
-    _sessions[session_id] = {
+    session = {
         "tables": pipeline_result.get("tables") or {},
         "table_schemas": pipeline_result.get("table_schemas") or [],
         "column_profiles": pipeline_result.get("column_profiles") or {},
@@ -67,26 +69,53 @@ def create_session(pipeline_result: dict[str, Any]) -> str:
         "validation_summary": pipeline_result.get("validation_summary") or {},
         "created_at": time.time(),
         "chat_history": [],
+        "owner_username": (owner_username or "").strip() or None,
     }
-    _persist_session(session_id, _sessions[session_id])
-    while len(_sessions) > MAX_SESSIONS:
-        oldest_id = min(_sessions.keys(), key=lambda k: _sessions[k]["created_at"])
-        del _sessions[oldest_id]
+    with _sessions_lock:
+        _sessions[session_id] = session
+        while len(_sessions) > MAX_SESSIONS:
+            oldest_id = min(_sessions.keys(), key=lambda k: _sessions[k]["created_at"])
+            del _sessions[oldest_id]
+    _persist_session(session_id, session)
     _prune_session_files()
     return session_id
 
 
 def get_session(session_id: str) -> dict[str, Any] | None:
     """获取 session 内容，不存在返回 None。"""
-    s = _sessions.get(session_id)
+    with _sessions_lock:
+        s = _sessions.get(session_id)
     if s is not None:
         return s
     # 跨进程兜底：当前进程没有命中时从本地落盘读取并回填内存
     loaded = _load_session_from_disk(session_id)
     if loaded is not None:
-        _sessions[session_id] = loaded
+        with _sessions_lock:
+            _sessions[session_id] = loaded
         return loaded
     return None
+
+
+def set_session_owner(session_id: str, owner_username: str) -> bool:
+    """为会话补写 owner（仅当 owner 为空时认领，避免并发覆盖）。"""
+    owner = (owner_username or "").strip()
+    if not owner:
+        return False
+    with _sessions_lock:
+        s = _sessions.get(session_id)
+        if s is None:
+            loaded = _load_session_from_disk(session_id)
+            if loaded is None:
+                return False
+            _sessions[session_id] = loaded
+            s = loaded
+        current = (s.get("owner_username") or "").strip()
+        if current:
+            return current == owner
+        s["owner_username"] = owner
+        _sessions[session_id] = s
+    _persist_session(session_id, s)
+    return True
 
 
 def get_tables(session_id: str) -> dict[str, dict[str, Any]] | None:

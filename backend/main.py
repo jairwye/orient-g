@@ -30,12 +30,25 @@ from backend.services.task_queue import start_worker, stop_worker
 
 logger = logging.getLogger(__name__)
 scheduler: BackgroundScheduler | None = None
+DEFAULT_AUTH_SECRET = "orient-g-auth-secret-change-in-production"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global scheduler
     try:
+        app_env = (settings.app_env or "").strip().lower()
+        production_like = app_env in {"prod", "production"}
+        migration_mode = (settings.db_migration_mode or "").strip().lower()
+        if production_like and migration_mode != "alembic":
+            raise RuntimeError(
+                "安全检查未通过：生产环境仅允许 DB_MIGRATION_MODE=alembic，请先执行 alembic upgrade head。"
+            )
+        enforce_guard = bool(settings.enforce_non_default_auth_secret) or production_like
+        if enforce_guard and settings.auth_secret == DEFAULT_AUTH_SECRET:
+            raise RuntimeError(
+                "安全检查未通过：AUTH_SECRET 仍为默认值。请在 .env 设置随机密钥后重启。"
+            )
         init_exchange_rates_table()
         init_user_permission_tables()
         init_kb_acl_tables()

@@ -312,6 +312,7 @@ def test_bigpdf_get_task_success(monkeypatch):
     def fake_get_task(tid: str, tsk_id: str):
         return {
             "task_id": task_id,
+            "owner_username": "pytest_user",
             "kind": "bigpdf",
             "status": "running",
             "stage": "parsing",
@@ -332,6 +333,34 @@ def test_bigpdf_get_task_success(monkeypatch):
     assert data["status"] == "running"
     assert data["stage"] == "parsing"
     assert data["progress"] == 45
+
+
+def test_bigpdf_get_task_forbidden_for_other_owner(monkeypatch):
+    from backend.routers import knowledge
+    from backend.services import kb_tasks
+
+    task_id = f"t_{uuid.uuid4().hex}"
+
+    def fake_get_task(tid: str, tsk_id: str):
+        return {
+            "task_id": task_id,
+            "owner_username": "other_user",
+            "kind": "bigpdf",
+            "status": "running",
+            "stage": "parsing",
+            "progress": 45,
+            "detail": "big.pdf",
+            "result_package_id": None,
+            "created_at": "2026-05-12T10:00:00+00:00",
+            "updated_at": "2026-05-12T10:00:00+00:00",
+        }
+
+    monkeypatch.setattr(kb_tasks, "get_task", fake_get_task)
+    monkeypatch.setattr(knowledge, "get_user", lambda _u: {"roles": []})
+    monkeypatch.setattr(knowledge, "load_fixtures", lambda: {"tenant_id": "tenant1"})
+
+    r = client.get(f"/api/knowledge/bigpdf/tasks/{task_id}", headers=_auth_header("pytest_user"))
+    assert r.status_code == 403, r.text
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +393,7 @@ def test_bigpdf_cancel_task_success(monkeypatch):
     def fake_get_task(tid: str, tsk_id: str):
         return {
             "task_id": task_id,
+            "owner_username": "pytest_user",
             "kind": "bigpdf",
             "status": "running",
             "stage": "parsing",
@@ -390,6 +420,34 @@ def test_bigpdf_cancel_task_success(monkeypatch):
     assert data["status"] == "cancelled"
 
 
+def test_bigpdf_cancel_task_forbidden_for_other_owner(monkeypatch):
+    from backend.routers import knowledge
+    from backend.services import kb_tasks
+
+    task_id = f"t_{uuid.uuid4().hex}"
+
+    def fake_get_task(tid: str, tsk_id: str):
+        return {
+            "task_id": task_id,
+            "owner_username": "other_user",
+            "kind": "bigpdf",
+            "status": "running",
+            "stage": "parsing",
+            "progress": 45,
+            "detail": "big.pdf",
+            "result_package_id": None,
+            "created_at": "2026-05-12T10:00:00+00:00",
+            "updated_at": "2026-05-12T10:00:00+00:00",
+        }
+
+    monkeypatch.setattr(kb_tasks, "get_task", fake_get_task)
+    monkeypatch.setattr(knowledge, "get_user", lambda _u: {"roles": []})
+    monkeypatch.setattr(knowledge, "load_fixtures", lambda: {"tenant_id": "tenant1"})
+
+    r = client.post(f"/api/knowledge/bigpdf/tasks/{task_id}/cancel", headers=_auth_header("pytest_user"))
+    assert r.status_code == 403, r.text
+
+
 def test_bigpdf_cancel_task_already_done(monkeypatch):
     from backend.routers import knowledge
     from backend.services import kb_tasks
@@ -399,6 +457,7 @@ def test_bigpdf_cancel_task_already_done(monkeypatch):
     def fake_get_task(tid: str, tsk_id: str):
         return {
             "task_id": task_id,
+            "owner_username": "pytest_user",
             "kind": "bigpdf",
             "status": "done",
             "stage": "done",

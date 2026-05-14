@@ -11,10 +11,14 @@
 ### Changed
 
 - ACL 语义强化：**文档所有者永远可读**（所有知识库类型统一生效）。
+- 安全加固：`/api/process-doc/*` 与 `/api/equity/admin/import*` 增加管理员鉴权（未登录 401，非管理员 403）。
+- 权限收口：BigPDF 按 `task_id` 访问改为“任务 owner 或管理员”可访问；`tool.docling.convert` 仅读取文档 owner 的产物。
+- 前端防护：新闻政策页渲染 HTML 前增加白名单清洗，拦截 `script`、事件属性与 `javascript:` 链接。
 
 ### DB / Migrations
 
-- （若本次包含数据库结构变更：注明是否有 Alembic 迁移、是否破坏性、以及上线需执行 `alembic upgrade head`。）
+- 无新增 schema 迁移。
+- 启动安全守卫新增约束：生产环境仅允许 `DB_MIGRATION_MODE=alembic`；否则拒绝启动并提示先执行 `alembic upgrade head`。
 
 ### Docs
 

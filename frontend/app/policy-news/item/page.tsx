@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { sanitizeRichHtml } from "@/app/utils/sanitizeHtml";
 
 type NewsItem = {
   id: string;
@@ -83,7 +84,7 @@ export default function PolicyNewsItemPage() {
     );
   }
 
-  const html = item.content || item.summary || "";
+  const html = sanitizeRichHtml(item.content || item.summary || "");
 
   return (
     <div className="p-6 md:p-8">

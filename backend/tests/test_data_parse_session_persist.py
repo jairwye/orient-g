@@ -18,3 +18,12 @@ def test_session_can_be_loaded_from_disk_when_memory_miss():
     assert isinstance(s, dict)
     tables = s.get("tables") or {}
     assert "经营数据" in tables
+
+
+def test_set_session_owner_is_compare_and_set():
+    sid = dps.create_session({"tables": {}, "table_schemas": []}, owner_username=None)
+    assert dps.set_session_owner(sid, "alice") is True
+    # 已认领后，不允许被其它用户覆盖
+    assert dps.set_session_owner(sid, "bob") is False
+    s = dps.get_session(sid) or {}
+    assert s.get("owner_username") == "alice"

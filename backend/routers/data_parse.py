@@ -16,7 +16,7 @@ from backend.config import settings
 from backend.services import data_parse_chat
 from backend.services.data_parse import run_pipeline
 from backend.services.data_parse_chat import _load_skills, _get_tools_def, _build_system_prompt
-from backend.services.data_parse_session import create_session, get_session
+from backend.services.data_parse_session import create_session, get_session, set_session_owner
 from backend.services.kb_tables import create_table_instance_from_rows
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,7 @@ def _get_username_from_request(request: Request) -> str | None:
 
 
 PREVIEW_ROWS = 50
+MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024
 
 
 def _tables_preview(tables: dict) -> dict[str, dict]:
@@ -66,20 +67,48 @@ def _tables_preview(tables: dict) -> dict[str, dict]:
     return out
 
 
+def _require_username(request: Request) -> str:
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    return un
+
+
+def _require_owned_session(session_id: str, owner_username: str) -> dict:
+    s = get_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    owner = str(s.get("owner_username") or "").strip()
+    # 兼容窗口：允许旧会话（无 owner）被首次登录用户认领并回写 owner。
+    if not owner and settings.data_parse_legacy_session_claim_enabled:
+        if set_session_owner(session_id, owner_username):
+            s = get_session(session_id) or s
+            owner = owner_username
+    if owner != owner_username:
+        raise HTTPException(status_code=403, detail="无权限访问该会话")
+    return s
+
+
 @router.post("/upload")
-async def upload_excel(file: UploadFile = File(...)):
+async def upload_excel(request: Request, file: UploadFile = File(...)):
     """
     上传 Excel（任意格式），执行校验→通用解析，创建 session。
     返回 session_id、table_schemas、tables_preview、kanban_config、analysis。
     """
+    owner_username = _require_username(request)
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="请上传 .xlsx 或 .xls 文件")
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"上传文件过大（上限 {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB）",
+        )
     try:
         pipeline_result = run_pipeline(content, file.filename or "upload.xlsx")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    session_id = create_session(pipeline_result)
+    session_id = create_session(pipeline_result, owner_username=owner_username)
     analysis = ""
     if settings.chat_llm_available:
         try:
@@ -97,11 +126,10 @@ async def upload_excel(file: UploadFile = File(...)):
 
 
 @router.get("/session/{session_id}")
-def get_session_data(session_id: str):
+def get_session_data(session_id: str, request: Request):
     """返回该 session 的 table_schemas、tables_preview、kanban_config。"""
-    s = get_session(session_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    owner_username = _require_username(request)
+    s = _require_owned_session(session_id, owner_username)
     return {
         "table_schemas": s.get("table_schemas") or [],
         "tables_preview": _tables_preview(s.get("tables") or {}),
@@ -120,12 +148,8 @@ def persist_table(request: Request, body: PersistTableBody):
     """
     将某个 session 的指定 sheet 持久化为 TableInstance（进入个人私有知识库）。
     """
-    un = _get_username_from_request(request)
-    if not un:
-        raise HTTPException(status_code=401, detail="not authenticated")
-    s = get_session(body.session_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    un = _require_username(request)
+    s = _require_owned_session(body.session_id, un)
     tables = s.get("tables") or {}
     sheet = tables.get(body.sheet_name or "")
     if not isinstance(sheet, dict):
@@ -151,8 +175,9 @@ def persist_table(request: Request, body: PersistTableBody):
 
 
 @router.post("/chat")
-def chat_endpoint(body: ChatBody):
+def chat_endpoint(body: ChatBody, request: Request):
     """自然语言问答；返回 reply、chart_spec、table_spec（可选）。"""
+    owner_username = _require_username(request)
     if not settings.chat_llm_available:
         raise HTTPException(
             status_code=503,
@@ -160,6 +185,9 @@ def chat_endpoint(body: ChatBody):
         )
     extra = [str(x).strip() for x in (body.extra_session_ids or []) if str(x).strip()]
     session_ids = [str(body.session_id).strip(), *extra]
+    for sid in session_ids:
+        if sid:
+            _require_owned_session(sid, owner_username)
     result = data_parse_chat.chat_multi(
         session_ids,
         body.message,

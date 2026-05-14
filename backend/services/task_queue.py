@@ -140,19 +140,9 @@ def enqueue_user_doc_task(tenant_id: str, owner_username: str, doc_id: str) -> t
 
 
 def enqueue_bigpdf_task(tenant_id: str, owner_username: str, task_id: str) -> bool:
+    # bigpdf 全部走持久化队列，不 fallback 到内存队列
     if not kb_tasks.supports_persisted_queue():
-        from backend.services.bigpdf_tasks import process_bigpdf_task
-
-        return submit(
-            Priority.HIGH,  # bigpdf 高优先级，优先于 user_doc_parse
-            process_bigpdf_task,
-            tenant_id,
-            task_id,
-            owner_username,
-            task_id=task_id,
-            task_type=TASK_PDF_PARSE_DOCLING,
-        )
-    # bigpdf 使用 HIGH 优先级，确保在 user_doc_parse 之前被处理
+        return False
     qsz = kb_tasks.count_queue(priority=kb_tasks.QUEUE_PRIORITY_HIGH)
     if qsz >= max(1, int(settings.queue_max_size_high)):
         return False
@@ -333,8 +323,8 @@ def _run_next_persisted() -> bool:
             tenant_id,
             task_id,
             worker_id=_worker_id,
-            status="done",
-            stage="done",
+            status="completed",
+            stage="completed",
             progress=100,
             detail=None,
         )
@@ -413,6 +403,17 @@ def start_worker(poll_interval_s: float = 0.2) -> None:
     _stop_event.clear()
     global _poll_interval_s
     _poll_interval_s = float(poll_interval_s or 0.2)
+
+    # 启动时恢复 orphan 任务（上次 worker 崩溃/重启遗留的 running 任务）
+    if kb_tasks.supports_persisted_queue():
+        try:
+            # 立即回收所有 lease 过期或无心跳租约的 running 任务
+            kb_tasks.requeue_stale_tasks(
+                running_timeout_seconds=60,
+                queued_timeout_seconds=300,
+            )
+        except Exception:
+            pass
 
     def _loop() -> None:
         idle_min_s = max(0.0, float(getattr(settings, "queue_worker_idle_min_s", _poll_interval_s) or 0.0))

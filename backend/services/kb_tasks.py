@@ -518,6 +518,8 @@ def update_task(
     result_package_id: str | None = None,
     payload: dict[str, Any] | None = None,
     priority: int | None = None,
+    docling_task_id: str | None = None,
+    task_position: int | None = None,
 ) -> None:
     sets: list[str] = ["updated_at=CURRENT_TIMESTAMP"]
     params: dict[str, Any] = {"tid": tenant_id, "id": task_id}
@@ -543,6 +545,12 @@ def update_task(
     if priority is not None and supports_persisted_queue():
         sets.append("queue_priority=:pri")
         params["pri"] = priority
+    if docling_task_id is not None:
+        sets.append("docling_task_id=:dti")
+        params["dti"] = docling_task_id
+    if task_position is not None:
+        sets.append("task_position=:tpos")
+        params["tpos"] = task_position
     sql = "UPDATE kb_tasks SET " + ", ".join(sets) + " WHERE tenant_id=:tid AND task_id=:id"
     with get_db() as db:
         db.execute(text(sql), params)
@@ -603,8 +611,8 @@ def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
             text(
                 """
                 SELECT
-                    task_id, kind, status, stage, progress, detail, result_package_id,
-                    file_name, file_size, page_count, docling_task_id, estimated_duration,
+                    task_id, owner_username, kind, status, stage, progress, detail, result_package_id,
+                    file_name, file_size, page_count, docling_task_id, task_position, estimated_duration,
                     started_at, completed_at, cancelled_by, cancel_type,
                     created_at, updated_at
                 FROM kb_tasks
@@ -617,23 +625,25 @@ def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
         return None
     return {
         "task_id": str(row[0]),
-        "kind": str(row[1] or ""),
-        "status": str(row[2] or ""),
-        "stage": str(row[3] or ""),
-        "progress": int(row[4] or 0),
-        "detail": str(row[5] or "") if row[5] else None,
-        "result_package_id": str(row[6] or "") if row[6] else None,
-        "file_name": str(row[7] or "") if row[7] else None,
-        "file_size": int(row[8] or 0) if row[8] else None,
-        "page_count": int(row[9] or 0) if row[9] else None,
-        "docling_task_id": str(row[10] or "") if row[10] else None,
-        "estimated_duration": int(row[11] or 0) if row[11] else None,
-        "started_at": row[12].isoformat() if row[12] else None,
-        "completed_at": row[13].isoformat() if row[13] else None,
-        "cancelled_by": str(row[14] or "") if row[14] else None,
-        "cancel_type": str(row[15] or "") if row[15] else None,
-        "created_at": row[16].isoformat() if row[16] else None,
-        "updated_at": row[17].isoformat() if row[17] else None,
+        "owner_username": str(row[1] or ""),
+        "kind": str(row[2] or ""),
+        "status": str(row[3] or ""),
+        "stage": str(row[4] or ""),
+        "progress": int(row[5] or 0),
+        "detail": str(row[6] or "") if row[6] else None,
+        "result_package_id": str(row[7] or "") if row[7] else None,
+        "file_name": str(row[8] or "") if row[8] else None,
+        "file_size": int(row[9] or 0) if row[9] else None,
+        "page_count": int(row[10] or 0) if row[10] else None,
+        "docling_task_id": str(row[11] or "") if row[11] else None,
+        "task_position": int(row[12] or 0) if row[12] else None,
+        "estimated_duration": int(row[13] or 0) if row[13] else None,
+        "started_at": row[14].isoformat() if row[14] else None,
+        "completed_at": row[15].isoformat() if row[15] else None,
+        "cancelled_by": str(row[16] or "") if row[16] else None,
+        "cancel_type": str(row[17] or "") if row[17] else None,
+        "created_at": row[18].isoformat() if row[18] else None,
+        "updated_at": row[19].isoformat() if row[19] else None,
     }
 
 

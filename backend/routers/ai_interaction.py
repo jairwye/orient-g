@@ -154,7 +154,11 @@ def ai_interaction_chat(request: Request, body: ChatBody):
         if m:
             doc_id = m.group(1)
             try:
+                from backend.services import kb_documents as kb_docs
                 archive_md = _doc_root(tenant_id, doc_id) / "archive" / "full.md"
+                owner = kb_docs.get_document_owner(tenant_id, doc_id)
+                if owner != uname:
+                    raise PermissionError("forbidden")
                 if not archive_md.exists():
                     raise FileNotFoundError("archive/full.md not found")
                 head = archive_md.read_text(encoding="utf-8", errors="replace")[:2000]

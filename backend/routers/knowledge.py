@@ -72,6 +72,21 @@ KB_KIND_CHOICES = [
 ]
 
 
+def _is_admin(username: str) -> bool:
+    u = get_user(username) or {}
+    roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
+    return "admin" in roles or "管理层" in roles
+
+
+def _require_bigpdf_task_owner_or_admin(task: dict[str, Any], username: str) -> None:
+    owner = str(task.get("owner_username") or "").strip()
+    if owner and owner == username:
+        return
+    if _is_admin(username):
+        return
+    raise HTTPException(status_code=403, detail="forbidden")
+
+
 def _get_token_from_request(request: Request) -> str | None:
     auth = request.headers.get("Authorization") or ""
     if auth.startswith("Bearer "):
@@ -1213,6 +1228,7 @@ def bigpdf_get_task(task_id: str, request: Request):
     t = kb_tasks.get_task(tenant_id, task_id)
     if not t:
         raise HTTPException(status_code=404, detail="task not found")
+    _require_bigpdf_task_owner_or_admin(t, un)
     return BigPdfTaskResponse(**t)
 
 
@@ -1241,8 +1257,7 @@ def bigpdf_retry_task(task_id: str, request: Request):
     t = kb_tasks.get_task(tenant_id, task_id)
     if not t:
         raise HTTPException(status_code=404, detail="task not found")
-    # 仅允许本人重试
-    # 这里 kb_tasks.get_task 不返回 owner_username；以“能提交任务的人 = token 用户”作为简化约束
+    _require_bigpdf_task_owner_or_admin(t, un)
     kb_tasks.update_task(
         tenant_id,
         task_id,
@@ -1273,7 +1288,7 @@ def bigpdf_cancel_task(task_id: str, request: Request):
     t = kb_tasks.get_task(tenant_id, task_id)
     if not t:
         raise HTTPException(status_code=404, detail="task not found")
-    # 仅允许本人取消（简化约束：能提交任务的人 = token 用户）
+    _require_bigpdf_task_owner_or_admin(t, un)
     ok = kb_tasks.cancel_bigpdf_task(tenant_id, task_id)
     if not ok:
         # 任务已经不是 queued/running 状态（比如已经完成或失败），也算"取消不了"
@@ -1428,6 +1443,7 @@ def bigpdf_get_task_detail(task_id: str, request: Request):
     t = kb_tasks.get_task(tenant_id, task_id)
     if not t:
         raise HTTPException(status_code=404, detail="task not found")
+    _require_bigpdf_task_owner_or_admin(t, un)
 
     # Calculate elapsed and remaining
     elapsed_time = 0
@@ -1487,6 +1503,7 @@ def bigpdf_cancel_task_enhanced(task_id: str, request: Request, force: bool = Fa
     t = kb_tasks.get_task(tenant_id, task_id)
     if not t:
         raise HTTPException(status_code=404, detail="task not found")
+    _require_bigpdf_task_owner_or_admin(t, un)
 
     if force:
         # Force cancel: same as force-cancel endpoint logic

@@ -54,6 +54,7 @@ docs/assets/github-*.png
 .playwright-mcp/
 .sisyphus/
 .superpowers/
+.opencode/
 
 # 编辑器与插件本地设置（不同步 Git；团队若需共享 tasks 可再单独用 ! 放行个别文件）
 .vscode/

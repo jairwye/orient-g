@@ -4,6 +4,7 @@
 """
 import logging
 import random
+import re
 import time
 from typing import Any, Optional
 from urllib.parse import quote
@@ -27,6 +28,22 @@ _cache: dict[str, dict[str, Any]] = {}
 _auth_token: Optional[str] = None
 _last_error: Optional[str] = None
 _last_success_at: Optional[float] = None
+
+
+def _sanitize_html(raw_html: str) -> str:
+    """
+    最小可用净化：去除 script/style/iframe/object/embed，移除 on* 事件与 javascript: 协议。
+    说明：这里保持“轻量、无新增依赖”，优先降低 XSS 风险。
+    """
+    if not raw_html:
+        return ""
+    text = str(raw_html)
+    text = re.sub(r"(?is)<(script|style|iframe|object|embed)\b.*?>.*?</\1>", "", text)
+    text = re.sub(r"(?is)\s+on[a-zA-Z]+\s*=\s*([\"']).*?\1", "", text)
+    text = re.sub(r"(?is)\s+on[a-zA-Z]+\s*=\s*[^\s>]+", "", text)
+    text = re.sub(r"(?i)(href|src)\s*=\s*(['\"])\s*javascript:[^'\"]*\2", r"\1=\2#\2", text)
+    text = re.sub(r"(?i)(href|src)\s*=\s*javascript:[^\s>]+", r"\1=\"#\"", text)
+    return text
 
 
 def _base_url(path: str) -> str:
@@ -214,16 +231,16 @@ def _normalize_item(item: dict) -> dict:
     raw_content = summary_obj.get("content", "") if isinstance(summary_obj, dict) else (item.get("summary") or "")
     if not isinstance(raw_content, str):
         raw_content = ""
+    safe_content = _sanitize_html(raw_content)
 
     thumbnail = ""
     enc = item.get("enclosure")
     if isinstance(enc, list) and enc and isinstance(enc[0], dict) and enc[0].get("href"):
         thumbnail = enc[0].get("href", "")
-    if not thumbnail and raw_content:
-        import re
-        m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', raw_content)
+    if not thumbnail and safe_content:
+        m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', safe_content)
         if not m:
-            m = re.search(r'<img[^>]+data-src=["\']([^"\']+)["\']', raw_content)
+            m = re.search(r'<img[^>]+data-src=["\']([^"\']+)["\']', safe_content)
         if m:
             thumbnail = m.group(1)
     if thumbnail and not _looks_like_image_url(thumbnail):
@@ -236,8 +253,8 @@ def _normalize_item(item: dict) -> dict:
         "date": published_date,
         "link": link,
         "originTitle": origin_title,
-        "summary": raw_content[:500] if raw_content else "",
-        "content": raw_content,
+        "summary": safe_content[:500] if safe_content else "",
+        "content": safe_content,
         "thumbnail": thumbnail,
     }
 

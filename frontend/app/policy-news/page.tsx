@@ -1,7 +1,8 @@
 "use client";
 
 import { Minimize2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { sanitizeRichHtml } from "@/app/utils/sanitizeHtml";
 
 const CATEGORIES = ["观点", "新闻", "AI"] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -75,6 +76,10 @@ export default function PolicyNewsPage() {
 
   const items = data?.itemsByCategory?.[category] ?? [];
   const hasError = data?.lastError;
+  const expandedContentHtml = useMemo(
+    () => sanitizeRichHtml(expandedItem?.content || ""),
+    [expandedItem?.content],
+  );
 
   return (
     <div className="p-6 md:p-8">
@@ -156,10 +161,10 @@ export default function PolicyNewsPage() {
                 {expandedItem.date}
                 {expandedItem.originTitle && ` · ${expandedItem.originTitle}`}
               </div>
-              {expandedItem.content ? (
+              {expandedContentHtml ? (
                 <div
                   className="policy-news-content text-zinc-300 prose prose-invert max-w-none prose-p:text-zinc-300 prose-a:text-zinc-200 prose-img:rounded-lg"
-                  dangerouslySetInnerHTML={{ __html: expandedItem.content }}
+                  dangerouslySetInnerHTML={{ __html: expandedContentHtml }}
                 />
               ) : (
                 <p className="text-zinc-500">暂无正文。</p>

@@ -9,14 +9,44 @@ import zipfile
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+import jwt
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import bindparam, text
 
+from backend.config import settings
 from backend.database import get_db
 from backend.geo_cn import city_display_label, normalize_geo, province_display_label
+from backend.services.user_acl_store import get_user
 
 router = APIRouter()
+ALGORITHM = "HS256"
+
+
+def _get_username_from_request(request: Request) -> str | None:
+    auth = request.headers.get("Authorization") or ""
+    token = ""
+    if auth.startswith("Bearer "):
+        token = auth[7:].strip()
+    token = token or (request.headers.get("X-Auth-Token") or "").strip()
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.auth_secret, algorithms=[ALGORITHM])
+        return (payload.get("sub") or "").strip() or None
+    except Exception:
+        return None
+
+
+def _require_admin(request: Request) -> str:
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    u = get_user(un) or {}
+    roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
+    if "admin" not in roles and "管理层" not in roles:
+        raise HTTPException(status_code=403, detail="forbidden")
+    return un
 
 
 def _now_iso() -> str:
@@ -221,6 +251,7 @@ def _read_tianyancha_xlsx_edges(raw: bytes, company_name: str, kind: str) -> lis
 
 @router.post("/admin/import/targets-csv")
 async def admin_import_targets_csv(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
@@ -235,6 +266,7 @@ async def admin_import_targets_csv(
     - is_key（可选：true/false/1/0）
     - notes（可选）
     """
+    _require_admin(request)
     raw = await file.read()
     try:
         text_data = raw.decode("utf-8-sig")
@@ -347,6 +379,7 @@ def latest_snapshot() -> dict[str, Any]:
 
 @router.post("/admin/import/edges-csv")
 async def admin_import_edges_csv(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
@@ -360,6 +393,7 @@ async def admin_import_edges_csv(
     - hold_pct_text（可选）
     - source_platform/source_doc/collected_at（可选）
     """
+    _require_admin(request)
     raw = await file.read()
     try:
         text_data = raw.decode("utf-8-sig")
@@ -486,6 +520,7 @@ async def admin_import_edges_csv(
 
 @router.post("/admin/import/bundle-zip")
 async def admin_import_bundle_zip(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
@@ -503,6 +538,7 @@ async def admin_import_bundle_zip(
     - equity_edges.csv: from_name?, to_name?, from_entity_id?, to_entity_id?, hold_pct?, hold_pct_text?
       - 优先使用 *_entity_id；若缺失则尝试用 name 在当前 snapshot 内匹配主体
     """
+    _require_admin(request)
     raw = await file.read()
     try:
         zf = zipfile.ZipFile(BytesIO(raw))
@@ -768,6 +804,7 @@ async def admin_import_bundle_zip(
 
 @router.post("/admin/import/tianyancha-xlsx")
 async def admin_import_tianyancha_xlsx(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     company_name: str = Query(..., min_length=1),
     shareholders_xlsx: UploadFile | None = File(None),
@@ -776,6 +813,7 @@ async def admin_import_tianyancha_xlsx(
     """
     天眼查半自动：上传“股东信息.xlsx”和“对外投资.xlsx”，自动产出 entities + edges，并确保 company_name 在 targets 中存在。
     """
+    _require_admin(request)
     comp = company_name.strip()
     if not comp:
         raise HTTPException(status_code=400, detail="company_name required")
@@ -1720,7 +1758,7 @@ def export_csv(
 
 
 @router.post("/admin/import")
-def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
+def admin_import(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """
     管理导入（MVP）：直接接收 JSON 结构写入 equity_* 表。
 
@@ -1732,6 +1770,7 @@ def admin_import(payload: dict[str, Any]) -> dict[str, Any]:
       "targets":[{...}]  // 可选
     }
     """
+    _require_admin(request)
     snapshot_name = str(payload.get("snapshot_name") or "").strip()
     if not snapshot_name:
         raise HTTPException(status_code=400, detail="snapshot_name required")

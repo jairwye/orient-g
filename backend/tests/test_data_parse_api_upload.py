@@ -2,9 +2,11 @@
 
 import io
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.config import settings
 from backend.main import app
 
 
@@ -22,14 +24,42 @@ def _minimal_xlsx_bytes() -> bytes:
     return data
 
 
-def test_upload_excel_returns_session_id():
+def _auth_headers(username: str = "admin") -> dict[str, str]:
+    token = jwt.encode({"sub": username}, settings.auth_secret, algorithm="HS256")
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_upload_excel_requires_auth():
     client = TestClient(app)
     content = _minimal_xlsx_bytes()
     res = client.post(
         "/api/data-parse/upload",
         files={"file": ("fixture_min.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
+    assert res.status_code == 401, res.text
+
+
+def test_upload_excel_returns_session_id():
+    client = TestClient(app)
+    content = _minimal_xlsx_bytes()
+    res = client.post(
+        "/api/data-parse/upload",
+        headers=_auth_headers(),
+        files={"file": ("fixture_min.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
     assert res.status_code == 200, res.text
     body = res.json()
     assert isinstance(body.get("session_id"), str) and len(body["session_id"]) >= 8
     assert "table_schemas" in body
+
+
+def test_upload_excel_rejects_too_large_file():
+    client = TestClient(app)
+    content = _minimal_xlsx_bytes()
+    huge = content + (b"0" * (21 * 1024 * 1024))
+    res = client.post(
+        "/api/data-parse/upload",
+        headers=_auth_headers(),
+        files={"file": ("fixture_large.xlsx", huge, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert res.status_code == 413, res.text
