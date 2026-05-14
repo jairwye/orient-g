@@ -156,10 +156,11 @@ def enqueue_task(
 def count_queue(priority: int | None = None) -> int:
     if not supports_persisted_queue():
         return 0
-    cond = "status IN ('queued', 'running')"
+    # 只统计有效任务：lease_until 未过期 或 仍在排队
+    cond = "status = 'queued' OR (status = 'running' AND lease_until IS NOT NULL AND lease_until >= CURRENT_TIMESTAMP)"
     params: dict[str, Any] = {}
     if priority is not None:
-        cond += " AND queue_priority=:p"
+        cond = f"({cond}) AND queue_priority=:p"
         params["p"] = int(priority)
     with get_db() as db:
         row = db.execute(text(f"SELECT COUNT(*) FROM kb_tasks WHERE {cond}"), params).fetchone()
