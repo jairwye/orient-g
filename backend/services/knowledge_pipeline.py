@@ -27,7 +27,7 @@ from backend.services.kb_tables import retrieve_table_evidence
 
 def _infer_intent(query: str) -> dict[str, bool]:
     q = (query or "").strip().lower()
-    # 简化：默认需要 doc；命中明显“取数/表格”再加 table
+    # 简化：默认需要 doc；命中明显"取数/表格"再加 table
     need_table = any(k in q for k in ["表", "数值", "金额", "净利润", "利润", "同比", "环比"])
     need_doc = True if q else False
     return {"need_doc": need_doc, "need_table": need_table}
@@ -37,6 +37,25 @@ def _normalize_query(q: str) -> str:
     s = (q or "").strip()
     s = re.sub(r"\s+", " ", s)
     return s[:500]
+
+
+def _tokenize_query(q: str) -> list[str]:
+    """将查询切分为有意义的检索词条（jieba 分词，取长度 ≥2 的去重词）"""
+    terms: list[str] = []
+    try:
+        import jieba
+    except ImportError:
+        # 无 jieba：按空格/标点简单切分，取长度 ≥2 的词
+        raw = re.split(r"[\s,，。！？、；：""''（）\(\)【】\[\]{}]+", q)
+        terms = [t.strip() for t in raw if len(t.strip()) >= 2]
+        return list(dict.fromkeys(terms))  # 去重保序
+
+    words = jieba.cut(q)
+    for w in words:
+        w = w.strip()
+        if len(w) >= 2 and re.search(r"[\w\u4e00-\u9fff]", w):
+            terms.append(w)
+    return list(dict.fromkeys(terms))  # 去重保序
 
 
 def _load_doc_assignments(tenant_id: str) -> dict[str, set[str]]:
@@ -79,16 +98,117 @@ def _candidate_doc_ids(
     return out
 
 
+def _prepare_citations_chunk(
+    item: dict[str, Any],
+    doc_assignments: dict[str, set[str]],
+    selected_collection_ids: set[str],
+) -> dict[str, Any]:
+    """将混合检索条目转为统一的 citation 格式"""
+    did = str(item.get("doc_id") or "")
+    cid = _pick_collection_id_for_doc(did, doc_assignments=doc_assignments, selected_collection_ids=selected_collection_ids)
+    return {
+        "evidence_type": "doc_chunk",
+        "doc_id": did,
+        "collection_id": cid,
+        "section_id": None,
+        "chunk_id": item.get("chunk_id"),
+        "chunk_seq_no": item.get("chunk_seq_no"),
+        "score": item.get("hybrid_score"),
+    }
+
+
+def _hybrid_retrieve(
+    tenant_id: str,
+    query: str,
+    candidate_doc_ids: set[str],
+    *,
+    k: int = 20,
+) -> list[dict[str, Any]]:
+    """
+    混合检索：向量语义搜索 + 关键词精确匹配 → 加权综合评分 + 上下文 re-rank。
+
+    策略：
+    - 向量命中：余弦相似度转 0~1 分数，基础权重 0.6
+    - 关键词命中：多词 OR 匹配 + 词频加权，基础权重 0.4
+    - 双命中：0.6×向量 + 0.4×关键词
+    - 上下文 re-rank：同文档相邻 chunk 互相 boost（前一个高分 → 后一个 +15%）
+    """
+    doc_ids_list = sorted(candidate_doc_ids)
+
+    # 1) 向量检索
+    vec_hits: list[dict[str, Any]] = []
+    if vector_enabled():
+        try:
+            vec_hits = search_doc_chunks(tenant_id, query=query, candidate_doc_ids=doc_ids_list, k=k * 2)
+        except Exception:
+            pass
+
+    # 2) 关键词检索（已增强：jieba 分词 + 词频加权）
+    kw_hits = _retrieve_uploaded_doc_chunks(tenant_id, doc_ids=candidate_doc_ids, query=query, limit=k * 2)
+
+    # 3) 合并去重：key = (doc_id, chunk_id)
+    combined: dict[tuple[str, str], dict[str, Any]] = {}
+
+    # 向量 → 余弦距离转为相似度 (0~1)
+    for h in vec_hits:
+        key = (str(h.get("doc_id") or ""), str(h.get("chunk_id") or ""))
+        dist = float(h.get("score") or 0)
+        sim = 1.0 / (1.0 + dist) if dist >= 0 else 0.5
+        combined[key] = {**h, "vec_sim": sim, "kw_pos": 0, "hybrid_score": 0}
+
+    # 关键词 → 位置越靠前分数越高
+    for i, h in enumerate(kw_hits):
+        key = (str(h.get("doc_id") or ""), str(h.get("chunk_id") or ""))
+        pos_score = 1.0 - (i / max(len(kw_hits), 1)) * 0.3
+        if key in combined:
+            combined[key]["kw_pos"] = pos_score
+        else:
+            combined[key] = {**h, "vec_sim": 0, "kw_pos": pos_score, "hybrid_score": 0}
+
+    # 4) 混合评分
+    for key, info in combined.items():
+        v = info["vec_sim"]
+        kw = info["kw_pos"]
+        if v > 0 and kw > 0:
+            info["hybrid_score"] = 0.6 * v + 0.4 * kw
+        elif v > 0:
+            info["hybrid_score"] = v * 0.75  # 纯向量：轻微降权
+        else:
+            info["hybrid_score"] = kw * 0.5  # 纯关键词：较大降权
+
+    # 5) 上下文 re-rank：同文档相邻 chunk 互相正向 boost
+    by_doc: dict[str, list[dict[str, Any]]] = {}
+    for info in combined.values():
+        did = str(info.get("doc_id") or "")
+        by_doc.setdefault(did, []).append(info)
+
+    for did, items in by_doc.items():
+        items.sort(key=lambda x: int(x.get("chunk_seq_no") or 0))
+        for i in range(len(items)):
+            # 左邻 boost
+            if i > 0 and items[i - 1]["hybrid_score"] > 0.25:
+                items[i]["hybrid_score"] = min(1.0, items[i]["hybrid_score"] + items[i - 1]["hybrid_score"] * 0.12)
+            # 右邻 boost
+            if i < len(items) - 1 and items[i + 1]["hybrid_score"] > 0.25:
+                items[i]["hybrid_score"] = min(1.0, items[i]["hybrid_score"] + items[i + 1]["hybrid_score"] * 0.12)
+
+    # 6) 排序 + top-K
+    all_items = list(combined.values())
+    all_items.sort(key=lambda x: -x["hybrid_score"])
+    return all_items[:k]
+
+
 def _retrieve_uploaded_doc_chunks(
     tenant_id: str,
     *,
     doc_ids: set[str],
     query: str,
-    limit: int = 6,
+    limit: int = 20,
 ) -> list[dict[str, Any]]:
     """
-    从 PG 的 kb_user_document_chunks 做最小检索（ILIKE）。
-    注意：这里只覆盖 ud_* 上传文档；fixtures 文档走另一条路径。
+    增强关键词检索：先用 jieba 分词提取检索词条，再用 PG ILIKE 做多词 OR 匹配，
+    最后在 Python 侧按词频 + 标题命中加权评分，返回 top-K。
+    兜底：无 jieba 时按空格切分 + ILIKE OR。
     """
     ud_ids = sorted([d for d in doc_ids if str(d).startswith("ud_")])
     if not ud_ids:
@@ -96,30 +216,59 @@ def _retrieve_uploaded_doc_chunks(
     q = _normalize_query(query)
     if not q:
         return []
-    pattern = f"%{q}%"
+    terms = _tokenize_query(q)
+    if not terms:
+        terms = [q[:80]]  # 兜底：用原始查询前 80 字符
+
+    # 构建 OR ILIKE 条件：每个词条一个 ILIKE
+    or_clauses = " OR ".join([f"c.chunk_text ILIKE :t{i}" for i in range(len(terms))])
+    params: dict[str, Any] = {"doc_ids": ud_ids, "lim": max(limit * 3, 60)}  # 多取一些再排序
+    for i, t in enumerate(terms):
+        params[f"t{i}"] = f"%{t[:80]}%"
+
+    sql = f"""
+        SELECT c.doc_id, c.chunk_id, c.chunk_seq_no, c.chunk_text
+        FROM kb_user_document_chunks c
+        WHERE c.doc_id = ANY(:doc_ids)
+          AND ({or_clauses})
+        ORDER BY c.doc_id, c.chunk_seq_no
+        LIMIT :lim
+    """
+
     with get_db() as db:
-        rows = db.execute(
-            text(
-                """
-                SELECT c.doc_id, c.chunk_id, c.chunk_seq_no
-                FROM kb_user_document_chunks c
-                WHERE c.doc_id = ANY(:doc_ids)
-                  AND c.chunk_text ILIKE :pat
-                ORDER BY c.doc_id, c.chunk_seq_no
-                LIMIT :lim
-                """
-            ),
-            {"doc_ids": ud_ids, "pat": pattern, "lim": max(1, min(30, int(limit)))},
-        ).fetchall()
-    out: list[dict[str, Any]] = []
+        rows = db.execute(text(sql), params).fetchall()
+
+    # 评分：词频 + 标题加权
+    scored: list[tuple[int, str, str, str, int]] = []  # (score, doc_id, chunk_id, chunk_text, seq_no)
     for r in rows:
+        did = str(r[0])
+        chid = str(r[1])
+        seq = int(r[2] or 0)
+        txt = str(r[3] or "").lower()
+        score = 0
+        for t in terms:
+            t_lower = t.lower()
+            count = txt.count(t_lower)
+            score += count * 3  # 正文命中：每词 3 分
+            # 标题命中加权（chunk_text 以 "## " 开头表示标题行）
+            if txt.strip().startswith("## ") or txt.strip().startswith("# "):
+                if t_lower in txt.split("\n")[0].lower():
+                    score += 15  # 标题行命中加 15 分
+        if score > 0:
+            scored.append((score, did, chid, seq))
+
+    scored.sort(key=lambda x: -x[0])
+    top = scored[:limit]
+
+    out: list[dict[str, Any]] = []
+    for score, did, chid, seq in top:
         out.append(
             {
                 "evidence_type": "doc_chunk",
-                "doc_id": str(r[0]),
+                "doc_id": did,
                 "section_id": None,
-                "chunk_id": str(r[1]),
-                "chunk_seq_no": int(r[2] or 0),
+                "chunk_id": chid,
+                "chunk_seq_no": seq,
             }
         )
     return out
@@ -257,6 +406,7 @@ def ask_knowledge(
     selected_collection_ids: Optional[list[str]] = None,
     selected_table_ids: Optional[list[str]] = None,
     fixtures: Optional[dict[str, Any]] = None,
+    attached_doc_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     fixtures = fixtures or load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
@@ -278,6 +428,19 @@ def ask_knowledge(
     if selected_table_ids is not None and not selected_table_ids_set.issubset(allowed_table_ids):
         return {"denied": True, "deny_reason": "selected_table_ids not allowed", "citations": []}
 
+    # 处理 attached_doc_ids：从 composerAttachments 带入的文档引用
+    # 1) ACL 过滤 + 解析所属 collection → 自动设定 RAG 范围（用户未显式选择时）
+    # 2) 始终将附带文档加入候选检索范围（并在后续检索中优先）
+    attached_doc_ids_set = allowed_doc_ids & set(attached_doc_ids or [])
+    if attached_doc_ids_set:
+        doc_assignments_att = _load_doc_assignments(tenant_id)
+        attached_collections = set()
+        for did in attached_doc_ids_set:
+            attached_collections.update(doc_assignments_att.get(did, set()))
+        if attached_collections and not selected_collection_ids_set:
+            # 用户未显式选范围 → 以附带文档的 collection 作为 RAG 范围
+            selected_collection_ids_set = attached_collections
+
     intent = _infer_intent(q)
 
     # 默认选择：按意图启用
@@ -286,8 +449,9 @@ def ask_knowledge(
     if intent["need_table"] and not selected_table_ids_set:
         selected_table_ids_set = set(allowed_table_ids)
 
-    # empty scope deny（按意图所需证据类型）
-    if intent["need_doc"] and (not allowed_doc_ids or not selected_collection_ids_set):
+    # empty scope deny（按意图所需证据类型；有附带文档时不因 scope 为空而拒绝）
+    has_attached = bool(attached_doc_ids_set)
+    if intent["need_doc"] and (not allowed_doc_ids or not selected_collection_ids_set) and not has_attached:
         return {"denied": True, "deny_reason": "doc allowed scope empty", "citations": []}
     if intent["need_table"] and (not allowed_table_ids or not selected_table_ids_set):
         return {"denied": True, "deny_reason": "table allowed scope empty", "citations": []}
@@ -300,6 +464,10 @@ def ask_knowledge(
         selected_collection_ids=selected_collection_ids_set,
         doc_assignments=doc_assignments,
     )
+
+    # 始终将附带文档加入候选检索范围（即使它不在选定的 collection 中）
+    if attached_doc_ids_set:
+        cand_doc_ids = cand_doc_ids | attached_doc_ids_set
 
     citations: list[dict[str, Any]] = []
     reply_parts: list[str] = []
@@ -316,66 +484,26 @@ def ask_knowledge(
         except Exception:
             pass
 
-        # 1) 向量召回（若可用）：只在候选 doc 范围内检索，天然 pre-filter
-        if vector_enabled():
-            try:
-                vec_hits = search_doc_chunks(
-                    tenant_id,
-                    query=q,
-                    candidate_doc_ids=sorted(cand_doc_ids),
-                    k=6,
-                )
-            except Exception:
-                vec_hits = []
-            for h in vec_hits:
-                used_vector = True
-                did = str(h.get("doc_id"))
-                cid = _pick_collection_id_for_doc(
-                    did,
-                    doc_assignments=doc_assignments,
-                    selected_collection_ids=selected_collection_ids_set,
-                )
+        # 混合检索：向量（语义）+ 关键词（精确）→ 加权综合 + 上下文 re-rank
+        hybrid_hits = _hybrid_retrieve(tenant_id, query=q, candidate_doc_ids=cand_doc_ids, k=20)
+        if hybrid_hits:
+            used_vector = any(h.get("hybrid_score", 0) > 0 and h.get("vec_sim", 0) > 0 for h in hybrid_hits)
+            used_keyword = any(h.get("hybrid_score", 0) > 0 and h.get("kw_pos", 0) > 0 for h in hybrid_hits)
+            for h in hybrid_hits:
                 citations.append(
-                    {
-                        "evidence_type": "doc_chunk",
-                        "doc_id": did,
-                        "collection_id": cid,
-                        "section_id": None,
-                        "chunk_id": h.get("chunk_id"),
-                        "chunk_seq_no": h.get("chunk_seq_no"),
-                        "score": h.get("score"),
-                    }
+                    _prepare_citations_chunk(h, doc_assignments=doc_assignments, selected_collection_ids=selected_collection_ids_set)
                 )
+            reply_parts.append(f"混合检索命中 {len(hybrid_hits)} 条证据"
+                               f"{'（向量+关键词）' if used_vector and used_keyword else '（纯向量）' if used_vector else '（纯关键词）'}。")
 
-        # 2) keyword 兜底：uploaded chunks（PG ILIKE）
-        uploaded_hits = _retrieve_uploaded_doc_chunks(tenant_id, doc_ids=cand_doc_ids, query=q, limit=6)
-        for h in uploaded_hits:
-            used_keyword = True
-            did = str(h.get("doc_id"))
-            cid = _pick_collection_id_for_doc(
-                did,
-                doc_assignments=doc_assignments,
-                selected_collection_ids=selected_collection_ids_set,
-            )
-            citations.append(
-                {
-                    "evidence_type": "doc_chunk",
-                    "doc_id": did,
-                    "collection_id": cid,
-                    "section_id": h.get("section_id"),
-                    "chunk_id": h.get("chunk_id"),
-                    "chunk_seq_no": h.get("chunk_seq_no"),
-                }
-            )
-
-        # 2) fixtures chunks（内存）
+        # fixtures chunks（内存，不受向量/关键词影响）
         fixture_hits = _retrieve_fixture_doc_chunks(
             merged_documents,
             doc_ids=cand_doc_ids,
             selected_collection_ids=selected_collection_ids_set,
             doc_assignments=doc_assignments,
             query=q,
-            limit=3,
+            limit=10,
         )
         for h in fixture_hits:
             used_keyword = True
@@ -405,7 +533,48 @@ def ask_knowledge(
                 continue
             seen_keys.add(k)
             dedup_citations.append(c)
-        citations = dedup_citations[:10]
+        citations = dedup_citations[:30]
+
+        # 常规检索无结果 + 用户明确带了文档 → 全文回退：取附带文档的全部 chunk
+        if not citations and attached_doc_ids_set:
+            ud_ids = sorted([d for d in attached_doc_ids_set if str(d).startswith("ud_")])
+            if ud_ids:
+                try:
+                    with get_db() as db:
+                        rows = db.execute(
+                            text(
+                                """
+                                SELECT c.doc_id, c.chunk_id, c.chunk_seq_no
+                                FROM kb_user_document_chunks c
+                                WHERE c.doc_id = ANY(:doc_ids)
+                                ORDER BY c.doc_id, c.chunk_seq_no
+                                LIMIT :lim
+                                """
+                            ),
+                            {"doc_ids": ud_ids, "lim": 10},
+                        ).fetchall()
+                    for r in rows:
+                        did = str(r[0])
+                        cid = _pick_collection_id_for_doc(
+                            did,
+                            doc_assignments=doc_assignments,
+                            selected_collection_ids=selected_collection_ids_set,
+                        )
+                        citations.append(
+                            {
+                                "evidence_type": "doc_chunk",
+                                "doc_id": did,
+                                "collection_id": cid,
+                                "section_id": None,
+                                "chunk_id": str(r[1]),
+                                "chunk_seq_no": int(r[2] or 0),
+                            }
+                        )
+                    if citations:
+                        used_keyword = True
+                        reply_parts.append(f"已加载附带文档证据（全文回退，{len(citations)} 条片段）。")
+                except Exception:
+                    pass
 
         if citations:
             reply_parts.append(f"已在权限范围内匹配到文档证据（{len([c for c in citations if c.get('doc_id')])} 条）。")

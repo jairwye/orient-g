@@ -1,11 +1,21 @@
 import uuid
 
+import jwt
 from fastapi.testclient import TestClient
 
+from backend.config import settings
 from backend.main import app
 
 
-def test_equity_panorama_smoke_import_and_query():
+def _auth_header(username: str = "admin") -> dict[str, str]:
+    token = jwt.encode({"sub": username}, settings.auth_secret, algorithm="HS256")
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_equity_panorama_smoke_import_and_query(monkeypatch):
+    from backend.routers import equity as equity_router
+
+    monkeypatch.setattr(equity_router, "get_user", lambda _u: {"roles": ["admin"]})
     client = TestClient(app)
     snapshot = f"pytest_{uuid.uuid4().hex[:8]}"
 
@@ -28,7 +38,7 @@ def test_equity_panorama_smoke_import_and_query():
         "targets": [{"id": str(uuid.uuid4()), "entity_id": a, "name": "A公司", "is_key": True}],
     }
 
-    r = client.post("/api/equity/admin/import", json=payload)
+    r = client.post("/api/equity/admin/import", json=payload, headers=_auth_header())
     assert r.status_code == 200, r.text
 
     # targets

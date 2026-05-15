@@ -53,15 +53,14 @@ class TestConvertHttp(unittest.TestCase):
         src.write_text("x", encoding="utf-8")
 
         class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
             def raise_for_status(self):
                 return None
 
             def json(self):
-                return {
-                    "markdown": "# Title\n",
-                    "document": {"k": 1},
-                    "docling_version": "2.83.0",
-                }
+                return self._payload
 
         class FakeClient:
             def __init__(self, *a, **k):
@@ -75,14 +74,30 @@ class TestConvertHttp(unittest.TestCase):
 
             def post(self, url, files=None):
                 self._url = url
-                return FakeResp()
+                return FakeResp({"task_id": "task_1"})
+
+            def get(self, url):
+                if url.endswith("/status/poll/task_1"):
+                    return FakeResp({"task_status": "success"})
+                if url.endswith("/result/task_1"):
+                    return FakeResp(
+                        {
+                            "document": {
+                                "md_content": "# Title\n",
+                                "json_content": {"k": 1},
+                            },
+                            "docling_version": "2.83.0",
+                        }
+                    )
+                return FakeResp({})
 
         with patch.object(dr.settings, "docling_mode", "http"):
             with patch.object(dr.settings, "docling_http_base_url", "http://docling:8080"):
                 with patch.object(dr.httpx, "Client", FakeClient):
-                    arc = out / "archive"
-                    arc.mkdir(exist_ok=True)
-                    res = dr.convert_to_md_and_json(src, output_dir=arc)
+                    with patch.object(dr.time, "sleep", lambda _s: None):
+                        arc = out / "archive"
+                        arc.mkdir(exist_ok=True)
+                        res = dr.convert_to_md_and_json(src, output_dir=arc)
         self.assertEqual(res.markdown_path, arc / "full.md")
         self.assertEqual(res.json_path, arc / "full.json")
         self.assertEqual((arc / "full.md").read_text(encoding="utf-8"), "# Title\n")

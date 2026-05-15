@@ -106,6 +106,76 @@ def _extract_text(filename: str, raw: bytes) -> str:
         return "[无法解码为文本，请上传 .txt / .md / .html]"
 
 
+def _chunk_by_sections(
+    sections: list[dict[str, Any]],
+    *,
+    max_section_chars: int = 15000,
+    max_split_chars: int = 10000,
+) -> list[dict[str, Any]]:
+    """
+    按 section 边界整块切分，保留文档结构。
+    
+    策略：
+    - 一个 section ≤ max_section_chars → 一个完整 chunk（含标题）
+    - 一个 section > max_section_chars → 按段落边界二次切分（max_split_chars）
+    
+    返回: [{chunk_id, chunk_seq_no, text}] — text 已包含 "## {title}\n" 前缀
+    """
+    chunks: list[dict[str, Any]] = []
+    seq = 0
+    text = ""  # 防止空 sections 列表时 NameError
+
+    for sec in sections:
+        title = str(sec.get("title") or "")
+        text = str(sec.get("text") or "").strip()
+        sid = str(sec.get("section_id") or f"s{seq+1:04d}")
+
+        if not text:
+            continue
+
+        # 拼接标题 + 正文
+        full = f"## {title}\n{text}" if title else text
+
+        if len(full) <= max_section_chars:
+            seq += 1
+            chunks.append({
+                "chunk_id": sid,
+                "chunk_seq_no": seq,
+                "text": full,
+            })
+        else:
+            # 大 section：按段落边界切
+            paragraphs = re.split(r"\n\s*\n+", text)
+            buf = f"## {title}\n" if title else ""
+            for para in paragraphs:
+                para = para.strip()
+                if not para:
+                    continue
+                if len(buf) + len(para) + 2 <= max_split_chars:
+                    buf = f"{buf}\n\n{para}" if buf.strip() else para
+                else:
+                    if buf.strip():
+                        seq += 1
+                        chunks.append({
+                            "chunk_id": f"{sid}_p{len([c for c in chunks if c['chunk_id'].startswith(sid)]) + 1}",
+                            "chunk_seq_no": seq,
+                            "text": buf,
+                        })
+                    buf = f"## {title}\n{para}" if title else para
+            if buf.strip():
+                seq += 1
+                chunks.append({
+                    "chunk_id": f"{sid}_p{len([c for c in chunks if c['chunk_id'].startswith(sid)]) + 1}",
+                    "chunk_seq_no": seq,
+                    "text": buf,
+                })
+
+    if not chunks:
+        chunks.append({"chunk_id": "s0001", "chunk_seq_no": 1, "text": text or "(空文档)"})
+
+    return chunks
+
+
 def _chunk_text(text: str, max_len: int = 1200) -> list[str]:
     t = (text or "").strip()
     if not t:
@@ -294,6 +364,7 @@ def _parse_and_package_document(
     section_items: list[dict[str, Any]] = []
     for idx, sec in enumerate(sections, start=1):
         sid = f"s{idx:04d}"
+        sec["section_id"] = sid  # enrich for structured chunking
         fn = f"{sid}.md"
         _write_text(sections_dir / fn, sec["text"])
         section_items.append({"section_id": sid, "filename": fn, "title": sec.get("title") or sid})
@@ -340,11 +411,10 @@ def _parse_and_package_document(
             {"t": tenant_id, "d": doc_id},
         )
 
-    # chunks：暂时仍写入，供现有 testharness/检索兼容；后续可切换为按 sections 生成
-    chunks = _chunk_text(md_text)
+    # chunks：按 section 边界整块切分（保留文档结构，替代旧 1200 字符等距切）
+    struct_chunks = _chunk_by_sections(sections)
     with get_db() as db:
-        for i, ch in enumerate(chunks):
-            chid = f"{doc_id}_ch_{i+1}"
+        for ch in struct_chunks:
             db.execute(
                 text(
                     """
@@ -353,7 +423,7 @@ def _parse_and_package_document(
                     ON CONFLICT (doc_id, chunk_id) DO NOTHING
                     """
                 ),
-                {"did": doc_id, "cid": chid, "seq": i + 1, "txt": ch[:65000]},
+                {"did": doc_id, "cid": f"{doc_id}_{ch['chunk_id']}", "seq": ch["chunk_seq_no"], "txt": ch["text"][:65000]},
             )
 
     # 向量索引：后台异步（不阻塞上传）；默认关闭（keyword-only）
@@ -374,7 +444,7 @@ def _parse_and_package_document(
         "doc_id": doc_id,
         "title": title,
         "private_collection_id": private_collection_id,
-        "chunk_count": len(chunks),
+        "chunk_count": len(struct_chunks),
         "status": "active",
     }
 

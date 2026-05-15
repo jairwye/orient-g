@@ -14,6 +14,9 @@
 - 安全加固：`/api/process-doc/*` 与 `/api/equity/admin/import*` 增加管理员鉴权（未登录 401，非管理员 403）。
 - 权限收口：BigPDF 按 `task_id` 访问改为“任务 owner 或管理员”可访问；`tool.docling.convert` 仅读取文档 owner 的产物。
 - 前端防护：新闻政策页渲染 HTML 前增加白名单清洗，拦截 `script`、事件属性与 `javascript:` 链接。
+- AI 互动增强：支持 `attached_doc_ids` 显式文档引用，新增“直读文档模式”（ACL 过滤后直接读取文档内容注入模型）；并在有额外 scope 时追加知识库证据补充。
+- 检索策略升级：文档检索由单一路径升级为“向量 + 关键词”混合召回与重排，优先覆盖用户显式附带文档。
+- 文档分块升级：上传文档 chunk 由固定长度切分改为按 section 边界切分，保留结构语义。
 
 ### DB / Migrations
 

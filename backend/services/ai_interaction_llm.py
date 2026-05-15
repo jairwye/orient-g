@@ -230,3 +230,52 @@ def generate_answer_with_evidence(
     msg = out.get("message") or {}
     return (msg.get("content") or "").strip() or "未能生成回答。"
 
+
+def generate_answer_with_documents(
+    *,
+    model: str,
+    user_query: str,
+    document_context: str,
+    skill_addon: str | None = None,
+) -> str:
+    """
+    直接读取模式：将用户显式引用的文档内容作为上下文注入 LLM，
+    不使用 "严格仅凭证据" 约束，允许 LLM 结合文档内容与常识进行推理。
+
+    skill_addon：由 backend/data/agent_skills/*/SKILL.md 拼接的 system 片段。
+    """
+    system_parts = [
+        "你是一个企业内网智能助手。请基于提供的文档内容回答用户的问题。",
+        "如果文档内容足以回答问题，请直接引用文档中的关键信息给出答案。",
+        "如果文档内容不足以回答问题，请明确说明缺少哪些信息，不要编造。",
+        "回答要简洁、准确、条理清晰。",
+    ]
+    sa = (skill_addon or "").strip()
+    if sa:
+        system_parts.append(sa[:12000])
+    system = "\n".join(system_parts)
+
+    user_content = f"{document_context}\n\n问题: {user_query}"
+
+    msgs = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_content[:48000]},
+    ]
+
+    use_model = (model or "").strip() or (settings.llm_model or "").strip()
+    if settings.llm_chat_configured:
+        out = chat_completions_ollama_shaped(
+            messages=msgs,
+            tools=None,
+            model=use_model,
+            timeout_s=90.0,
+            kind="ai_interaction.direct_read",
+        )
+    else:
+        payload = {"model": use_model or settings.ollama_model, "messages": msgs, "stream": False}
+        base = _ollama_base()
+        url = f"{base}/api/chat"
+        out = post_json_with_guard(url=url, payload=payload, timeout_s=90.0, kind="ai_interaction.direct_read")
+    msg = out.get("message") or {}
+    return (msg.get("content") or "").strip() or "未能生成回答。"
+

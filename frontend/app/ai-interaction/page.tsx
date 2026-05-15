@@ -586,17 +586,28 @@ export default function AiInteractionPage() {
     }
   }, [refreshRagPackages]);
 
+  // 清理已消费的 URL 参数（同页面「带到 AI 互动」会通过 router.push 改变 search params）
+  const replaceConsumedParams = useCallback((keys: string[]) => {
+    if (typeof window === "undefined") return;
+    try {
+      const url = new URL(window.location.href);
+      for (const k of keys) url.searchParams.delete(k);
+      const qs = url.searchParams.toString();
+      window.history.replaceState({}, "", qs ? `${url.pathname}?${qs}` : url.pathname);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     if (workspaceTab !== "pdf_packages") return;
     void refreshRagPackages();
   }, [workspaceTab, refreshRagPackages]);
 
-  // 首次加载完成后：合并「范围胶囊」localStorage + URL 参数 → 显式范围
+  // 首次加载：合并「范围胶囊」localStorage + URL 参数 → 显式范围（仅执行一次）
   useEffect(() => {
     if (loading || scopeHydratedRef.current) return;
     const fromUrl = parseKbScopeFromSearchParams(new URLSearchParams(sp.toString()));
-    const docIdsRaw = (sp.get("doc_ids") || "").trim();
-    const view = (sp.get("view") || "").trim().toLowerCase();
     const fromLs = readKbScopeCapsule() || emptyKbScopeCapsule();
     const merged = {
       folder_ids: fromUrl.folder_ids ?? fromLs.folder_ids,
@@ -612,19 +623,38 @@ export default function AiInteractionPage() {
         (fromUrl.collection_ids && fromUrl.collection_ids.length) ||
         (fromUrl.table_ids && fromUrl.table_ids.length)
     );
-    const replaceConsumedParams = (keys: string[]) => {
-      if (typeof window === "undefined") return;
-      try {
-        const url = new URL(window.location.href);
-        for (const k of keys) url.searchParams.delete(k);
-        const qs = url.searchParams.toString();
-        window.history.replaceState({}, "", qs ? `${url.pathname}?${qs}` : url.pathname);
-      } catch {
-        // ignore
-      }
-    };
     if (hadUrlScope) {
       replaceConsumedParams(["folder_id", "folders", "collections", "tables"]);
+    }
+    scopeHydratedRef.current = true;
+  }, [loading, sp, replaceConsumedParams]);
+
+  // 响应后续 URL 参数变化（如从工作空间「带到 AI 互动」按钮）：处理 doc_ids / view / scope
+  useEffect(() => {
+    if (loading || !scopeHydratedRef.current) return;
+    const docIdsRaw = (sp.get("doc_ids") || "").trim();
+    const view = (sp.get("view") || "").trim().toLowerCase();
+    const fromUrl = parseKbScopeFromSearchParams(new URLSearchParams(sp.toString()));
+    const hadUrlScope = Boolean(
+      (fromUrl.folder_ids && fromUrl.folder_ids.length) ||
+        (fromUrl.collection_ids && fromUrl.collection_ids.length) ||
+        (fromUrl.table_ids && fromUrl.table_ids.length)
+    );
+
+    let consumed = false;
+
+    // 响应 scope 参数（folder_id/collections/tables）
+    if (hadUrlScope) {
+      if (fromUrl.folder_ids?.length) setSelectedFolderIds(fromUrl.folder_ids);
+      if (fromUrl.collection_ids?.length) setSelectedCollectionIds(fromUrl.collection_ids);
+      if (fromUrl.table_ids?.length) setSelectedTableIds(fromUrl.table_ids);
+      writeKbScopeCapsule({
+        folder_ids: fromUrl.folder_ids ?? [],
+        collection_ids: fromUrl.collection_ids ?? [],
+        table_ids: fromUrl.table_ids ?? [],
+      });
+      replaceConsumedParams(["folder_id", "folders", "collections", "tables"]);
+      consumed = true;
     }
 
     // v3：从 Knowledge「带到 AI」带入 doc_ids，直接在输入区显示引用（不隐式绑定 RAG 范围）
@@ -664,13 +694,13 @@ export default function AiInteractionPage() {
         }
       })();
       replaceConsumedParams(["doc_ids", "view"]);
+      consumed = true;
     }
     // 如果 URL 明确指定 view=chat，或带入 scope/doc_ids，优先回到聊天界面
-    if (view === "chat" || hadUrlScope || Boolean(docIdsRaw)) {
+    if (view === "chat" || consumed) {
       setActiveLeftView("chat");
     }
-    scopeHydratedRef.current = true;
-  }, [loading, sp]);
+  }, [loading, sp, replaceConsumedParams]);
 
   // 用户调整范围后写回胶囊（hydrate 之后）
   useEffect(() => {
@@ -1158,6 +1188,11 @@ export default function AiInteractionPage() {
       }
 
       const nextMessages = [...messages, { role: "user" as const, content: q }];
+      // 收集 composerAttachments 中 kb_doc 类型的文档引用，作为 attached_doc_ids 发送
+      const attachedIds = composerAttachments
+        .filter((a) => a.kind === "kb_doc" && a.docId)
+        .map((a) => String(a.docId!).trim())
+        .filter(Boolean);
       const res = await fetch("/api/ai-interaction/chat", {
         method: "POST",
         headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
@@ -1171,6 +1206,7 @@ export default function AiInteractionPage() {
           },
           enabled_skills: enabledSkills.length ? enabledSkills : undefined,
           enabled_tools: enabledTools.length ? enabledTools : undefined,
+          attached_doc_ids: attachedIds.length ? attachedIds : undefined,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as AskResponse;

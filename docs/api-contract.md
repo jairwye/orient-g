@@ -402,3 +402,19 @@
 - **导出**：`GET /api/equity/export/subgraph`、`GET /api/equity/export/csv`
 - **管理导入**（内网后台/运维）：`POST /api/equity/admin/import*` 系列（CSV/压缩包/天眼导出等，详见实现与 README）
   - **权限要求**：管理员（admin/管理层）；未登录 401，非管理员 403。
+
+---
+
+## 9. AI 互动（前缀 `/api/ai-interaction`）
+
+- **对话**：`POST /api/ai-interaction/chat`
+  - **用途**：AI 互动页发送消息，支持纯对话、RAG 检索与“显式文档引用直读”三种模式。
+  - **请求体新增字段**：
+    - `attached_doc_ids: string[]`（可选）：前端 composer 附件中显式引用的文档 ID（如 `ud_xxx`）。
+  - **行为约定**：
+    - 当 `attached_doc_ids` 或显式 `folder_ids` 存在时，后端优先走“文档直读模式”，直接读取文档内容注入模型上下文；
+    - 仍会执行 ACL 过滤，仅允许当前用户可访问文档参与回答；
+    - 若同时显式选择 `collections/tables`，可在直读回答后追加知识库证据补充。
+  - **响应补充字段**（按场景返回）：
+    - `read_mode: "direct"`：表示本次走了直读模式；
+    - `skipped_note`：提示被跳过的未解析/无权限文档数量说明。

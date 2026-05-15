@@ -47,7 +47,7 @@ class TestUpstreamGuard(unittest.TestCase):
                             "localhost,127.0.0.1,::1,ollama,docling",
                         ):
                             with self.assertRaisesRegex(RuntimeError, "已阻止访问远程"):
-                                convert_to_md_and_json(src, output_dir=out, timeout_s=5)
+                                convert_to_md_and_json(src, output_dir=out)
 
     def test_ai_chat_is_blocked_for_remote_ollama(self):
         with patch("backend.services.ai_interaction_llm.settings.ollama_url", "http://192.168.104.108:11434"):

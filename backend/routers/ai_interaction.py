@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from backend.config import settings
 from backend.services.knowledge_pipeline import ask_knowledge
-from backend.services.knowledge_acl import load_fixtures
+from backend.services.knowledge_acl import compute_acl_scope, load_fixtures
 from backend.services.task_queue import get_stats as get_queue_stats
 from backend.services.online_rate_limiter import allow as rate_limit_allow
 
@@ -63,6 +63,7 @@ class ChatBody(BaseModel):
     enabled_skills: list[str] | None = None
     enabled_tools: list[str] | None = None
     model: str | None = None
+    attached_doc_ids: list[str] | None = None  # 从 composerAttachments 带入的文档引用
 
 
 @router.post("/chat")
@@ -103,9 +104,10 @@ def ai_interaction_chat(request: Request, body: ChatBody):
     raw_selected_collection_ids = [str(x).strip() for x in (scope.selected_collection_ids or []) if str(x).strip()]
     raw_selected_table_ids = [str(x).strip() for x in (scope.selected_table_ids or []) if str(x).strip()]
     raw_selected_folder_ids = [str(x).strip() for x in (scope.selected_folder_ids or []) if str(x).strip()]
+    raw_attached_doc_ids = [str(x).strip() for x in (body.attached_doc_ids or []) if str(x).strip()]
 
-    # 方案 B：只有“用户显式选择了范围”才走知识库检索；否则走纯对话（普通 LLM）
-    explicit_scope_selected = bool(raw_selected_collection_ids or raw_selected_table_ids or raw_selected_folder_ids)
+    # 方案 B：只有"用户显式选择了范围"才走知识库检索；attached_doc_ids 也视为有明确检索意图
+    explicit_scope_selected = bool(raw_selected_collection_ids or raw_selected_table_ids or raw_selected_folder_ids or raw_attached_doc_ids)
 
     selected_collection_ids = list(raw_selected_collection_ids)
     selected_table_ids = list(raw_selected_table_ids)
@@ -203,10 +205,84 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                 "tool_calls": tool_calls,
             }
 
-    # --- 纯对话：未显式选择 KB 范围时，不做 RAG 检索 ---
+    # --- 直接读取路径：用户显式引用了文档/文件夹 → 从磁盘读取完整内容 ---
     model = (body.model or "").strip() or (
         (settings.llm_model or "").strip() if settings.llm_chat_configured else (settings.ollama_model or "").strip()
     ) or settings.ollama_model
+    has_explicit_docs = bool(raw_attached_doc_ids or raw_selected_folder_ids)
+    if has_explicit_docs and settings.chat_llm_available:
+        try:
+            from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
+            from backend.services.ai_interaction_llm import generate_answer_with_documents, generate_answer_with_evidence
+            from backend.services.kb_direct_read import (
+                assemble_document_context,
+                resolve_doc_ids_from_context,
+            )
+
+            doc_ids = resolve_doc_ids_from_context(
+                tenant_id,
+                attached_doc_ids=raw_attached_doc_ids if raw_attached_doc_ids else None,
+                folder_ids=raw_selected_folder_ids if raw_selected_folder_ids else None,
+            )
+            # ACL 权限过滤：仅允许用户有权限访问的文档
+            acl_denied = 0
+            if doc_ids:
+                acl_scope = compute_acl_scope(token, fixtures=fixtures)
+                allowed = set(acl_scope.get("allowed_doc_ids") or [])
+                acl_denied = sum(1 for d in doc_ids if d not in allowed)
+                doc_ids = [d for d in doc_ids if d in allowed]
+            if doc_ids:
+                doc_context, skipped = assemble_document_context(tenant_id, doc_ids)
+                if acl_denied > 0:
+                    skipped = (skipped or []) + [f"{acl_denied} 篇文档无访问权限"]
+                if doc_context:
+                    skill_addon_dr = build_system_addon_for_enabled_skills(enabled_skills)
+                    reply = generate_answer_with_documents(
+                        model=model,
+                        user_query=query,
+                        document_context=doc_context,
+                        skill_addon=skill_addon_dr or None,
+                    )
+                    # 如果 kb_scope 还有额外选中的集合/表 → 追加 RAG 补充
+                    extra_col = bool(raw_selected_collection_ids)
+                    extra_tbl = bool(raw_selected_table_ids)
+                    if extra_col or extra_tbl:
+                        try:
+                            rag_res = ask_knowledge(
+                                token,
+                                query,
+                                selected_collection_ids=selected_collection_ids if selected_collection_ids else None,
+                                selected_table_ids=selected_table_ids if selected_table_ids else None,
+                                fixtures=fixtures,
+                            )
+                            if not rag_res.get("denied") and rag_res.get("citations"):
+                                rag_llm = generate_answer_with_evidence(
+                                    tenant_id=tenant_id,
+                                    model=model,
+                                    user_query=query,
+                                    citations=list(rag_res.get("citations") or []),
+                                    fixtures=fixtures,
+                                    skill_addon=skill_addon_dr or None,
+                                )
+                                reply += "\n\n---\n📚 知识库补充证据：\n" + rag_llm
+                        except Exception:
+                            pass
+                    skipped_note = f"（{len(skipped)} 篇文档尚未完成解析，已跳过）" if skipped else ""
+                    return {
+                        "denied": False,
+                        "reply": reply,
+                        "citations": [],
+                        "tool_calls": tool_calls,
+                        "llm_model": model,
+                        "read_mode": "direct",
+                        "skipped_note": skipped_note,
+                    }
+                # doc_context 为空 → 所有文档皆未解析 → 继续走纯对话
+        except Exception:
+            # 直接读取失败不阻断，继续走纯对话
+            pass
+
+    # --- 纯对话：未显式选择 KB 范围时，不做 RAG 检索 ---
     if not explicit_scope_selected:
         if not settings.chat_llm_available:
             return {
@@ -241,6 +317,7 @@ def ai_interaction_chat(request: Request, body: ChatBody):
         selected_collection_ids=selected_collection_ids if selected_collection_ids else None,
         selected_table_ids=selected_table_ids if selected_table_ids else None,
         fixtures=fixtures,
+        attached_doc_ids=raw_attached_doc_ids if raw_attached_doc_ids else None,
     )
     if res.get("denied"):
         raise HTTPException(status_code=403, detail=res.get("deny_reason") or "denied")
