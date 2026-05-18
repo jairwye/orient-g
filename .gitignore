@@ -79,3 +79,6 @@ CLAUDE.md
 
 # 数据解析会话本地缓存（运行时生成，不同步）
 backend/data/.data_parse_sessions/
+
+# 前端编译追踪数据
+frontend/traceDir/

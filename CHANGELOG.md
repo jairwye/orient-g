@@ -10,22 +10,17 @@
 
 ### Changed
 
-- ACL 语义强化：**文档所有者永远可读**（所有知识库类型统一生效）。
-- 安全加固：`/api/process-doc/*` 与 `/api/equity/admin/import*` 增加管理员鉴权（未登录 401，非管理员 403）。
-- 权限收口：BigPDF 按 `task_id` 访问改为“任务 owner 或管理员”可访问；`tool.docling.convert` 仅读取文档 owner 的产物。
-- 前端防护：新闻政策页渲染 HTML 前增加白名单清洗，拦截 `script`、事件属性与 `javascript:` 链接。
-- AI 互动增强：支持 `attached_doc_ids` 显式文档引用，新增“直读文档模式”（ACL 过滤后直接读取文档内容注入模型）；并在有额外 scope 时追加知识库证据补充。
-- 检索策略升级：文档检索由单一路径升级为“向量 + 关键词”混合召回与重排，优先覆盖用户显式附带文档。
-- 文档分块升级：上传文档 chunk 由固定长度切分改为按 section 边界切分，保留结构语义。
+- BigPDF 队列重构：解析任务升级为持久化队列（`kb_tasks`），支持 worker 重启自动续跑，新增租约/心跳/超时/退避重试机制；修复任务目录辅助函数并抽取 `_kb_helpers` 共享写入工具。
+- Docling 配置升级：默认 CPU 线程与批处理参数对齐 compose 与 `.env.example`，消除长任务误回收。
+- 前端编译优化：Next.js 回退至 15.5.7（webpack），AI 互动 `page.tsx` 拆分为 6 个独立模块；ESLint 适配 `eslint-config-next@15`（FlatCompat）。
 
 ### DB / Migrations
 
-- 无新增 schema 迁移。
-- 启动安全守卫新增约束：生产环境仅允许 `DB_MIGRATION_MODE=alembic`；否则拒绝启动并提示先执行 `alembic upgrade head`。
+- 无新增 schema 迁移；沿用 head `20260512_122g_bigpdf_refactor`。上线执行 `alembic -c backend/alembic.ini upgrade head`。
 
 ### Docs
 
-（待发布文档改动在此追加。）
+- `docs/bigpdf-refactor-plan.md`：标注为历史设计方案，以实际代码为准。
 
 ---
 

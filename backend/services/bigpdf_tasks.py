@@ -14,10 +14,7 @@ from backend.config import settings
 from backend.database import get_db
 from backend.services.docling_runner import convert_to_md_and_json
 from backend.services.kb_tasks import update_task
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from backend.services._kb_helpers import now_iso as _now_iso, write_text as _write_text, write_json as _write_json
 
 
 def _root() -> Path:
@@ -26,16 +23,6 @@ def _root() -> Path:
 
 def _task_root(tenant_id: str, task_id: str) -> Path:
     return _root() / tenant_id / task_id
-
-
-def _write_text(p: Path, s: str) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(s or "", encoding="utf-8")
-
-
-def _write_json(p: Path, o: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(o, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _split_markdown_to_sections(md: str) -> list[dict[str, Any]]:

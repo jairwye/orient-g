@@ -1,14 +1,17 @@
-import { createRequire } from "node:module";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { FlatCompat } from "@eslint/eslintrc";
 
-const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-const next = require("eslint-config-next/core-web-vitals");
-const ts = require("eslint-config-next/typescript");
+const compat = new FlatCompat({
+  baseDirectory: __dirname,
+});
 
 /** @type {import("eslint").Linter.Config[]} */
 const qualityConfig = [
-  ...next,
-  ...ts,
+  ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
     rules: {
       // Keep aligned with `eslint.config.mjs`, but re-enable quality signals.
@@ -20,10 +23,8 @@ const qualityConfig = [
       "@typescript-eslint/no-unused-vars": "warn",
       "react-hooks/exhaustive-deps": "warn",
       "@next/next/no-img-element": "warn",
-
     },
   },
 ];
 
 export default qualityConfig;
-

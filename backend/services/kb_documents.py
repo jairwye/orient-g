@@ -18,6 +18,7 @@ from sqlalchemy import text
 from backend.config import settings
 from backend.database import get_db
 from backend.services.docling_runner import convert_to_md_and_json
+from backend.services._kb_helpers import now_iso as _now_iso, write_text as _write_text, write_json as _write_json
 from backend.services.kb_acl_store import (
     get_doc_collection_ids,
     set_private_owner,
@@ -37,20 +38,6 @@ def _kb_docs_root() -> Path:
 
 def _doc_root(tenant_id: str, doc_id: str) -> Path:
     return _kb_docs_root() / tenant_id / doc_id
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _write_text(p: Path, s: str) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(s or "", encoding="utf-8")
-
-
-def _write_json(p: Path, o: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(o, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _split_markdown_to_sections(md: str) -> list[dict[str, Any]]:
@@ -174,33 +161,6 @@ def _chunk_by_sections(
         chunks.append({"chunk_id": "s0001", "chunk_seq_no": 1, "text": text or "(空文档)"})
 
     return chunks
-
-
-def _chunk_text(text: str, max_len: int = 1200) -> list[str]:
-    t = (text or "").strip()
-    if not t:
-        return ["（空文档）"]
-    parts = re.split(r"\n\s*\n+", t)
-    chunks: list[str] = []
-    buf = ""
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        if len(buf) + len(p) + 2 <= max_len:
-            buf = f"{buf}\n\n{p}" if buf else p
-        else:
-            if buf:
-                chunks.append(buf)
-            if len(p) <= max_len:
-                buf = p
-            else:
-                for i in range(0, len(p), max_len):
-                    chunks.append(p[i : i + max_len])
-                buf = ""
-    if buf:
-        chunks.append(buf)
-    return chunks[:200]
 
 
 def _create_user_document_record(

@@ -20,8 +20,6 @@ def _migration_mode() -> str:
     return str(getattr(settings, "db_migration_mode", "legacy") or "legacy").strip().lower()
 
 def _should_manage_schema() -> bool:
-    # legacy: 启动时 CREATE/ALTER（现状）
-    # alembic: schema 由 alembic 显式迁移管理，启动时不再隐式改 schema
     return _migration_mode() != "alembic"
 
 

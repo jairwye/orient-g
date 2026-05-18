@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+// NOTE: 此文件为 Next.js 中间件预留，当前未激活。
+// 如需启用，将此文件重命名为 frontend/middleware.ts 即可自动生效。
+
 const CANONICAL_FINANCE_PATH = "/finance";
 const RAW_BACKEND_BASE = process.env.API_URL || process.env.API_BASE_SERVER || "http://127.0.0.1:8000";
 const BACKEND_BASE = RAW_BACKEND_BASE.replace("://localhost", "://127.0.0.1");

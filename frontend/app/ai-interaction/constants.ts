@@ -1,0 +1,9 @@
+// ai-interaction 页面的常量定义（从 page.tsx 提取以减少单文件体积）
+export const SESSIONS_LS_KEY = "orientg.ai_interaction.sessions.v1";
+export const SKILL_CONFIGS_LS_KEY = "orientg.ai_interaction.skill_configs.v1";
+export const TOOL_CONFIGS_LS_KEY = "orientg.ai_interaction.tool_configs.v1";
+export const WORKFLOW_CONFIGS_LS_KEY = "orientg.ai_interaction.workflow_configs.v1";
+export const PROMPT_CONFIGS_LS_KEY = "orientg.ai_interaction.prompt_configs.v1";
+export const WF_DATA_PARSE_EXCEL_ID = "wf.data_parse.excel.v1";
+export const BIG_PDF_SIZE_MB = 15;
+export const BIG_PDF_PAGES = 60;

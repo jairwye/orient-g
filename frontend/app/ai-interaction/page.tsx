@@ -13,7 +13,6 @@ import {
 } from "../lib/kb_scope_capsule";
 import {
   ArrowUp,
-  Bot,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -30,52 +29,35 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import AiInlineChart from "./AiInlineChart";
+import AiInlineTable from "./AiInlineTable";
+import AiAvatar from "./AiAvatar";
+import TypingIndicator from "./TypingIndicator";
+import type {
+  AskResponse,
+  ChatMessage,
+  ChatSession,
+  Citation,
+  ComposerAttachment,
+  KnowledgeCollection,
+  KnowledgeOptionsResponse,
+  KnowledgeTable,
+  PromptConfig,
+  SkillCatalogDoc,
+  SkillConfig,
+  ToolConfig,
+  WorkflowConfig,
+} from "./types";
 import {
-  Bar,
-  BarChart,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip as RechartsTooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-
-type SkillConfig = {
-  id: string;
-  label: string;
-  description?: string;
-  trigger_hint?: string;
-  example?: string;
-};
-
-/** 与 GET /api/ai-interaction/skills 返回项一致（后端 agent_skills_loader） */
-type SkillCatalogDoc = {
-  id: string;
-  name: string;
-  description: string;
-  body_markdown: string;
-  raw_markdown: string;
-};
-
-type ToolConfig = {
-  id: string;
-  label: string;
-  description?: string;
-};
-
-type WorkflowConfig = {
-  id: string;
-  label: string;
-  description?: string;
-  example_prompt?: string;
-  /** 空会话时「开始对话」下方的引导文案 */
-  start_hint?: string;
-  default_enabled_prompt_ids?: string[];
-  default_enabled_skill_ids?: string[];
-  default_enabled_tool_ids?: string[];
-};
+  BIG_PDF_PAGES,
+  BIG_PDF_SIZE_MB,
+  PROMPT_CONFIGS_LS_KEY,
+  SESSIONS_LS_KEY,
+  SKILL_CONFIGS_LS_KEY,
+  TOOL_CONFIGS_LS_KEY,
+  WF_DATA_PARSE_EXCEL_ID,
+  WORKFLOW_CONFIGS_LS_KEY,
+} from "./constants";
 
 /** 内置工作流与 localStorage 合并：新条目插入，同 id 以本地覆盖字段 */
 function mergeConfigById<T extends { id: string }>(builtins: T[], saved: T[] | null | undefined): T[] {
@@ -91,101 +73,6 @@ function mergeConfigById<T extends { id: string }>(builtins: T[], saved: T[] | n
   }
   return out;
 }
-
-/** 与规划 1.2.2.f 第五节及工作流默认勾选一致 */
-const WF_DATA_PARSE_EXCEL_ID = "wf.data_parse.excel.v1";
-
-/** 工作空间「提示词」：全站可复用的 Prompt 设计条目（摘要 + 可选正文，供列示与后续链路引用） */
-type PromptConfig = {
-  id: string;
-  label: string;
-  description?: string;
-  /** system | user | other */
-  role?: string;
-  /** 如 data_parse、global */
-  scope?: string;
-  /** 列示用短摘要，避免把长 prompt 塞进列表 */
-  summary?: string;
-  /** 设计稿/正文，本地编辑；勿存生产密钥 */
-  body?: string;
-};
-
-type KnowledgeCollection = {
-  collection_id: string;
-  space_type: string;
-  name: string;
-  type: "private" | "department" | "public" | "project";
-  department_id?: string;
-  project_id?: string;
-  owner_user_id?: string;
-};
-
-type KnowledgeTable = {
-  table_id: string;
-  collection_id: string;
-  space_type: string;
-  name: string;
-  row_count: number;
-};
-
-type KnowledgeFolder = {
-  folder_id: string;
-  name: string;
-  collection_ids: string[];
-};
-
-type Citation = Record<string, unknown>;
-
-type KnowledgeOptionsResponse = {
-  collections: KnowledgeCollection[];
-  tables: KnowledgeTable[];
-  folders: KnowledgeFolder[];
-  default_selected_collection_ids: string[];
-  default_selected_table_ids: string[];
-  default_selected_folder_ids: string[];
-};
-
-type AskResponse = {
-  denied?: boolean;
-  deny_reason?: string;
-  // 当后端以 HTTPException 返回 403 时，Next/TS 侧可能拿到 `detail` 字段
-  detail?: string;
-  reply?: string;
-  citations?: Citation[];
-  llm_model?: string;
-};
-
-const BIG_PDF_SIZE_MB = 15;
-const BIG_PDF_PAGES = 60;
-
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-  citations?: Citation[];
-  deny_reason?: string;
-  chart_spec?: Record<string, unknown> | null;
-  table_spec?: { columns: string[]; rows: string[][] } | null;
-};
-
-type ChatSession = {
-  id: string;
-  title: string;
-  updated_at: number;
-  messages: ChatMessage[];
-  attachments?: Array<Omit<ComposerAttachment, "phase" | "progress"> & { phase: "done" | "error"; progress?: number }>;
-  data_parse_session_id?: string | null;
-  active_workflow_id?: string | null;
-  enabled_skills?: string[];
-  enabled_tools?: string[];
-  enabled_prompt_ids?: string[];
-  start_area_hint?: string | null;
-};
-
-const SESSIONS_LS_KEY = "orientg.ai_interaction.sessions.v1";
-const SKILL_CONFIGS_LS_KEY = "orientg.ai_interaction.skill_configs.v1";
-const TOOL_CONFIGS_LS_KEY = "orientg.ai_interaction.tool_configs.v1";
-const WORKFLOW_CONFIGS_LS_KEY = "orientg.ai_interaction.workflow_configs.v1";
-const PROMPT_CONFIGS_LS_KEY = "orientg.ai_interaction.prompt_configs.v1";
 
 function formatMb(bytes: number) {
   return Math.round((bytes / 1024 / 1024) * 10) / 10;
@@ -213,21 +100,6 @@ function formatBytes(n: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-type ComposerAttachment = {
-  localId: string;
-  name: string;
-  size: number;
-  phase: "uploading" | "done" | "error";
-  progress: number;
-  /** 知识库上传 ud_… */
-  docId?: string;
-  error?: string;
-  /** kb_doc（默认）| 电子表数据解析工作流上传 */
-  kind?: "kb_doc" | "excel_parse";
-  /** kind=excel_parse 且 phase=done 时由 /api/data-parse/upload 返回 */
-  dataParseSessionId?: string;
-};
-
 function activeExcelParseSessionId(attachments: ComposerAttachment[]): string | null {
   const row = attachments.find(
     (a) =>
@@ -236,165 +108,8 @@ function activeExcelParseSessionId(attachments: ComposerAttachment[]): string | 
       typeof a.dataParseSessionId === "string" &&
       a.dataParseSessionId.trim().length > 0
   );
+
   return row?.dataParseSessionId?.trim() ?? null;
-}
-
-type ChartSpecLike = {
-  xAxis?: { data?: Array<string | number> };
-  series?: Array<{ name?: string; type?: string; data?: Array<number | string | null> }>;
-};
-
-const AI_CHART_COLORS = {
-  current: "#2563eb",
-  previous: "#3f3f46",
-  actual: "#22c55e",
-  lastYear: "#52525b",
-};
-
-function aiChartRowsFromSpec(spec: ChartSpecLike): Array<Record<string, string | number>> {
-  const labels = spec?.xAxis?.data ?? [];
-  const series = spec?.series ?? [];
-  return labels.map((name, i) => {
-    const row: Record<string, string | number> = { name: String(name ?? "") };
-    for (const s of series) {
-      const key = String(s?.name || "系列");
-      const raw = s?.data?.[i];
-      const num = typeof raw === "number" ? raw : Number(raw);
-      row[key] = Number.isFinite(num) ? num : 0;
-    }
-    return row;
-  });
-}
-
-function aiSeriesColor(name: string, idx: number): string {
-  const n = (name || "").toLowerCase();
-  if (n.includes("本年") || n.includes("current")) return AI_CHART_COLORS.current;
-  if (n.includes("去年") || n.includes("往年") || n.includes("last") || n.includes("previous")) return AI_CHART_COLORS.previous;
-  if (n.includes("目标") || n.includes("target") || n.includes("预算")) return AI_CHART_COLORS.lastYear;
-  if (idx === 0) return AI_CHART_COLORS.actual;
-  return [AI_CHART_COLORS.current, AI_CHART_COLORS.previous, AI_CHART_COLORS.actual, AI_CHART_COLORS.lastYear][idx % 4];
-}
-
-function AiInlineChart({ spec }: { spec: Record<string, unknown> }) {
-  const opt = spec as ChartSpecLike;
-  const rows = aiChartRowsFromSpec(opt);
-  const series = opt?.series ?? [];
-  if (!rows.length || !series.length) return null;
-  const isLine = series.every((s) => (s?.type || "bar").toLowerCase() === "line");
-  return (
-    <div className="mt-2 rounded border border-zinc-700 bg-zinc-900/60 p-2">
-      <ResponsiveContainer width="100%" height={220}>
-        {isLine ? (
-          <LineChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <XAxis dataKey="name" tick={{ fontSize: 11 }} stroke="#71717a" />
-            <YAxis tick={{ fontSize: 11 }} stroke="#71717a" />
-            <RechartsTooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46" }} />
-            <Legend />
-            {series.map((s, idx) => {
-              const name = String(s?.name || `系列${idx + 1}`);
-              return (
-                <Line key={`${name}-${idx}`} type="monotone" dataKey={name} stroke={aiSeriesColor(name, idx)} strokeWidth={2} dot={{ r: 2 }} />
-              );
-            })}
-          </LineChart>
-        ) : (
-          <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <XAxis dataKey="name" tick={{ fontSize: 11 }} stroke="#71717a" />
-            <YAxis tick={{ fontSize: 11 }} stroke="#71717a" />
-            <RechartsTooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46" }} />
-            <Legend />
-            {series.map((s, idx) => {
-              const name = String(s?.name || `系列${idx + 1}`);
-              return <Bar key={`${name}-${idx}`} dataKey={name} fill={aiSeriesColor(name, idx)} radius={[4, 4, 0, 0]} />;
-            })}
-          </BarChart>
-        )}
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-/** AI 对手方头像 + 名称 + 动态状态（参考 Open-WebUI） */
-function AiAvatar({ status }: { status?: "idle" | "thinking" | "typing" }) {
-  const statusText =
-    status === "thinking" ? "思考中…" : status === "typing" ? "正在输入…" : null;
-  return (
-    <div className="flex items-center gap-2">
-      <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
-        <Bot size={15} strokeWidth={2} />
-        {status === "thinking" && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-xs font-medium text-zinc-300">AI 助手</span>
-        {statusText ? (
-          <span className="text-[11px] text-emerald-400/80 animate-pulse">{statusText}</span>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-/** 打字机动画（三个跳动圆点） */
-function TypingIndicator() {
-  return (
-    <div className="flex items-center gap-1 px-1 py-2">
-      <span
-        className="inline-block h-1.5 w-1.5 rounded-full bg-zinc-400"
-        style={{ animation: "typingBounce 1.4s infinite ease-in-out both", animationDelay: "0ms" }}
-      />
-      <span
-        className="inline-block h-1.5 w-1.5 rounded-full bg-zinc-400"
-        style={{ animation: "typingBounce 1.4s infinite ease-in-out both", animationDelay: "160ms" }}
-      />
-      <span
-        className="inline-block h-1.5 w-1.5 rounded-full bg-zinc-400"
-        style={{ animation: "typingBounce 1.4s infinite ease-in-out both", animationDelay: "320ms" }}
-      />
-      <style jsx>{`
-        @keyframes typingBounce {
-          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-          40% { transform: scale(1); opacity: 1; }
-        }
-      `}</style>
-    </div>
-  );
-}
-
-function AiInlineTable({ spec }: { spec: { columns: string[]; rows: string[][] } }) {
-  const columns = spec.columns || [];
-  const rows = spec.rows || [];
-  if (!columns.length) return null;
-  return (
-    <div className="mt-2 overflow-x-auto rounded border border-zinc-700">
-      <table className="w-full min-w-[240px] text-left text-xs">
-        <thead>
-          <tr className="border-b border-zinc-700 bg-zinc-900/70">
-            {columns.map((c, i) => (
-              <th key={`${c}-${i}`} className="px-2 py-1.5 text-zinc-300">
-                {c || `列${i + 1}`}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 30).map((row, i) => (
-            <tr key={i} className="border-b border-zinc-800">
-              {columns.map((_, j) => (
-                <td key={j} className="px-2 py-1 text-zinc-400">
-                  {String(row[j] ?? "")}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
 }
 
 /** 与 fetch 等价的 my-documents 上传，支持 upload 进度（XHR）。 */
