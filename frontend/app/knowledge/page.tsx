@@ -12,12 +12,23 @@ import {
 import { MoveCopyModal } from "./components/MoveCopyModal";
 import { sortKbKindsPinned } from "./lib/kb_sort";
 import { pickDeptDefaultFolderName } from "./lib/default_folders";
-import { normalizeSelection } from "./lib/kb_selection";
 import { computeDefaultScopeKinds } from "./lib/kb_default_scope";
 import { folderViewHeading, optimisticRemoveDocFromFolderDetail } from "./lib/kb_folder_view";
 import { formatHttpError } from "./lib/kb_http_error";
 import { computeMenuPosition } from "./lib/kb_menu_position";
-import { FileText, Folder, Search } from "lucide-react";
+import {
+  folderBulkCheckState,
+  folderBulkToggleAll,
+  visibleFolderIdSet,
+} from "./lib/private_root_docs";
+import {
+  isPrivateKbRootSelection,
+  pickPrivateRootDocs,
+  resolveDocsForActiveKb,
+  toFolderDetailDocRows,
+} from "./lib/kb_docs_for_panel.js";
+import { FileText, Search } from "lucide-react";
+import { KbBrowseTree } from "./components/KbBrowseTree";
 
 type MyDoc = {
   doc_id: string;
@@ -39,12 +50,15 @@ type FolderItem = {
   owner_username?: string | null;
   collection_ids?: string[];
   resource_counts?: Record<string, number>;
+  subtree_doc_count?: number;
+  parent_folder_id?: string | null;
 };
 
 type FolderResourcesResponse = {
   folder: FolderItem;
   resources: Array<{ resource_type: string; resource_id: string; created_at?: string | null }>;
   docs: Array<{ doc_id: string; title: string; original_filename?: string; size_bytes?: number; status?: string; last_error?: string | null; created_at?: string | null }>;
+  subfolders?: FolderItem[];
 };
 
 type KbKindItem = { kb_kind: string; label: string };
@@ -110,6 +124,11 @@ function parseTimeMs(iso?: string | null) {
   return Number.isFinite(t) ? t : 0;
 }
 
+export type KnowledgePageProps = {
+  mode?: "embedded" | "page";
+  initialFolderId?: string | null;
+};
+
 export default function KnowledgePage() {
   const sp = useSearchParams();
   const router = useRouter();
@@ -142,7 +161,8 @@ export default function KnowledgePage() {
   );
   const [folderDetail, setFolderDetail] = useState<FolderResourcesResponse | null>(null);
   const [folderLoading, setFolderLoading] = useState(false);
-  const [folderUploadBusy] = useState(false);
+  const [folderUploadBusy, setFolderUploadBusy] = useState(false);
+  const [folderUploadProgress, setFolderUploadProgress] = useState<{ current: number; total: number; pct: number } | null>(null);
   const folderFileInputRef = useRef<HTMLInputElement>(null);
   const [isPageVisible, setIsPageVisible] = useState(true);
 
@@ -281,6 +301,8 @@ export default function KnowledgePage() {
     return m;
   }, [kbKinds]);
 
+  const visibleFolderIds = useMemo(() => visibleFolderIdSet(folders), [folders]);
+
   const foldersByKind = useMemo(() => {
     const m = new Map<string, FolderItem[]>();
     for (const f of folders) {
@@ -313,23 +335,17 @@ export default function KnowledgePage() {
     return safeFolderDetail.docs.some((d) => docIsRunning(d));
   }, [docIsRunning, safeFolderDetail?.docs]);
 
-  // 私人知识库根级文档：已可用(active) 且未绑定任何文件夹，并对重复文件做去重（同文件名保留最新）
-  const privateRootDocs = useMemo(() => {
-    const candidates = myDocs.filter((d) => docIsActive(d.status) && !(d.folder_ids || []).length);
-    const best = new Map<string, MyDoc>();
-    for (const d of candidates) {
-      const k = docDedupeKey(d);
-      const prev = best.get(k);
-      if (!prev) {
-        best.set(k, d);
-        continue;
-      }
-      const a = parseTimeMs(prev.created_at);
-      const b = parseTimeMs(d.created_at);
-      if (b >= a) best.set(k, d);
-    }
-    return Array.from(best.values()).sort((a, b) => parseTimeMs(b.created_at) - parseTimeMs(a.created_at));
-  }, [myDocs]);
+  const privateRootDocs = useMemo(
+    () =>
+      pickPrivateRootDocs(myDocs, visibleFolderIds, {
+        includeRunning: true,
+        docDedupeKey,
+        parseTimeMs,
+      }),
+    [myDocs, visibleFolderIds],
+  );
+
+  const isPrivateKbRootView = isPrivateKbRootSelection(selection.kind, activeKbKind);
 
   // 后端 /meta/kb-kinds 不含 Private（仅列共享类 kind），但文件夹 API 会返回 kind=Private；必须合并否则「私人知识库」整块不渲染。
   const allKbKindsOrdered = useMemo(() => {
@@ -374,59 +390,33 @@ export default function KnowledgePage() {
         kind: KB_KIND_PRIVATE,
       },
       resources: [],
-      docs: privateRootDocs.map((d) => ({
-        doc_id: d.doc_id,
-        title: d.title,
-        original_filename: d.original_filename,
-        size_bytes: d.size_bytes,
-        status: d.status,
-        last_error: d.last_error ?? null,
-        created_at: d.created_at ?? null,
-      })),
+      docs: toFolderDetailDocRows(privateRootDocs),
     }),
     [privateRootDocs],
   );
 
-  const docsForActiveKb = useMemo(() => {
-    if (selection.kind === "folder") return safeFolderDetail?.docs || [];
-    // kb 视图：用 myDocs 聚合到当前 kb_kind，保证“搜索文档”有内容可搜
-    const kind = (activeKbKind || KB_KIND_PRIVATE).trim() || KB_KIND_PRIVATE;
-    const folderKindById = new Map<string, string>();
-    for (const f of folders) folderKindById.set(f.folder_id, (f.kind || KB_KIND_PRIVATE).trim() || KB_KIND_PRIVATE);
-    const out: Array<{
-      doc_id: string;
-      title: string;
-      original_filename?: string;
-      size_bytes?: number;
-      status?: string;
-      last_error?: string | null;
-      created_at?: string | null;
-    }> = [];
-    for (const d of myDocs) {
-      const docId = (d.doc_id || "").trim();
-      if (!docId) continue;
-      const status = String(d.status || "");
-      if (!docIsActive(status) && !docIsRunning({ status })) continue;
-      const fids = Array.isArray(d.folder_ids) ? d.folder_ids : [];
-      const inKind =
-        kind === KB_KIND_PRIVATE
-          ? fids.length === 0
-          : fids.some((fid) => (folderKindById.get(String(fid)) || KB_KIND_PRIVATE) === kind);
-      if (!inKind) continue;
-      out.push({
-        doc_id: docId,
-        title: d.title || "",
-        original_filename: d.original_filename,
-        size_bytes: d.size_bytes,
-        status: d.status,
-        last_error: d.last_error ?? null,
-        created_at: d.created_at ?? null,
-      });
-    }
-    // 新的在前
-    out.sort((a, b) => parseTimeMs(b.created_at) - parseTimeMs(a.created_at));
-    return out;
-  }, [selection.kind, safeFolderDetail?.docs, activeKbKind, folders, myDocs, docIsRunning]);
+  const docsForActiveKb = useMemo(
+    () =>
+      resolveDocsForActiveKb({
+        selectionKind: selection.kind,
+        activeKbKind: activeKbKind || KB_KIND_PRIVATE,
+        folderDocs: safeFolderDetail?.docs,
+        privateRootDocs,
+        myDocs,
+        folders,
+        docIsActive,
+        docIsRunning,
+      }),
+    [
+      selection.kind,
+      activeKbKind,
+      safeFolderDetail?.docs,
+      privateRootDocs,
+      myDocs,
+      folders,
+      docIsRunning,
+    ],
+  );
 
   const docsFilteredForTable = useMemo(() => {
     const raw = docsForActiveKb || [];
@@ -437,13 +427,6 @@ export default function KnowledgePage() {
       return blob.includes(q);
     });
   }, [docsForActiveKb, kbGlobalSearch]);
-
-  const foldersForActiveKb = useMemo(() => {
-    const items = foldersByKind.get(activeKbKind) || [];
-    const q = kbGlobalSearch.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((f) => `${f.name || ""} ${f.folder_id || ""}`.toLowerCase().includes(q));
-  }, [activeKbKind, foldersByKind, kbGlobalSearch]);
 
   const toggleBulkDoc = useCallback((docId: string, source_folder_id: string | null) => {
     const did = (docId || "").trim();
@@ -459,6 +442,44 @@ export default function KnowledgePage() {
   }, []);
 
   const clearBulkSelection = useCallback(() => setBulkSelection({ doc_ids: [], source_folder_id: null }), []);
+
+  const bulkContextFolderId = useMemo((): string | null | undefined => {
+    if (activeFolderId && selection.kind === "folder") return activeFolderId;
+    if (isPrivateKbRootView) return null;
+    return undefined;
+  }, [activeFolderId, isPrivateKbRootView, selection.kind]);
+
+  const folderDocIdsForBulk = useMemo(() => {
+    if (activeFolderId && selection.kind === "folder") {
+      return (safeFolderDetail?.docs || []).map((d) => d.doc_id).filter(Boolean);
+    }
+    if (isPrivateKbRootView) {
+      return docsFilteredForTable.map((d) => d.doc_id).filter(Boolean);
+    }
+    return [];
+  }, [activeFolderId, selection.kind, safeFolderDetail?.docs, isPrivateKbRootView, docsFilteredForTable]);
+
+  const folderBulkHeaderState = useMemo(() => {
+    if (bulkContextFolderId === undefined) return "none" as const;
+    if (!folderDocIdsForBulk.length) return "none" as const;
+    const ctx = bulkContextFolderId ?? null;
+    const selected =
+      (bulkSelection.source_folder_id || null) === ctx ? bulkSelection.doc_ids.filter(Boolean) : [];
+    return folderBulkCheckState(folderDocIdsForBulk, selected);
+  }, [bulkContextFolderId, bulkSelection.doc_ids, bulkSelection.source_folder_id, folderDocIdsForBulk]);
+
+  const folderBulkHeaderRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const el = folderBulkHeaderRef.current;
+    if (!el) return;
+    el.indeterminate = folderBulkHeaderState === "partial";
+  }, [folderBulkHeaderState]);
+
+  const toggleFolderBulkAll = useCallback(() => {
+    if (bulkContextFolderId === undefined || !folderDocIdsForBulk.length) return;
+    const next = folderBulkToggleAll(folderBulkHeaderState, folderDocIdsForBulk);
+    setBulkSelection({ doc_ids: next, source_folder_id: bulkContextFolderId ?? null });
+  }, [bulkContextFolderId, folderBulkHeaderState, folderDocIdsForBulk]);
 
   const folderNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -651,6 +672,19 @@ export default function KnowledgePage() {
         const data = await fetchFolderDetail(folderId);
         if (reqId !== folderDetailReqRef.current) return;
         setFolderDetail(data);
+        const subs = (data.subfolders || []) as FolderItem[];
+        if (subs.length) {
+          setFolders((prev) => {
+            const ids = new Set(prev.map((x) => x.folder_id));
+            const add = subs
+              .filter((sf) => sf.folder_id && !ids.has(sf.folder_id))
+              .map((sf) => ({
+                ...sf,
+                parent_folder_id: (sf.parent_folder_id || "").trim() || folderId,
+              }));
+            return add.length ? [...prev, ...add] : prev;
+          });
+        }
       } catch (e) {
         if (reqId !== folderDetailReqRef.current) return;
         setFolderDetail(null);
@@ -684,6 +718,7 @@ export default function KnowledgePage() {
       isPageVisible &&
       Boolean(activeFolderId) &&
       folderHasRunningDocs,
+    pollKey: activeFolderId,
     load: async () => {
       const fid = activeFolderId;
       if (!fid) throw new Error("missing folder id");
@@ -870,9 +905,12 @@ export default function KnowledgePage() {
     }
   };
 
-  const handleDelete = async (docId: string) => {
-    if (!confirm("确定删除该文档？")) return;
-    setMsg(null);
+  const deleteDoc = async (
+    docId: string,
+    opts?: { skipConfirm?: boolean; skipReload?: boolean; quietSuccess?: boolean },
+  ): Promise<boolean> => {
+    if (!opts?.skipConfirm && !confirm("确定删除该文档？")) return false;
+    if (!opts?.quietSuccess) setMsg(null);
     try {
       const res = await fetch(`/api/knowledge/my-documents/${encodeURIComponent(docId)}`, {
         method: "DELETE",
@@ -881,12 +919,20 @@ export default function KnowledgePage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "删除失败");
-      setMsg({ type: "success", text: "已删除。" });
-      await loadAll();
-      if (activeFolderId) await loadFolderDetail(activeFolderId);
+      if (!opts?.quietSuccess) setMsg({ type: "success", text: "已删除。" });
+      if (!opts?.skipReload) {
+        await loadAll();
+        if (activeFolderId) await loadFolderDetail(activeFolderId);
+      }
+      return true;
     } catch (e) {
       setMsg({ type: "error", text: e instanceof Error ? e.message : "删除失败" });
+      return false;
     }
+  };
+
+  const handleDelete = async (docId: string) => {
+    await deleteDoc(docId);
   };
 
   const renameFolder = async (f: FolderItem) => {
@@ -962,6 +1008,51 @@ export default function KnowledgePage() {
     }
   };
 
+  const handleFolderFileUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = "";
+      if (!files.length || !activeFolderId) return;
+      const fid = activeFolderId;
+      setFolderUploadBusy(true);
+      let ok = 0;
+      let fail = 0;
+      const total = files.length;
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setFolderUploadProgress({ current: i + 1, total, pct: Math.round(((i + 1) / total) * 100) });
+        try {
+          const doc_id = await new Promise<string>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", "/api/knowledge/my-documents/upload");
+            const headers = getAuthHeaders();
+            for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+            const form = new FormData();
+            form.append("file", file);
+            form.append("folder_id", fid);
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try { const d = JSON.parse(xhr.responseText); resolve(d.doc_id || ""); } catch { resolve(""); }
+              } else { reject(new Error(`HTTP ${xhr.status}`)); }
+            };
+            xhr.onerror = () => reject(new Error("网络错误"));
+            xhr.send(form);
+          });
+          if (doc_id) ok++; else fail++;
+        } catch {
+          fail++;
+        }
+      }
+      setFolderUploadProgress(null);
+      if (ok > 0) setMsg({ type: "success", text: `已上传 ${ok} 个文件到文件夹` + (fail > 0 ? `（${fail} 个失败）` : "") });
+      else setMsg({ type: "error", text: `全部 ${fail} 个文件上传失败` });
+      setFolderUploadBusy(false);
+      await loadAll();
+      if (activeFolderId) await loadFolderDetail(activeFolderId);
+    },
+    [activeFolderId, loadAll, loadFolderDetail],
+  );
+
   const unlinkDocFromFolder = useCallback(
     async (docId: string, folderId: string) => {
       const fid = (folderId || "").trim();
@@ -1002,7 +1093,8 @@ export default function KnowledgePage() {
 
   const folderBulkActiveRight =
     bulkSelection.doc_ids.length > 0 &&
-    ((!bulkSelection.source_folder_id && !activeFolderId) || (!!activeFolderId && bulkSelection.source_folder_id === activeFolderId));
+    bulkContextFolderId !== undefined &&
+    (bulkSelection.source_folder_id || null) === (bulkContextFolderId ?? null);
 
   return (
     <div className="p-2 md:p-3">
@@ -1097,68 +1189,35 @@ export default function KnowledgePage() {
 
       <div className="grid gap-3 md:grid-cols-[minmax(260px,34%)_1fr]">
         <section className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
-          <div className="mb-2 text-base font-medium text-zinc-200">知识库</div>
-          <div className="h-[calc(100vh-320px)] space-y-4 overflow-y-auto pr-2">
-            {kindsVisibleInTree.map((kid) => {
-              const label = kbKindLabelById.get(kid) || kid;
-              const allItems = foldersByKind.get(kid) || [];
-              const q = kbGlobalSearch.trim().toLowerCase();
-              const items = q
-                ? allItems.filter(
-                    (f) =>
-                      (f.name || "").toLowerCase().includes(q) || (f.folder_id || "").toLowerCase().includes(q),
-                  )
-                : allItems;
-              return (
-                <div key={kid} className="space-y-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      userHasInteractedRef.current = true;
-                      setSelection({ kind: "kb", kb_kind: kid });
-                    }}
-                    className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left ${
-                      selection.kind === "kb" && selection.kb_kind === kid ? "bg-zinc-950/40 text-zinc-50" : "text-zinc-300 hover:bg-zinc-950/30"
-                    }`}
-                    title="选择知识库"
-                  >
-                    <span className="truncate text-base font-medium">{label}</span>
-                    <span className="text-sm text-zinc-500">{(allItems?.length || 0) > 0 ? `${allItems.length}` : ""}</span>
-                  </button>
-                  {items.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-zinc-800/80 px-2 py-2 text-[11px] text-zinc-600">
-                      暂无匹配文件夹
-                    </div>
-                  ) : (
-                    <ul className="space-y-1">
-                      {items.map((f) => (
-                        <li key={f.folder_id} className="rounded-md border border-zinc-900/80 bg-zinc-950/30">
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                userHasInteractedRef.current = true;
-                                setSelection(normalizeSelection({ kind: "folder", kb_kind: kid, folder_id: f.folder_id }));
-                                void loadFolderDetail(f.folder_id);
-                              }}
-                              className={`min-w-0 flex-1 rounded px-2 py-2 text-left text-sm ${
-                                activeFolderId === f.folder_id ? "text-[#93c5fd]" : "text-zinc-200"
-                              }`}
-                            >
-                              <div className="flex items-center gap-2">
-                                <Folder className="h-4 w-4 text-zinc-500" />
-                                <span className="truncate text-base">{f.name}</span>
-                              </div>
-                              <div className="mt-1 text-sm text-zinc-500">文档 {f.resource_counts?.doc ?? 0}</div>
-                            </button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              );
-            })}
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="text-base font-medium text-zinc-200">目录</div>
+            <span className="text-[10px] uppercase tracking-wide text-zinc-600">Tree</span>
+          </div>
+          <div className="h-[calc(100vh-320px)] overflow-y-auto pr-1">
+            <KbBrowseTree
+              kinds={kindsVisibleInTree}
+              allFolders={folders}
+              kbKindLabelById={kbKindLabelById}
+              selection={selection}
+              activeKbKind={activeKbKind}
+              activeFolderId={activeFolderId}
+              privateUnfiledCount={privateRootDocs.length}
+              kbGlobalSearch={kbGlobalSearch}
+              onSelectKb={(kid) => {
+                setSelection({ kind: "kb", kb_kind: kid });
+                if (kid === KB_KIND_PRIVATE) {
+                  setFolderLoading(false);
+                } else {
+                  setFolderDetail(null);
+                  setFolderLoading(false);
+                }
+              }}
+              onSelectFolder={(kid, folderId) => {
+                setSelection({ kind: "folder", kb_kind: kid, folder_id: folderId });
+              }}
+              loadFolderDetail={loadFolderDetail}
+              userHasInteractedRef={userHasInteractedRef}
+            />
           </div>
         </section>
 
@@ -1315,12 +1374,22 @@ export default function KnowledgePage() {
                 <button
                   type="button"
                   onClick={async () => {
-                    if (!confirm(`确定删除已选 ${bulkSelection.doc_ids.length} 条文档？`)) return;
-                    try {
-                      for (const did of bulkSelection.doc_ids) await handleDelete(did);
+                    const ids = [...bulkSelection.doc_ids];
+                    if (!ids.length) return;
+                    if (!confirm(`确定删除已选 ${ids.length} 条文档？`)) return;
+                    setMsg(null);
+                    let deleted = 0;
+                    for (const did of ids) {
+                      if (await deleteDoc(did, { skipConfirm: true, skipReload: true, quietSuccess: true })) deleted += 1;
+                    }
+                    await loadAll();
+                    if (activeFolderId) await loadFolderDetail(activeFolderId);
+                    if (deleted > 0) {
+                      setMsg({
+                        type: "success",
+                        text: deleted === ids.length ? `已删除 ${deleted} 条。` : `已删除 ${deleted}/${ids.length} 条（部分失败见上方提示）。`,
+                      });
                       clearBulkSelection();
-                    } catch {
-                      /* handleDelete 已 setMsg */
                     }
                   }}
                   className="rounded border border-red-900/40 bg-red-950/30 px-2 py-1 text-red-300/90 hover:bg-red-950/50"
@@ -1356,7 +1425,9 @@ export default function KnowledgePage() {
                           "",
                         folderId: activeFolderId || "",
                       })
-                    : "文档"}
+                    : isPrivateKbRootView
+                      ? "未归档文档"
+                      : "文档"}
                 </div>
                 {selection.kind === "folder" && activeFolderId && folderForActions ? (
                   <div className="relative" data-kb-menu-root="1">
@@ -1393,6 +1464,33 @@ export default function KnowledgePage() {
                           className="w-full rounded px-2 py-1.5 text-left text-zinc-200 hover:bg-zinc-900/60 disabled:opacity-40"
                         >
                           上传到文件夹
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            openAnchoredMenu(null, null);
+                            const name = (prompt("新建子文件夹名称") || "").trim();
+                            if (!name) return;
+                            void (async () => {
+                              try {
+                                const res = await fetch("/api/knowledge/folders", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+                                  credentials: "include",
+                                  body: JSON.stringify({ name, parent_folder_id: activeFolderId }),
+                                });
+                                const data = await res.json().catch(() => ({}));
+                                if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "创建失败");
+                                setMsg({ type: "success", text: "子文件夹已创建。" });
+                                await loadAll();
+                              } catch (e) {
+                                setMsg({ type: "error", text: e instanceof Error ? e.message : "创建失败" });
+                              }
+                            })();
+                          }}
+                          className="w-full rounded px-2 py-1.5 text-left text-zinc-200 hover:bg-zinc-900/60"
+                        >
+                          创建子文件夹
                         </button>
                         <button
                           type="button"
@@ -1450,11 +1548,36 @@ export default function KnowledgePage() {
                   </div>
                 ) : null}
               </div>
+              {/* 上传进度条 */}
+              {folderUploadProgress ? (
+                <div className="mb-3 rounded border border-zinc-700 bg-zinc-950/40 px-3 py-2">
+                  <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
+                    <span>上传中…</span>
+                    <span>{folderUploadProgress.current}/{folderUploadProgress.total}</span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-zinc-800">
+                    <div className="h-1.5 rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${folderUploadProgress.pct}%` }} />
+                  </div>
+                </div>
+              ) : null}
               {docsFilteredForTable.length ? (
                 <table className="w-full min-w-[520px] border-collapse text-left text-sm">
                   <thead>
                     <tr className="border-b border-zinc-800 text-sm text-zinc-500">
-                      <th className="w-10 py-2 pr-2"> </th>
+                      <th className="w-10 py-2 pr-2">
+                        {bulkContextFolderId !== undefined && folderDocIdsForBulk.length > 0 ? (
+                          <input
+                            ref={folderBulkHeaderRef}
+                            type="checkbox"
+                            checked={folderBulkHeaderState === "all"}
+                            aria-label={isPrivateKbRootView ? "全选未归档文档" : "全选文件夹内文档"}
+                            title="全选 / 取消全选"
+                            onChange={toggleFolderBulkAll}
+                          />
+                        ) : (
+                          " "
+                        )}
+                      </th>
                       <th className="py-2 pr-2">名称</th>
                       <th className="w-28 py-2 pr-2">状态</th>
                       <th className="w-36 py-2 pr-2">位置</th>
@@ -1598,38 +1721,6 @@ export default function KnowledgePage() {
                 <div className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-4 text-base text-zinc-400">暂无文档。</div>
               )}
 
-              {selection.kind !== "folder" ? (
-                <>
-                  <div className="mt-5 mb-2 text-base font-medium text-zinc-200">文件夹</div>
-                  {foldersForActiveKb.length ? (
-                <div className="space-y-1">
-                  {foldersForActiveKb.slice(0, 200).map((f) => (
-                    <button
-                      key={f.folder_id}
-                      type="button"
-                      onClick={() => {
-                        userHasInteractedRef.current = true;
-                        setSelection(normalizeSelection({ kind: "folder", kb_kind: activeKbKind, folder_id: f.folder_id }));
-                        void loadFolderDetail(f.folder_id);
-                      }}
-                      className="flex w-full items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-left hover:bg-zinc-900/40"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <Folder className="h-4 w-4 text-zinc-500" />
-                          <span className="truncate text-base text-zinc-200">{f.name}</span>
-                        </div>
-                        <div className="mt-1 text-sm text-zinc-500">文档 {f.resource_counts?.doc ?? 0}</div>
-                      </div>
-                      <div className="text-sm text-zinc-600 font-mono">{f.folder_id}</div>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-4 text-base text-zinc-400">暂无文件夹。</div>
-                  )}
-                </>
-              ) : null}
             </div>
               )}
             </div>
@@ -2059,6 +2150,7 @@ export default function KnowledgePage() {
           </div>
         </div>
       )}
+      <input ref={folderFileInputRef} type="file" className="hidden" multiple onChange={handleFolderFileUpload} />
     </div>
   );
 }

@@ -12,7 +12,10 @@ export type KnowledgeWorkspacePanelProps = {
   initialFolderId?: string | null;
 };
 
-export function KnowledgeWorkspacePanel() {
-  return <KnowledgePage />;
+export function KnowledgeWorkspacePanel({
+  mode = "embedded",
+  initialFolderId,
+}: KnowledgeWorkspacePanelProps) {
+  return <KnowledgePage mode={mode} initialFolderId={initialFolderId} />;
 }
 

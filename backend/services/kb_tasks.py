@@ -229,6 +229,21 @@ def claim_next_task(*, worker_id: str, lease_seconds: int, accepted_kinds: list[
         return None
     kinds = [str(x).strip() for x in (accepted_kinds or []) if str(x).strip()]
     where_kind = ""
+    # 大 PDF 全局串行：Docling 侧单实例 + 内存占用高，禁止多个 worker 同时 claim
+    bigpdf_busy_guard = ""
+    if not kinds or "bigpdf" in kinds:
+        bigpdf_busy_guard = """
+                      AND (
+                        k.kind <> 'bigpdf'
+                        OR NOT EXISTS (
+                          SELECT 1 FROM kb_tasks r
+                          WHERE r.kind = 'bigpdf'
+                            AND r.status = 'running'
+                            AND r.lease_until IS NOT NULL
+                            AND r.lease_until >= CURRENT_TIMESTAMP
+                        )
+                      )
+        """
     params: dict[str, Any] = {"wid": worker_id, "lease_s": max(30, int(lease_seconds))}
     if kinds:
         where_kind = " AND kind = ANY(:kinds)"
@@ -239,17 +254,22 @@ def claim_next_task(*, worker_id: str, lease_seconds: int, accepted_kinds: list[
                 f"""
                 WITH picked AS (
                     SELECT task_id
-                    FROM kb_tasks
+                    FROM kb_tasks k
                     WHERE status='queued'
                       AND COALESCE(next_run_at, CURRENT_TIMESTAMP) <= CURRENT_TIMESTAMP
                       {where_kind}
+                      {bigpdf_busy_guard}
                     ORDER BY queue_priority ASC, created_at ASC
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                 )
                 UPDATE kb_tasks k
                 SET status='running',
-                    stage=CASE WHEN k.stage IN ('queued', 'failed') THEN 'running' ELSE k.stage END,
+                    stage=CASE
+                        WHEN k.kind = 'bigpdf' AND k.stage IN ('queued', 'failed', 'running') THEN 'parsing'
+                        WHEN k.stage IN ('queued', 'failed') THEN 'running'
+                        ELSE k.stage
+                    END,
                     attempts=COALESCE(k.attempts, 0) + 1,
                     started_at=COALESCE(k.started_at, CURRENT_TIMESTAMP),
                     heartbeat_at=CURRENT_TIMESTAMP,
@@ -617,6 +637,7 @@ def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
                         task_id, owner_username, kind, status, stage, progress, detail, result_package_id,
                         file_name, file_size, page_count, docling_task_id, task_position, estimated_duration,
                         started_at, completed_at, cancelled_by, cancel_type,
+                        worker_id,
                         created_at, updated_at
                     FROM kb_tasks
                     WHERE tenant_id=:t AND task_id=:id
@@ -665,14 +686,16 @@ def get_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
         result["completed_at"] = row[15].isoformat() if row[15] else None
         result["cancelled_by"] = str(row[16] or "") if row[16] else None
         result["cancel_type"] = str(row[17] or "") if row[17] else None
-        result["created_at"] = row[18].isoformat() if row[18] else None
-        result["updated_at"] = row[19].isoformat() if row[19] else None
+        result["worker_id"] = str(row[18] or "") if row[18] else None
+        result["created_at"] = row[19].isoformat() if row[19] else None
+        result["updated_at"] = row[20].isoformat() if row[20] else None
     else:
         result["estimated_duration"] = int(row[12] or 0) if row[12] else None
         result["started_at"] = row[13].isoformat() if row[13] else None
         result["completed_at"] = row[14].isoformat() if row[14] else None
         result["cancelled_by"] = str(row[15] or "") if row[15] else None
         result["cancel_type"] = str(row[16] or "") if row[16] else None
+        result["worker_id"] = None
         result["created_at"] = row[17].isoformat() if row[17] else None
         result["updated_at"] = row[18].isoformat() if row[18] else None
     return result
@@ -688,7 +711,7 @@ def list_my_tasks(tenant_id: str, owner_username: str, *, kind: str | None = Non
         rows = db.execute(
             text(
                 f"""
-                SELECT task_id, kind, status, stage, progress, detail, result_package_id, created_at, updated_at
+                SELECT task_id, kind, status, stage, progress, detail, result_package_id, created_at, updated_at, file_name, docling_task_id, worker_id
                 FROM kb_tasks
                 WHERE {where}
                 ORDER BY created_at DESC
@@ -710,6 +733,9 @@ def list_my_tasks(tenant_id: str, owner_username: str, *, kind: str | None = Non
                 "result_package_id": str(r[6] or "") if r[6] else None,
                 "created_at": r[7].isoformat() if r[7] else None,
                 "updated_at": r[8].isoformat() if r[8] else None,
+                "file_name": str(r[9] or "") if r[9] else None,
+                "docling_task_id": str(r[10] or "") if r[10] else None,
+                "worker_id": str(r[11] or "") if r[11] else None,
             }
         )
     return out
@@ -728,7 +754,8 @@ def get_running_task(tenant_id: str) -> dict[str, Any] | None:
                 """
                 SELECT
                     task_id, owner_username, status, stage, progress, detail,
-                    file_name, file_size, page_count, estimated_duration, started_at
+                    file_name, file_size, page_count, estimated_duration, started_at,
+                    docling_task_id
                 FROM kb_tasks
                 WHERE tenant_id=:t AND kind='bigpdf' AND status='running'
                 ORDER BY started_at DESC
@@ -751,6 +778,7 @@ def get_running_task(tenant_id: str) -> dict[str, Any] | None:
         "page_count": int(row[8] or 0) if row[8] else None,
         "estimated_duration": int(row[9] or 0) if row[9] else None,
         "started_at": row[10].isoformat() if row[10] else None,
+        "docling_task_id": str(row[11] or "") if row[11] else None,
     }
 
 
@@ -808,6 +836,29 @@ def get_user_queued_task(tenant_id: str, owner_username: str) -> dict[str, Any] 
             if str(qr[0] or "") == str(task_row[0] or ""):
                 return {"position": pos}
         return None
+    return None
+
+
+def get_task_queue_position(tenant_id: str, task_id: str) -> int | None:
+    """Return 1-based queue position for a queued bigpdf task, or None if not queued."""
+    tid = str(task_id or "").strip()
+    if not tid:
+        return None
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT task_id
+                FROM kb_tasks
+                WHERE tenant_id=:t AND kind='bigpdf' AND status='queued'
+                ORDER BY queue_priority ASC, created_at ASC
+                """
+            ),
+            {"t": tenant_id},
+        ).fetchall()
+    for idx, r in enumerate(rows, start=1):
+        if str(r[0] or "") == tid:
+            return idx
     return None
 
 

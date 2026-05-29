@@ -9,11 +9,12 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { BUSINESS_CHART_COLORS } from "../lib/business_chart_colors";
 import type { ChartSpecLike } from "./types";
 
 const AI_CHART_COLORS: Record<string, string> = {
-  net_profit: "#10b981",
-  revenue: "#3b82f6",
+  net_profit: BUSINESS_CHART_COLORS.actual,
+  revenue: BUSINESS_CHART_COLORS.current,
   growth: "#f59e0b",
   cost: "#ef4444",
   default: "#8b5cf6",

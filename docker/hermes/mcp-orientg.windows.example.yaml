@@ -1,0 +1,24 @@
+# Windows 本机 Hermes → Orient-G MCP（见 docs/hermes.md §2）
+# 合并进 %USERPROFILE%\.hermes\config.yaml 顶层
+#
+# 前置：
+#   1. Orient-G 本机 .venv 已安装 backend 依赖（含 mcp）
+#   2. 项目根 .env：DATABASE_URL 指向本机开发库（见 .env.example）
+#   3. %USERPROFILE%\.hermes\.env：Gateway 见 dotenv.hermes.gateway.example
+#      /agent 路径不必写 ORIENTG_USER_TOKEN；仅 hermes chat 单人调试见 dotenv.hermes.orientg.example
+#   4. MCP 子进程 cwd 为项目根，backend/config.py 会读该目录 .env
+#
+# 工具名在 Hermes 中为：mcp_orientg_orientg_kb_ask 等
+
+mcp_servers:
+  orientg:
+    command: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g/.venv/Scripts/python.exe"
+    args:
+      - "-m"
+      - "backend.mcp.orientg_server"
+    cwd: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g"
+    env:
+      PYTHONPATH: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g"
+      ORIENTG_USER_TOKEN: "${ORIENTG_USER_TOKEN}"
+    timeout: 180
+    connect_timeout: 60

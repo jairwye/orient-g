@@ -22,7 +22,7 @@ from backend.database import (
     init_kb_vector_tables,
     init_user_permission_tables,
 )
-from backend.routers import auth, health, exchange, policy_news, business, competitor, settings as settings_router, process_doc, queue_stats, data_parse, knowledge, equity, ai_interaction, contracts
+from backend.routers import auth, health, exchange, policy_news, business, competitor, settings as settings_router, process_doc, queue_stats, data_parse, knowledge, equity, ai_interaction, agent, contracts
 from backend.services.exchange_rates import finalize_today_data, update_today_rate
 from backend.services.freshrss import fetch_all as freshrss_fetch_all
 from backend.services import kb_documents as kb_docs
@@ -135,5 +135,6 @@ app.include_router(queue_stats.router, prefix="/api/queue", tags=["queue"])
 app.include_router(data_parse.router, prefix="/api/data-parse", tags=["data-parse"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
 app.include_router(ai_interaction.router, prefix="/api/ai-interaction", tags=["ai-interaction"])
+app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
 app.include_router(contracts.router, prefix="/api/contracts", tags=["contracts"])
 app.include_router(equity.router, prefix="/api/equity", tags=["equity"])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from sqlalchemy import text
 from backend.config import settings
 from backend.database import get_db
 from backend.services.docling_runner import convert_to_md_and_json
-from backend.services.kb_tasks import update_task
+from backend.services.kb_tasks import get_task as get_kb_task, update_task
 from backend.services._kb_helpers import now_iso as _now_iso, write_text as _write_text, write_json as _write_json
 
 
@@ -57,6 +58,49 @@ def stage_to_progress(stage: str) -> int:
     return int(m.get(stage, 0))
 
 
+def _upload_filename_from_task(task: dict[str, Any] | None) -> str:
+    if not task:
+        return ""
+    fn = str(task.get("file_name") or "").strip()
+    if fn:
+        return fn
+    detail = str(task.get("detail") or "").strip()
+    if detail and not detail.startswith("folder:") and "user_doc:" not in detail:
+        return detail
+    return ""
+
+
+def _upload_filename_from_task_dir(root: Path) -> str:
+    meta_path = root / "meta.json"
+    if not meta_path.exists():
+        return ""
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        return str(meta.get("original_filename") or "").strip()
+    except Exception:
+        return ""
+
+
+def _resolve_pdf_title(
+    task_record: dict[str, Any] | None,
+    root: Path,
+    md_text: str,
+    raw_path: Path,
+) -> str:
+    """Resolve display name from uploaded PDF filename, with sensible fallbacks."""
+    pdf_title = _upload_filename_from_task(task_record) or _upload_filename_from_task_dir(root)
+    if not pdf_title:
+        try:
+            first_line = md_text.strip().split("\n")[0]
+            if first_line.startswith("#"):
+                pdf_title = first_line.lstrip("#").strip()[:50]
+        except Exception:
+            pass
+    if not pdf_title:
+        pdf_title = raw_path.stem
+    return pdf_title
+
+
 def prepare_task_input(tenant_id: str, task_id: str, filename: str, raw: bytes) -> dict[str, Any]:
     """
     保存原始文件到任务目录，供 worker 异步处理。
@@ -69,6 +113,7 @@ def prepare_task_input(tenant_id: str, task_id: str, filename: str, raw: bytes) 
     raw_name = "original.pdf" if ext == ".pdf" else f"original{ext}"
     raw_path = raw_dir / raw_name
     raw_path.write_bytes(raw)
+    _write_json(root / "meta.json", {"original_filename": safe})
     return {
         "task_root": str(root),
         "raw_path": str(raw_path),
@@ -124,7 +169,14 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
         update_task(tenant_id, task_id, status="failed", stage="failed", progress=100, detail="找不到任务原始文件")
         return
 
-    update_task(tenant_id, task_id, status="running", stage="parsing", progress=stage_to_progress("parsing"))
+    update_task(
+        tenant_id,
+        task_id,
+        status="running",
+        stage="parsing",
+        progress=stage_to_progress("parsing"),
+        detail=None,
+    )
     archive_dir = root / "archive"
     res = convert_to_md_and_json(raw_path, output_dir=archive_dir, is_cancelled=is_cancelled, tenant_id=tenant_id, kb_task_id=task_id)
     full_md = archive_dir / "full.md"
@@ -160,6 +212,10 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
         source_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
     except Exception:
         source_hash = ""
+    task_record = get_kb_task(tenant_id, task_id)
+    pdf_title = _resolve_pdf_title(task_record, root, md_text, raw_path)
+    package_name = _auto_organization_folder_name(pdf_title)
+
     manifest = {
         "doc_id": package_id,
         "doc_version": 1,
@@ -167,6 +223,7 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
         "task_id": task_id,
         "tenant_id": tenant_id,
         "user_id": owner_username,
+        "source_filename": pdf_title,
         "source_hash": source_hash,
         "created_at": _now_iso(),
         "parser_version": res.docling_version or "docling",
@@ -181,7 +238,7 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
     _insert_rag_package(
         tenant_id,
         package_id=package_id,
-        name=f"大文档包-{package_id[-6:]}",
+        name=package_name,
         manifest=manifest,
         storage_path=storage_rel,
         owner_username=owner_username,
@@ -201,18 +258,6 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
     # -----------------------------------------------------------------------
     # Phase 1: Auto-organize into Private knowledge base folder
     # -----------------------------------------------------------------------
-    # Extract a meaningful title from the first heading in the parsed markdown,
-    # or fall back to the original filename
-    pdf_title = ""
-    try:
-        first_line = md_text.strip().split("\n")[0]
-        if first_line.startswith("#"):
-            pdf_title = first_line.lstrip("#").strip()[:50]
-    except Exception:
-        pass
-    if not pdf_title:
-        pdf_title = raw_path.stem  # fallback: "original" → not great
-
     _auto_organize_to_private_kb(
         tenant_id,
         task_id,
@@ -221,7 +266,7 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
         manifest,
         section_items,
         original_filename=pdf_title,
-        full_md_path=full_md,
+        sections_dir=sections_dir,
     )
 
     update_task(
@@ -235,13 +280,101 @@ def process_bigpdf_task(tenant_id: str, task_id: str, owner_username: str, is_ca
 
 
 def _auto_organization_folder_name(title: str) -> str:
-    """Generate folder name from original PDF filename, truncated."""
-    base = (title or "").strip() or "未命名"
-    # Remove file extension for cleaner display
+    """Use uploaded PDF filename (without extension) as private KB folder name."""
+    base = Path((title or "").strip() or "未命名").name.replace("..", "_")
     if "." in base:
         base = base.rsplit(".", 1)[0]
-    truncated = base[:50]
-    return f"大PDF-{truncated}"
+    return (base[:50] or "未命名").strip()
+
+
+def _section_display_filename(section_item: dict[str, Any], used_names: set[str]) -> str:
+    fallback = str(section_item.get("filename") or "s0001.md")
+    title = str(section_item.get("title") or "").strip()
+    if not title or title.lower() == "section":
+        name = fallback
+    else:
+        stem = re.sub(r'[<>:"/\\|?*]+', "_", title).strip()[:80] or Path(fallback).stem
+        name = stem if stem.lower().endswith(".md") else f"{stem}.md"
+    if name in used_names:
+        stem = Path(name).stem
+        idx = 2
+        while f"{stem}_{idx}.md" in used_names:
+            idx += 1
+        name = f"{stem}_{idx}.md"
+    used_names.add(name)
+    return name
+
+
+def _import_section_docs_to_folder(
+    tenant_id: str,
+    owner_username: str,
+    folder_id: str,
+    private_collection_id: str,
+    sections_dir: Path,
+    section_items: list[dict[str, Any]],
+    *,
+    package_id: str,
+) -> list[str]:
+    """将 kb/sections 下每个小 md 注册为 user doc 并绑定到目标文件夹。"""
+    from backend.services.kb_acl_store import set_resource_assignments
+    from backend.services.kb_documents import _create_user_document_record
+    from backend.services.kb_folders import bind_resource_to_folder
+
+    doc_ids: list[str] = []
+    used_names: set[str] = set()
+    for item in section_items:
+        fn = str(item.get("filename") or "").strip()
+        if not fn:
+            continue
+        section_path = sections_dir / fn
+        if not section_path.exists():
+            continue
+        md_bytes = section_path.read_bytes()
+        display_name = _section_display_filename(item, used_names)
+        doc_meta = _create_user_document_record(
+            tenant_id,
+            owner_username,
+            filename=display_name,
+            raw=md_bytes,
+            initial_status="active",
+        )
+        doc_id = str(doc_meta["doc_id"])
+        doc_root = Path(settings.upload_dir).resolve() / "kb_user_documents" / tenant_id / doc_id
+        archive_dir = doc_root / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        (archive_dir / "full.md").write_bytes(md_bytes)
+        mini_manifest = {
+            "section_id": item.get("section_id"),
+            "title": item.get("title"),
+            "filename": fn,
+            "parent_package_id": package_id,
+            "section_count": 1,
+        }
+        with get_db() as db:
+            db.execute(
+                text(
+                    "UPDATE kb_user_documents SET status='active', manifest_json=:mj WHERE tenant_id=:t AND doc_id=:d"
+                ),
+                {
+                    "t": tenant_id,
+                    "d": doc_id,
+                    "mj": json.dumps(mini_manifest, ensure_ascii=False),
+                },
+            )
+        bind_resource_to_folder(
+            tenant_id,
+            folder_id=folder_id,
+            resource_type="doc",
+            resource_id=doc_id,
+        )
+        set_resource_assignments(
+            tenant_id,
+            resource_type="doc",
+            resource_id=doc_id,
+            collection_ids=[private_collection_id],
+        )
+        doc_ids.append(doc_id)
+    return doc_ids
 
 
 def _auto_organize_to_private_kb(
@@ -253,24 +386,21 @@ def _auto_organize_to_private_kb(
     section_items: list[dict[str, Any]],
     *,
     original_filename: str = "",
-    full_md_path: Path | None = None,
+    sections_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     """
     Auto-create a folder in the owner's Private kb_kind and bind the RAG package.
-    Also creates a kb_user_documents record from the full markdown so the folder
-    shows actual content in the knowledge base UI.
+    Import every kb/sections/*.md as its own user document into that folder.
     Returns folder info or None on failure (non-blocking).
     """
     from backend.services.kb_collections import dynamic_private_collection_id
     from backend.services.kb_acl_store import set_private_owner, set_resource_assignments
     from backend.services.kb_folders import create_folder, bind_resource_to_folder, set_folder_collections
-    from backend.services.kb_documents import _create_user_document_record
 
     try:
         private_collection_id = dynamic_private_collection_id(owner_username)
         set_private_owner(tenant_id, private_collection_id, owner_username)
 
-        # Folder name: use original PDF filename, trimmed
         folder_title = (original_filename or "未命名").strip()
         folder_name = _auto_organization_folder_name(folder_title)
         folder_info = create_folder(
@@ -284,7 +414,6 @@ def _auto_organize_to_private_kb(
         folder_id = folder_info["folder_id"]
         set_folder_collections(tenant_id, folder_id=folder_id, collection_ids=[private_collection_id])
 
-        # Bind RAG package to folder
         bind_resource_to_folder(
             tenant_id,
             folder_id=folder_id,
@@ -298,60 +427,20 @@ def _auto_organize_to_private_kb(
             collection_ids=[private_collection_id],
         )
 
-        # Create a kb_user_documents record for the full markdown content
-        # so the folder shows actual content in the knowledge base UI
-        user_doc_id = ""
-        if full_md_path and full_md_path.exists():
-            try:
-                md_text = full_md_path.read_text(encoding="utf-8", errors="replace")
-                md_bytes = md_text.encode("utf-8")
-                safe_name = Path(folder_title).name.replace("..", "_") or "parsed"
-                if not safe_name.endswith(".md"):
-                    safe_name = f"{safe_name}.md"
-                doc_meta = _create_user_document_record(
-                    tenant_id,
-                    owner_username,
-                    filename=safe_name,
-                    raw=md_bytes,
-                    initial_status="active",  # already parsed
-                )
-                user_doc_id = str(doc_meta["doc_id"])
-                # Bind the user document to this folder
-                bind_resource_to_folder(
-                    tenant_id,
-                    folder_id=folder_id,
-                    resource_type="doc",
-                    resource_id=user_doc_id,
-                )
-                set_resource_assignments(
-                    tenant_id,
-                    resource_type="doc",
-                    resource_id=user_doc_id,
-                    collection_ids=[private_collection_id],
-                )
-                # Write the markdown content to the user document's archive
-                from pathlib import Path as _Path
-                doc_root = _Path(settings.upload_dir).resolve() / "kb_user_documents" / tenant_id / user_doc_id
-                archive_dir = doc_root / "archive"
-                archive_dir.mkdir(parents=True, exist_ok=True)
-                (archive_dir / "full.md").write_text(md_text, encoding="utf-8")
-                # Update status to packaged/active
-                from backend.database import get_db
-                from sqlalchemy import text
-                with get_db() as db:
-                    db.execute(
-                        text("UPDATE kb_user_documents SET status='active', manifest_json=:mj WHERE tenant_id=:t AND doc_id=:d"),
-                        {"t": tenant_id, "d": user_doc_id, "mj": json.dumps(manifest, ensure_ascii=False)},
-                    )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning("Failed to create user doc for bigpdf task %s: %s", task_id, e)
+        section_doc_ids: list[str] = []
+        if sections_dir and sections_dir.exists() and section_items:
+            section_doc_ids = _import_section_docs_to_folder(
+                tenant_id,
+                owner_username,
+                folder_id,
+                private_collection_id,
+                sections_dir,
+                section_items,
+                package_id=package_id,
+            )
 
-        # Update task with folder info
         from backend.services.kb_tasks import update_task
-        detail_parts = [f"folder:{folder_id}"]
-        if user_doc_id:
-            detail_parts.append(f"user_doc:{user_doc_id}")
+        detail_parts = [f"folder:{folder_id}", f"section_docs:{len(section_doc_ids)}"]
         update_task(tenant_id, task_id, detail="; ".join(detail_parts))
 
         return {
@@ -359,6 +448,7 @@ def _auto_organize_to_private_kb(
             "folder_name": folder_name,
             "package_id": package_id,
             "private_collection_id": private_collection_id,
+            "section_doc_ids": section_doc_ids,
         }
     except Exception as e:
         # Auto-organization is best-effort; don't fail the whole task

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from sqlalchemy import text
@@ -72,6 +73,63 @@ def generate_chat_reply(
         out = post_json_with_guard(url=url, payload=payload, timeout_s=90.0, kind="ai_interaction.chat")
     msg = out.get("message") or {}
     return (msg.get("content") or "").strip() or "未能生成回答。"
+
+
+_COMPARE_LINE_KEYS = (
+    "营业收入",
+    "营业成本",
+    "营业利润",
+    "利润总额",
+    "净利润",
+    "税金及附加",
+    "期间费用",
+)
+
+
+def _query_wants_financial_compare(user_query: str) -> bool:
+    q = (user_query or "").replace(" ", "")
+    return bool(re.search(r"对比|比较|损益|两年|营收|利润", q))
+
+
+def _focus_financial_compare_excerpt(raw: str) -> str:
+    """大 chunk 中只保留损益表相关行，降低 LLM 超时。"""
+    s = (raw or "").strip()
+    if len(s) <= 6000:
+        return s
+    lines = s.splitlines()
+    keep: list[str] = []
+    for i, line in enumerate(lines):
+        if not any(k in line for k in _COMPARE_LINE_KEYS):
+            continue
+        lo = max(0, i - 1)
+        hi = min(len(lines), i + 2)
+        keep.extend(lines[lo:hi])
+    if not keep:
+        return s[:8000]
+    seen: set[str] = set()
+    out_lines: list[str] = []
+    for ln in keep:
+        if ln in seen:
+            continue
+        seen.add(ln)
+        out_lines.append(ln)
+    out = "\n".join(out_lines)
+    return out if len(out) <= 12000 else out[:12000]
+
+
+def _evidence_chunk_text_for_llm(raw: str, *, compare_focus: bool = False) -> str:
+    """RAG 入库 chunk 原文送入 LLM；仅当超过配置上限时截断并标注。"""
+    txt = (raw or "").strip()
+    if compare_focus and txt:
+        txt = _focus_financial_compare_excerpt(txt)
+    if not txt:
+        return ""
+    cap = int(getattr(settings, "kb_evidence_chunk_max_chars", 15000) or 15000)
+    if compare_focus:
+        cap = min(cap, 8000)
+    if len(txt) <= cap:
+        return txt
+    return f"{txt[:cap]}\n…（证据过长，已截断至 {cap} 字，完整 chunk 共 {len(txt)} 字）"
 
 
 def _load_doc_chunk_text(tenant_id: str, doc_id: str, chunk_id: str | None, chunk_seq_no: int | None) -> str | None:
@@ -161,8 +219,11 @@ def generate_answer_with_evidence(
     if not q:
         return "问题为空。"
 
+    compare_focus = _query_wants_financial_compare(q)
+    cite_limit = 4 if compare_focus else 6
+
     evidence_blocks: list[str] = []
-    for c in citations[:10]:
+    for c in citations[:cite_limit]:
         et = str(c.get("evidence_type") or "")
         if et == "doc_chunk":
             doc_id = str(c.get("doc_id") or "")
@@ -178,12 +239,18 @@ def generate_answer_with_evidence(
                             if c.get("chunk_id") and ch.get("chunk_id") == c.get("chunk_id"):
                                 txt = str(ch.get("text") or "")
                                 if txt:
-                                    evidence_blocks.append(f"[doc_chunk {doc_id}#{ch.get('chunk_id')}] {txt}")
+                                    evidence_blocks.append(
+                                        f"[doc_chunk {doc_id}#{ch.get('chunk_id')}] "
+                                        f"{_evidence_chunk_text_for_llm(txt, compare_focus=compare_focus)}"
+                                    )
                                     break
             # uploaded 文本
             txt2 = _load_doc_chunk_text(tenant_id, doc_id, str(chunk_id) if chunk_id else None, int(chunk_seq_no) if chunk_seq_no is not None else None)
             if txt2:
-                evidence_blocks.append(f"[doc_chunk {doc_id}#{chunk_id or chunk_seq_no}] {txt2[:1200]}")
+                evidence_blocks.append(
+                    f"[doc_chunk {doc_id}#{chunk_id or chunk_seq_no}] "
+                    f"{_evidence_chunk_text_for_llm(txt2, compare_focus=compare_focus)}"
+                )
 
         if et == "table_row":
             table_id = str(c.get("table_id") or "")
@@ -196,7 +263,9 @@ def generate_answer_with_evidence(
         "你是财务知识库问答助手。",
         "你必须严格只根据给定的证据回答；禁止编造任何未出现在证据中的数值或条款。",
         "如果证据不足以得出结论，请明确说明“不确定/缺少证据”，并指出需要什么证据。",
-        "回答要简洁、可执行；如涉及金额/日期/条款，优先引用证据中的原始字段或原句。",
+        "问营收/损益且未指定口径时，优先采用证据中的「合并利润表」；若仅命中母公司利润表，须先说明口径再报数。",
+        "回答结构：先一句话结论，再表格或要点列表，最后单独一段「说明」与「引用证据」（doc_id）。",
+        "使用 Markdown 表格时，表格前须空一行，表头下须有 |---|---| 分隔行；不要把长说明与表格写在同一行。",
     ]
     sa = (skill_addon or "").strip()
     if sa:
@@ -215,7 +284,7 @@ def generate_answer_with_evidence(
             messages=ev_msgs,
             tools=None,
             model=use_model,
-            timeout_s=90.0,
+            timeout_s=240.0,
             kind="ai_interaction.evidence_chat",
         )
     else:
@@ -226,7 +295,7 @@ def generate_answer_with_evidence(
         }
         base = _ollama_base()
         url = f"{base}/api/chat"
-        out = post_json_with_guard(url=url, payload=payload, timeout_s=90.0, kind="ai_interaction.evidence_chat")
+        out = post_json_with_guard(url=url, payload=payload, timeout_s=240.0, kind="ai_interaction.evidence_chat")
     msg = out.get("message") or {}
     return (msg.get("content") or "").strip() or "未能生成回答。"
 

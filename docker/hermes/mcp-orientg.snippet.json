@@ -1,0 +1,20 @@
+{
+  "mcp_servers": {
+    "orientg": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "-e",
+        "ORIENTG_USER_TOKEN",
+        "BACKEND_CONTAINER_NAME",
+        "python",
+        "-m",
+        "backend.mcp.orientg_server"
+      ],
+      "env": {
+        "ORIENTG_USER_TOKEN": "由 Hermes 按会话注入；若版本不支持，见 docs/hermes.md §3"
+      }
+    }
+  }
+}

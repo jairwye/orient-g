@@ -499,11 +499,16 @@ def init_kb_documents_tables() -> None:
             name TEXT NOT NULL,
             kind TEXT,
             scope_json TEXT NOT NULL DEFAULT '{}',
+            parent_folder_id TEXT,
             owner_username TEXT,
             created_by TEXT,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
+        """,
+        # 兼容已存在的 kb_folders 表：追加 parent_folder_id 列
+        """
+        ALTER TABLE kb_folders ADD COLUMN IF NOT EXISTS parent_folder_id TEXT
         """,
         """
         CREATE TABLE IF NOT EXISTS kb_folder_collections (
@@ -719,6 +724,15 @@ def init_kb_documents_tables() -> None:
         "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMP NULL",
         "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS last_error TEXT",
         "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS dedupe_key TEXT",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS file_name VARCHAR(255)",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS file_size BIGINT",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS page_count INTEGER",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS docling_task_id VARCHAR(255)",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS task_position INTEGER DEFAULT 0",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS estimated_duration INTEGER",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP NULL",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(100)",
+        "ALTER TABLE kb_tasks ADD COLUMN IF NOT EXISTS cancel_type VARCHAR(20)",
     ]
     with engine.connect() as conn:
         for sql in alter_sql:

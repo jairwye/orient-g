@@ -14,6 +14,8 @@ export type SmartPollOptions<T> = {
   errorCooldownMs: number;
   errorCooldownAfter: number;
   initialData?: T;
+  /** 轮询目标变化时重置（如 taskId）；勿用 load 函数引用判断。 */
+  pollKey?: string | number | null;
 };
 
 export type UseSmartPollResult<T> = {
@@ -48,6 +50,7 @@ export function useSmartPoll<T>(opts: SmartPollOptions<T>): UseSmartPollResult<T
     errorCooldownMs,
     errorCooldownAfter,
     initialData,
+    pollKey,
   } = opts;
 
   const [data, setData] = useState<T | undefined>(initialData);
@@ -62,6 +65,8 @@ export function useSmartPoll<T>(opts: SmartPollOptions<T>): UseSmartPollResult<T
   const forceRunRef = useRef(false);
 
   const enabledRef = useRef(enabled);
+  const loadRef = useRef(load);
+  const pollKeyRef = useRef<string | number | null | undefined>(undefined);
   const dataRef = useRef<T | undefined>(data);
   const errorCountRef = useRef(errorCount);
   const cooldownUntilRef = useRef<number | null>(cooldownUntil);
@@ -104,6 +109,10 @@ export function useSmartPoll<T>(opts: SmartPollOptions<T>): UseSmartPollResult<T
     return clampMs(businessActive ? activeMs : stableMs);
   }, [activeMs, data, isActive, stableMs]);
 
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
   const runOnce = useCallback(async () => {
     if (!mountedRef.current) return;
     if (!enabledRef.current) return;
@@ -120,7 +129,7 @@ export function useSmartPoll<T>(opts: SmartPollOptions<T>): UseSmartPollResult<T
     const seq = (runSeqRef.current += 1);
 
     try {
-      const next = await load();
+      const next = await loadRef.current();
       if (!mountedRef.current) return;
       if (seq !== runSeqRef.current) return;
 
@@ -151,7 +160,7 @@ export function useSmartPoll<T>(opts: SmartPollOptions<T>): UseSmartPollResult<T
     } finally {
       inFlightRef.current = false;
     }
-  }, [clearTimer, errorCooldownAfter, errorCooldownMs, isTerminal, load]);
+  }, [clearTimer, errorCooldownAfter, errorCooldownMs, isTerminal]);
 
   const trigger = useCallback(() => {
     if (!enabledRef.current) return;
@@ -171,6 +180,19 @@ export function useSmartPoll<T>(opts: SmartPollOptions<T>): UseSmartPollResult<T
     };
   }, []);
 
+  // pollKey 变化（如切换 taskId）时清空旧数据，避免 terminal 状态阻止新任务轮询
+  useEffect(() => {
+    if (pollKey === undefined) return;
+    if (pollKeyRef.current === pollKey) return;
+    pollKeyRef.current = pollKey;
+    clearTimer();
+    runSeqRef.current += 1;
+    setData(undefined);
+    setErrorCount(0);
+    setCooldownUntil(null);
+    setPhase("idle");
+  }, [clearTimer, pollKey]);
+
   useEffect(() => {
     if (!enabled || terminalNow) {
       clearTimer();
@@ -179,14 +201,8 @@ export function useSmartPoll<T>(opts: SmartPollOptions<T>): UseSmartPollResult<T
       setPhase("stopped");
       return;
     }
-
-    if (phase === "stopped") setPhase("idle");
-
-    return () => {
-      clearTimer();
-      runSeqRef.current += 1;
-    };
-  }, [clearTimer, enabled, phase, terminalNow]);
+    setPhase((prev) => (prev === "stopped" ? "idle" : prev));
+  }, [clearTimer, enabled, terminalNow]);
 
   useEffect(() => {
     if (!enabled) return;

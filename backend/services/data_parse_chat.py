@@ -1015,8 +1015,8 @@ def generate_analysis(session_id: str) -> str:
             url = f"{base}/api/generate"
             prompt = f"{system}\n\n{user}"
             payload = {"model": model, "prompt": prompt, "stream": False}
-            out_json = post_json_with_guard(url=url, payload=payload, timeout_s=60.0, kind="data_parse.analysis")
-            out = (out_json.get("response") or "").strip()
+        out_json = post_json_with_guard(url=url, payload=payload, timeout_s=60.0, kind="data_parse.analysis")
+        out = (out_json.get("response") or "").strip()
         return out or "未能生成解读。"
     except Exception as e:
         logger.warning("首轮解读 LLM 失败: %s", e)

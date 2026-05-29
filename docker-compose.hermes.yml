@@ -1,0 +1,38 @@
+# Orient-G + Hermes Agent（overlay）
+# 用法（项目根目录）：
+#   docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d
+#
+# 前置：
+#   1. 复制 docker/hermes/env.hermes.example → .env.hermes 并填写 LLM / API_SERVER_KEY
+#   2. 将 docker/hermes/mcp-orientg.snippet.json 合并进 Hermes 配置（见 docs/hermes.md §3）
+#   3. 在 .env 中设置 HERMES_ENABLED=true、HERMES_BASE_URL=http://hermes-agent:8642、HERMES_INTERNAL_TOKEN=<同 API_SERVER_KEY>
+
+services:
+  hermes-agent:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    pull_policy: ${HERMES_PULL_POLICY:-if_not_present}
+    env_file:
+      - .env.hermes
+    volumes:
+      - hermes_state:/root/.hermes
+      # MCP 通过 docker exec 调 backend 时需访问宿主机 Docker（生产请评估安全策略）
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "8642"
+    mem_limit: ${HERMES_MEM_LIMIT:-8g}
+    cpus: ${HERMES_CPUS:-4.0}
+    restart: unless-stopped
+    # 不映射 ports 到宿主机；仅 compose 内网 backend → hermes-agent:8642
+
+  backend:
+    environment:
+      HERMES_ENABLED: ${HERMES_ENABLED:-true}
+      HERMES_BASE_URL: ${HERMES_BASE_URL:-http://hermes-agent:8642}
+      HERMES_INTERNAL_TOKEN: ${HERMES_INTERNAL_TOKEN:-}
+      HERMES_MODEL: ${HERMES_MODEL:-hermes-agent}
+    depends_on:
+      hermes-agent:
+        condition: service_started
+
+volumes:
+  hermes_state: {}

@@ -2,6 +2,8 @@
 
 import { create } from "zustand";
 
+import type { BigpdfTaskSummary } from "../lib/bigpdfTaskUtils";
+
 export type BigpdfTaskStage =
   | "queued"
   | "uploading"
@@ -39,6 +41,10 @@ export interface BigpdfTaskInfo {
     folderPath: string;
   };
   error?: string;
+  displayLabel?: string;
+  isProcessing?: boolean;
+  queuePosition?: number | null;
+  isWaitingForSlot?: boolean;
 }
 
 export interface BigpdfSystemStatus {
@@ -97,6 +103,9 @@ interface BigpdfState {
   // Queue status
   queueStatus: BigpdfQueueStatus | null;
 
+  // Recent task summaries (from background feed)
+  myTaskSummaries: BigpdfTaskSummary[];
+
   // Global notifications
   notifications: BigpdfNotification[];
 
@@ -111,6 +120,7 @@ interface BigpdfState {
 
   setSystemStatus: (status: BigpdfSystemStatus | null) => void;
   setQueueStatus: (status: BigpdfQueueStatus | null) => void;
+  setMyTaskSummaries: (summaries: BigpdfTaskSummary[]) => void;
 
   addNotification: (notification: Omit<BigpdfNotification, "id" | "createdAt">) => void;
   removeNotification: (id: string) => void;
@@ -130,6 +140,7 @@ export const useBigpdfStore = create<BigpdfState>((set) => ({
   activeTask: null,
   systemStatus: null,
   queueStatus: null,
+  myTaskSummaries: [],
   notifications: [],
   isProgressCardCollapsed: false,
   isUploadModalOpen: false,
@@ -148,6 +159,8 @@ export const useBigpdfStore = create<BigpdfState>((set) => ({
   setSystemStatus: (status) => set({ systemStatus: status }),
 
   setQueueStatus: (status) => set({ queueStatus: status }),
+
+  setMyTaskSummaries: (summaries) => set({ myTaskSummaries: summaries }),
 
   addNotification: (notification) =>
     set((state) => ({
@@ -253,13 +266,16 @@ export const mockNotification = (
 // Progress is calculated based on stage + time within stage
 // queued: 0%, uploading: 0-5%, parsing: 5-90% (time-based), packaging: 90-100%, completed: 100%
 export function calculateProgress(task: BigpdfTaskInfo): number {
+  if (task.status === "running" && task.stage === "queued") {
+    return 10;
+  }
   switch (task.stage) {
     case "queued":
-      return 0;
-    
+      return task.status === "running" ? 10 : 0;
+
     case "uploading":
       return 2; // Just started, show minimal progress
-    
+
     case "parsing": {
       // Parsing is the main time-consuming stage (5% to 90%)
       // Calculate based on elapsed time vs estimated total time

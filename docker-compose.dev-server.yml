@@ -1,0 +1,17 @@
+# 生产/预发机「快速迭代 backend」overlay（Linux + Docker，勿在 Windows 本机使用）
+#
+# 用途：改 backend/ 下 Python 后 git pull，无需每次 build/push GHCR 镜像即可实测 Hermes + MCP。
+# 依赖：镜像内已安装 requirements-base.txt（含 mcp）；若新增 pip 包仍需 rebuild 镜像一次。
+#
+# 用法（项目根目录，与 hermes 栈一起）：
+#   docker compose -f docker-compose.yml -f docker-compose.hermes.yml -f docker-compose.dev-server.yml up -d backend
+#
+# 生产封版前请去掉本 overlay，恢复仅使用 registry 镜像。
+
+services:
+  backend:
+    volumes:
+      - ./backend:/app/backend
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      HERMES_DEV_MOCK: "false"

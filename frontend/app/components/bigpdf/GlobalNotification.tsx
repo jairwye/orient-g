@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { X, CheckCircle, Info, AlertTriangle, AlertCircle } from "lucide-react";
+import { CHART_POSITIVE_CLASS } from "../../lib/business_chart_colors";
 import { useBigpdfStore, type BigpdfNotification } from "../../stores/bigpdfStore";
 
 interface GlobalNotificationProps {
@@ -67,11 +68,11 @@ function NotificationItem({
 }) {
   const config = {
     success: {
-      icon: <CheckCircle className="h-5 w-5 text-emerald-400" />,
-      borderColor: "border-emerald-800/50",
-      bgColor: "bg-emerald-950/90",
-      titleColor: "text-emerald-200",
-      messageColor: "text-emerald-300/80",
+      icon: <CheckCircle className={`h-5 w-5 ${CHART_POSITIVE_CLASS.statusText}`} />,
+      borderColor: CHART_POSITIVE_CLASS.toastBorder,
+      bgColor: CHART_POSITIVE_CLASS.toastBg,
+      titleColor: CHART_POSITIVE_CLASS.toastTitle,
+      messageColor: CHART_POSITIVE_CLASS.toastMessage,
     },
     info: {
       icon: <Info className="h-5 w-5 text-blue-400" />,

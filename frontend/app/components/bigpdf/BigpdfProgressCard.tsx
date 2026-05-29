@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp, FileText, Clock, AlertTriangle, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { CHART_POSITIVE_CLASS } from "../../lib/business_chart_colors";
 import { useBigpdfStore, calculateProgress, formatDuration, type BigpdfTaskInfo } from "../../stores/bigpdfStore";
 
 interface BigpdfProgressCardProps {
@@ -40,10 +41,16 @@ export function BigpdfProgressCard({
   const stageLabels: Record<string, string> = {
     queued: "排队中",
     uploading: "上传中",
+    running: "解析中",
     parsing: "解析中",
     packaging: "打包中",
     completed: "已完成",
   };
+
+  const stageText =
+    task.displayLabel ||
+    stageLabels[task.stage] ||
+    (task.isProcessing ? "解析中" : task.status);
 
   const statusConfig: Record<
     string,
@@ -71,8 +78,8 @@ export function BigpdfProgressCard({
     },
     completed: {
       icon: <CheckCircle className="h-4 w-4" />,
-      color: "text-emerald-400",
-      bgColor: "bg-emerald-500",
+      color: CHART_POSITIVE_CLASS.statusText,
+      bgColor: CHART_POSITIVE_CLASS.statusBg,
     },
     failed: {
       icon: <XCircle className="h-4 w-4" />,
@@ -96,7 +103,7 @@ export function BigpdfProgressCard({
     },
   };
 
-  const config = statusConfig[task.status] || statusConfig.running;
+  const config = statusConfig[task.isProcessing ? "parsing" : task.stage] || statusConfig[task.status] || statusConfig.running;
 
   return (
     <div
@@ -111,7 +118,7 @@ export function BigpdfProgressCard({
           </span>
           <span className={`flex items-center gap-1 text-xs ${config.color}`}>
             {config.icon}
-            {stageLabels[task.stage] || task.status}
+            {stageText}
           </span>
         </div>
         <button
@@ -165,7 +172,7 @@ export function BigpdfProgressCard({
 
           {/* Result */}
           {task.status === "completed" && task.result && (
-            <div className="text-xs text-emerald-400 bg-emerald-950/30 rounded px-2 py-1.5">
+            <div className={`text-xs rounded px-2 py-1.5 ${CHART_POSITIVE_CLASS.resultBox}`}>
               已生成 {task.result.documentCount} 个知识片段
             </div>
           )}

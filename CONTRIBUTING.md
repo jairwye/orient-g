@@ -1,14 +1,23 @@
 # Orient-G 协作开发指南（Contributing）
 
-本文档用于多人协作开发时的**统一口径**，确保新同事能快速上手、避免环境/迁移/发布踩坑。  
-说明：`规则/`、`规划/` 为内部文档目录，按仓库约定不上传到 GitHub；协作所需的公开约定以本文档为准。
+本文档用于多人协作开发时的**统一口径**，确保新同事能快速上手、避免环境/迁移/发布踩坑。
+
+| 你想… | 读哪里 |
+|--------|--------|
+| 本地安装、启动、迁移 | `README.md` |
+| 分支、PR、提交、校验 | **本文档** |
+| API 契约 | [`specs/api/api-contract.md`](specs/api/api-contract.md) |
+| **UI/功能规制与实施计划** | [`specs/README.md`](specs/README.md) |
+| 排查手册、参考截图 | [`docs/README.md`](docs/README.md) |
+| 强制约束、版本路线图（内网） | `规则/`、`规划/`（不上传 GitHub，见各目录 `文档索引.md`） |
 
 ---
 
 ## 1. 快速开始（建议顺序）
 
 - 先读 `README.md` 完成本地环境与启动（前端/后端/本机 PostgreSQL）。
-- 再读 `docs/api-contract.md`：理解前后端契约与模块边界。
+- 再读 [`specs/api/api-contract.md`](specs/api/api-contract.md)：理解前后端契约与模块边界。
+- 若你要改 **UI 或较大功能**：先查 [`specs/`](specs/README.md) 是否已有规制/计划（例如 [`specs/ui/ai-interaction.md`](specs/ui/ai-interaction.md)）。
 - 若你要改数据库结构：先读 `README.md` 的「数据库结构迁移（Alembic）」并遵守下文「DB 迁移约束」。
 
 ---
@@ -75,7 +84,9 @@
 
 ## 6. 文档与契约同步（协作必做）
 
-- API 形状或语义变更：同步更新 `docs/api-contract.md`
+- API 形状或语义变更：同步更新 [`specs/api/api-contract.md`](specs/api/api-contract.md)
+- **UI 或页面级行为变更**：先更新 [`specs/`](specs/README.md) 中对应规制（如 `specs/ui/<page>.md`），再改 `frontend/`
+- 功能规制 / 实施计划：写在 `specs/features/`、`specs/plans/`，勿在 `docs/superpowers/` 新增正文
 - 新增/变更环境变量：同步更新 `.env.example` 与 `README.md` 中对应说明
 - 发版变更：更新 `changelog.md`（并在 Unreleased/版本条目里注明是否有 DB 迁移）
 
@@ -97,7 +108,7 @@
 
 以下安装在**开发者本机 Cursor** 目录或插件缓存中，用于本地写代码、跑计划文档中的 agentic 工作流提示等，**不属于**上一节的产品登记范围，**也无需**写入 `manifest.json`：
 
-- **Cursor Superpowers 等插件**及其随插件分发的技能（如文档 `docs/superpowers/plans/` 中引用的 `superpowers:*` 工作流）。
+- **Cursor Superpowers 等插件**及其随插件分发的技能（如 `superpowers:*` 工作流；产品规制已迁到 [`specs/plans/`](specs/plans/)）。
 - **[gstack](https://github.com/garrytan/gstack)**（若个人安装）：与本仓库产品技能**分列**；**不得**将 gstack 登记进 `manifest.json`，**不得**将 gstack 作为 Orient-G 内网交付物或运行时依赖打包进发布产物。
 
 ### 7.3 使用提醒
@@ -109,7 +120,10 @@
 ## 8. 常见问题（FAQ）
 
 - **为什么我看不到 `规则/`、`规划/`？**  
-  这两个目录按仓库约定不上传到 GitHub；对外协作请以 `README.md`、`docs/`、`CONTRIBUTING.md` 为准。
+  这两个目录按仓库约定不上传到 GitHub；对内见 `规则/文档索引.md`、`规划/文档索引.md`。对外协作请以 `README.md`、`specs/`、`docs/`、`CONTRIBUTING.md` 为准。
+
+- **`CONTRIBUTING.md` 是干什么的？**  
+  对外（含 GitHub）协作的**操作手册**：怎么装环境、怎么提 PR、怎么跑 lint/test、DB 迁移硬约束、文档写在哪。不替代 `规则/` 里的安全与架构约束，也不替代 `specs/` 里的 UI 规制。
 
 - **为什么 Windows 下没问题，部署到 Linux/容器就报找不到文件？**  
   常见原因是路径大小写不一致。仓库里版本记录文件为 `changelog.md`（全小写），请按实际文件名引用。

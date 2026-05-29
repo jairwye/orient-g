@@ -49,6 +49,18 @@ def _require_admin(request: Request) -> str:
     return un
 
 
+def _require_equity_admin(request: Request) -> str:
+    """股权全景模块：仅管理员（不含管理层角色）。"""
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    u = get_user(un) or {}
+    roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
+    if "admin" not in roles:
+        raise HTTPException(status_code=403, detail="forbidden")
+    return un
+
+
 def _now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -359,7 +371,8 @@ async def admin_import_targets_csv(
 
 
 @router.get("/snapshots/latest")
-def latest_snapshot() -> dict[str, Any]:
+def latest_snapshot(request: Request) -> dict[str, Any]:
+    _require_equity_admin(request)
     """
     返回最近创建的 snapshot_name（用于前端默认选中最新批次）。
     """
@@ -953,7 +966,8 @@ async def admin_import_tianyancha_xlsx(
 
 
 @router.get("/targets")
-def targets(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
+def targets(request: Request, snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
+    _require_equity_admin(request)
     with get_db() as db:
         rows = db.execute(
             text(
@@ -1111,7 +1125,8 @@ def _dedupe_graph_by_credit_code(
 
 
 @router.get("/targets/geo")
-def targets_geo(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
+def targets_geo(request: Request, snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
+    _require_equity_admin(request)
     """
     目标公司清单（含地理信息），用于前端地图/聚合展示。
 
@@ -1153,10 +1168,12 @@ def targets_geo(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]
 
 @router.get("/entities/geo")
 def entities_geo(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     limit: int = Query(5000, ge=1, le=20000),
     include_unknown: bool = Query(True),
 ) -> dict[str, Any]:
+    _require_equity_admin(request)
     """
     全量主体（含地理信息），用于 equity 地图散点（每家公司一个点）。
     - 从 equity_entities 读取 province/city/reg_location（按市落点优先）
@@ -1211,10 +1228,12 @@ def entities_geo(
 
 @router.get("/entities/search")
 def entities_search(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     q: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=50),
 ) -> dict[str, Any]:
+    _require_equity_admin(request)
     qq = f"%{q.strip()}%"
     with get_db() as db:
         rows = db.execute(
@@ -1248,7 +1267,10 @@ def entities_search(
 
 
 @router.get("/entities/{entity_id}")
-def entity_detail(entity_id: str, snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
+def entity_detail(
+    request: Request, entity_id: str, snapshot_name: str = Query(..., min_length=1)
+) -> dict[str, Any]:
+    _require_equity_admin(request)
     with get_db() as db:
         row = db.execute(
             text(
@@ -1279,6 +1301,7 @@ def entity_detail(entity_id: str, snapshot_name: str = Query(..., min_length=1))
 
 @router.get("/graph/ownership")
 def graph_ownership(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     target_entity_id: str = Query(..., min_length=1),
     direction: str = Query("down", pattern="^(up|down)$"),
@@ -1286,6 +1309,7 @@ def graph_ownership(
     max_depth: int = Query(3, ge=1, le=10),
     max_nodes: int = Query(500, ge=50, le=5000),
 ) -> dict[str, Any]:
+    _require_equity_admin(request)
     """
     MVP：用 BFS 展开子图，返回 nodes/edges。
     - down：from -> to
@@ -1441,16 +1465,19 @@ def graph_ownership(
 
 @router.get("/graph/panorama")
 def graph_panorama(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     target_entity_id: str = Query(..., min_length=1),
     min_pct: float = Query(0.2, ge=0.0, le=1.0),
     max_depth: int = Query(4, ge=1, le=10),
     max_nodes: int = Query(1200, ge=50, le=10000),
 ) -> dict[str, Any]:
+    _require_equity_admin(request)
     """
     全景子图：上游 + 下游同时展开并合并（用于“从最上到最下”的架构图展示）。
     """
     down = graph_ownership(
+        request=request,
         snapshot_name=snapshot_name,
         target_entity_id=target_entity_id,
         direction="down",
@@ -1459,6 +1486,7 @@ def graph_panorama(
         max_nodes=max_nodes,
     )
     up = graph_ownership(
+        request=request,
         snapshot_name=snapshot_name,
         target_entity_id=target_entity_id,
         direction="up",
@@ -1530,7 +1558,8 @@ def graph_panorama(
 
 
 @router.get("/analysis/summary")
-def analysis_summary(snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
+def analysis_summary(request: Request, snapshot_name: str = Query(..., min_length=1)) -> dict[str, Any]:
+    _require_equity_admin(request)
     with get_db() as db:
         geo_rows = db.execute(
             text(
@@ -1578,6 +1607,7 @@ def analysis_summary(snapshot_name: str = Query(..., min_length=1)) -> dict[str,
 
 @router.get("/analysis/compare")
 def analysis_compare(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     entity_id_a: str = Query(..., min_length=1),
     entity_id_b: str = Query(..., min_length=1),
@@ -1585,10 +1615,12 @@ def analysis_compare(
     max_depth: int = Query(3, ge=1, le=10),
     max_nodes: int = Query(500, ge=50, le=5000),
 ) -> dict[str, Any]:
+    _require_equity_admin(request)
     """
     MVP 对比：用同一组参数展开 A/B 的子图，然后计算交集与差异统计。
     """
     ga = graph_ownership(
+        request=request,
         snapshot_name=snapshot_name,
         target_entity_id=entity_id_a,
         direction="up",
@@ -1597,6 +1629,7 @@ def analysis_compare(
         max_nodes=max_nodes,
     )
     gb = graph_ownership(
+        request=request,
         snapshot_name=snapshot_name,
         target_entity_id=entity_id_b,
         direction="up",
@@ -1644,6 +1677,7 @@ def analysis_compare(
 
 @router.get("/export/subgraph")
 def export_subgraph(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     target_entity_id: str = Query(..., min_length=1),
     direction: str = Query("down", pattern="^(up|down)$"),
@@ -1651,7 +1685,9 @@ def export_subgraph(
     max_depth: int = Query(3, ge=1, le=10),
     max_nodes: int = Query(500, ge=50, le=5000),
 ) -> dict[str, Any]:
+    _require_equity_admin(request)
     payload = graph_ownership(
+        request=request,
         snapshot_name=snapshot_name,
         target_entity_id=target_entity_id,
         direction=direction,
@@ -1666,9 +1702,11 @@ def export_subgraph(
 
 @router.get("/export/csv")
 def export_csv(
+    request: Request,
     snapshot_name: str = Query(..., min_length=1),
     type: str = Query(..., pattern="^(entities|equity_edges|targets)$"),
 ) -> StreamingResponse:
+    _require_equity_admin(request)
     filename = f"{type}_{snapshot_name}.csv"
     with get_db() as db:
         if type == "entities":

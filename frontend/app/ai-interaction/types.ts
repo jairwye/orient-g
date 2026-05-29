@@ -1,9 +1,54 @@
 // ai-interaction 页面的类型定义（从 page.tsx 提取以减少单文件体积、加速编译）
 export type Citation = Record<string, unknown>;
 
+/** Agent 页 KB 分流：快速 / 标准 / 深度 */
+export type AgentMode = "fast" | "standard" | "deep";
+
+export type AgentTraceStep = {
+  at: number;
+  kind: "status" | "tool" | "thinking" | "error" | "meta";
+  message: string;
+  step?: string;
+  /** Hermes `hermes.tool.progress` 关联 id */
+  toolCallId?: string;
+  toolStatus?: "running" | "completed";
+  emoji?: string;
+  /** Hermes 工具名（如 terminal、orientg_kb_ask） */
+  tool?: string;
+};
+
+/** SSE `evidence_pack` 精简字段（与后端 pack_summary_for_sse 一致） */
+export type EvidencePackSummary = {
+  task_type?: string;
+  gaps?: string[];
+  coverage_score?: number;
+  retrieval_queries?: string[];
+};
+
+export type AgentMeta = {
+  agent_route?: string;
+  /** 0=Tier0 本地综合 | 1=hermes_lite | 2=hermes_full */
+  agent_tier?: number;
+  evidence_pack?: EvidencePackSummary;
+  hermes_used?: boolean;
+  kb_fast_path?: boolean;
+  hermes_fallback?: boolean;
+  synthesis?: string;
+  llm_model?: string;
+  /** Hermes 流式通道：chat_completions | runs */
+  hermes_stream_mode?: string;
+};
+
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  /** @deprecated 使用 agentTrace；保留读取旧会话 */
+  streamStatus?: string[];
+  /** Agent 执行过程（流式追加，完成后保留于历史） */
+  agentTrace?: AgentTraceStep[];
+  agentMeta?: AgentMeta;
+  /** 对话页 RAG：检索摘要（与 Agent pack 同结构） */
+  evidence_pack?: EvidencePackSummary;
   citations?: Citation[];
   deny_reason?: string;
   chart_spec?: Record<string, unknown> | null;
@@ -25,6 +70,12 @@ export type ComposerAttachment = {
 export type ChatSession = {
   id: string;
   title: string;
+  /** chat=普通对话；agent=Agent（/api/agent/chat） */
+  session_mode?: "chat" | "agent";
+  /** Agent 多轮时 Hermes 会话 id（仅 session_mode=agent） */
+  hermes_session_id?: string | null;
+  /** 列表展示顺序（创建时间），切换/激活会话时不应改动 */
+  created_at?: number;
   updated_at: number;
   messages: ChatMessage[];
   attachments?: Array<Omit<ComposerAttachment, "phase" | "progress"> & { phase: "done" | "error"; progress?: number }>;
@@ -87,6 +138,7 @@ export type KnowledgeCollection = {
   department_id?: string;
   project_id?: string;
   owner_user_id?: string;
+  doc_count?: number;
 };
 
 export type KnowledgeTable = {
@@ -101,6 +153,7 @@ export type KnowledgeFolder = {
   folder_id: string;
   name: string;
   collection_ids: string[];
+  doc_count?: number;
 };
 
 export type KnowledgeOptionsResponse = {
@@ -119,6 +172,8 @@ export type AskResponse = {
   reply?: string;
   citations?: Citation[];
   llm_model?: string;
+  read_mode?: string;
+  evidence_pack?: EvidencePackSummary;
 };
 
 export type ChartSpecLike = {

@@ -3,9 +3,9 @@
 
 设计思路（与看板等模块一致）：
 - 先定「标准结构」：GET /api/business/overview 的响应形状固定（stats、profitTrend、flowCompare、
-  profitCompare），见 docs/api-contract.md「经营数据标准结构」。前端与 ECharts 只依赖该结构。
+  profitCompare），见 specs/api/api-contract.md「经营数据标准结构」。前端与 ECharts 只依赖该结构。
 - 解析层只做「数据源 → 标准结构」的映射：本模块当前数据源为 uploads/business.xlsx，_parse_excel
-  按 api-contract 中的「Excel 映射规则」将单张表区块内容填到上述四块；若日后改为 DB 或多表 Excel，
+  按 specs/api/api-contract 中的「Excel 映射规则」将单张表区块内容填到上述四块；若日后改为 DB 或多表 Excel，
   仅调整映射逻辑即可，标准结构不变。
 - 映射规则可扩展：Excel 表格式变化时，在文档中更新映射规则并在此处实现，不改变 overview 的 JSON 字段。
 """
@@ -49,7 +49,7 @@ def _num(row: tuple, i: int) -> float:
 
 
 def _empty_overview() -> dict:
-    """空结构（与 api-contract 一致），供无数据或解析失败时返回，及 _parse_excel 初始化。"""
+    """空结构（与 specs/api/api-contract 一致），供无数据或解析失败时返回，及 _parse_excel 初始化。"""
     return {
         "stats": [
             {"title": "流水", "value": "—", "desc": "万元", "completionRatio": "—", "targetValue": "—"},
@@ -65,7 +65,7 @@ def _empty_overview() -> dict:
 def _parse_excel(path: Path) -> dict:
     """
     将 Excel 映射为经营数据标准结构（stats / profitTrend / flowCompare / profitCompare）。
-    映射规则见 docs/api-contract.md「Excel → 标准结构的映射规则」；当前实现为单张表区块格式。
+    映射规则见 specs/api/api-contract.md「Excel → 标准结构的映射规则」；当前实现为单张表区块格式。
     若文件不存在或解析异常，返回 _empty_overview()，保证响应形状始终符合契约。
     """
     try:

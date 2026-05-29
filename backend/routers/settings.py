@@ -147,6 +147,15 @@ def _default_users() -> list:
     ]
 
 
+def _try_load_users_from_pg() -> list | None:
+    """从 PostgreSQL 读取用户；失败返回 None 供调用方回退 JSON。"""
+    try:
+        users = pg_list_users()
+        return users if users else _default_users().copy()
+    except Exception:
+        return None
+
+
 def _load_settings() -> dict:
     p = _settings_path()
     defaults = {
@@ -156,7 +165,9 @@ def _load_settings() -> dict:
         "auth_enabled": True,  # 默认始终鉴权，不再提供关闭登录
     }
     if not p.exists():
-        return defaults.copy()
+        out = defaults.copy()
+        out["users"] = _try_load_users_from_pg() or _default_users().copy()
+        return out
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         out = defaults.copy()
@@ -172,39 +183,39 @@ def _load_settings() -> dict:
         if isinstance(data.get("auth_enabled"), bool):
             out["auth_enabled"] = data["auth_enabled"]
         # 用户主数据来源改为 PostgreSQL；读取失败时回退 JSON（迁移期容错）
-        try:
-            users = pg_list_users()
-            out["users"] = users if users else _default_users().copy()
-        except Exception:
-            # 回退旧逻辑
-            if isinstance(data.get("users"), list) and len(data["users"]) > 0:
-                out["users"] = []
-                for u in data["users"]:
-                    if isinstance(u, dict) and isinstance(u.get("username"), str) and isinstance(u.get("password_hash"), str):
-                        un = u["username"].strip()
-                        if USERNAME_PATTERN.fullmatch(un) and len((u.get("password_hash") or "").strip()) > 0:
-                            roles = u.get("roles")
-                            if not isinstance(roles, list):
-                                roles = [ROLE_ADMIN]
-                            else:
-                                roles = [str(x).strip() for x in roles if str(x).strip()]
-                            dept = (u.get("department") or "").strip() if isinstance(u.get("department"), str) else ""
-                            out["users"].append(
-                                {"username": un, "password_hash": (u["password_hash"] or "").strip(), "roles": roles, "department": dept}
-                            )
-                if not out["users"]:
-                    out["users"] = _default_users().copy()
-            else:
-                un = (data.get("admin_username") or "").strip()
-                h = (data.get("admin_password_hash") or "").strip()
-                if USERNAME_PATTERN.fullmatch(un) and len(h) > 0:
-                    out["users"] = [{"username": un, "password_hash": h, "roles": [ROLE_ADMIN], "department": ""}]
-            if not _find_user_by_username(out.get("users") or [], DEFAULT_ADMIN_USERNAME):
-                out["users"] = (out.get("users") or []) + _default_users()
+        pg_users = _try_load_users_from_pg()
+        if pg_users is not None:
+            out["users"] = pg_users
+        elif isinstance(data.get("users"), list) and len(data["users"]) > 0:
+            out["users"] = []
+            for u in data["users"]:
+                if isinstance(u, dict) and isinstance(u.get("username"), str) and isinstance(u.get("password_hash"), str):
+                    un = u["username"].strip()
+                    if USERNAME_PATTERN.fullmatch(un) and len((u.get("password_hash") or "").strip()) > 0:
+                        roles = u.get("roles")
+                        if not isinstance(roles, list):
+                            roles = [ROLE_ADMIN]
+                        else:
+                            roles = [str(x).strip() for x in roles if str(x).strip()]
+                        dept = (u.get("department") or "").strip() if isinstance(u.get("department"), str) else ""
+                        out["users"].append(
+                            {"username": un, "password_hash": (u["password_hash"] or "").strip(), "roles": roles, "department": dept}
+                        )
+            if not out["users"]:
+                out["users"] = _default_users().copy()
+        else:
+            un = (data.get("admin_username") or "").strip()
+            h = (data.get("admin_password_hash") or "").strip()
+            if USERNAME_PATTERN.fullmatch(un) and len(h) > 0:
+                out["users"] = [{"username": un, "password_hash": h, "roles": [ROLE_ADMIN], "department": ""}]
+        if not _find_user_by_username(out.get("users") or [], DEFAULT_ADMIN_USERNAME):
+            out["users"] = (out.get("users") or []) + _default_users()
         return out
     except Exception as e:
         logger.warning("读取设置文件失败，使用默认值: %s", e)
-        return defaults.copy()
+        out = defaults.copy()
+        out["users"] = _try_load_users_from_pg() or _default_users().copy()
+        return out
 
 
 def _save_settings(data: dict) -> None:

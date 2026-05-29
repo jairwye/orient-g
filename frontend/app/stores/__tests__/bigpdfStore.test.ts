@@ -12,7 +12,7 @@ import {
 describe("bigpdfStore helpers", () => {
   describe("calculateProgress", () => {
     it("returns 0 for queued stage", () => {
-      const task = mockBigpdfTask({ stage: "queued", progress: 0 });
+      const task = mockBigpdfTask({ status: "queued", stage: "queued", progress: 0 });
       expect(calculateProgress(task)).toBe(0);
     });
 

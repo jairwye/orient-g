@@ -3,13 +3,16 @@ AI 互动（v1.2.2）：chat + skills/tools allow-list（最小闭环）。
 
 当前实现目标：
 - 支持前端提交多轮 messages
-- 支持 kb_scope（collections/tables/folders）→ 映射到 knowledge_pipeline.ask_knowledge
+- 支持 kb_scope（collections/tables/folders）→ 多 query 检索 + Evidence Pack（与 Agent 同源，见 ai_interaction_kb）
 - 保留现有 ACL pre-filter、限流/降级、审计链路（复用 knowledge 路由同口径）
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
+
+_logger = logging.getLogger("ai_interaction")
 
 import jwt
 from fastapi import APIRouter, HTTPException, Request
@@ -18,8 +21,7 @@ from pydantic import BaseModel
 from backend.config import settings
 from backend.services.knowledge_pipeline import ask_knowledge
 from backend.services.knowledge_acl import compute_acl_scope, load_fixtures
-from backend.services.task_queue import get_stats as get_queue_stats
-from backend.services.online_rate_limiter import allow as rate_limit_allow
+from backend.services import rag_audit_bridge as rag_audit
 
 
 router = APIRouter()
@@ -76,21 +78,6 @@ def ai_interaction_chat(request: Request, body: ChatBody):
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     uname = _get_username_from_request(request)
 
-    # 2.e：队列堆积降级（与 /knowledge/ask 同口径）
-    try:
-        qs = get_queue_stats()
-        if int(qs.get("queue_size_high") or 0) >= int(settings.queue_degrade_high_threshold):
-            raise HTTPException(status_code=503, detail="系统繁忙（队列堆积），请稍后重试")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
-
-    # 2.e：在线互动按用户限速（与 /knowledge/ask 同口径）
-    key = f"ai-interaction.chat:{tenant_id}:{uname or 'anonymous'}"
-    if not rate_limit_allow(key=key):
-        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
-
     # 取最后一条 user 消息作为 query（v1.2.2 最小闭环；后续可做多轮总结/压缩）
     query = ""
     for m in reversed(body.messages or []):
@@ -99,6 +86,18 @@ def ai_interaction_chat(request: Request, body: ChatBody):
             break
     if not query:
         raise HTTPException(status_code=400, detail="empty user message")
+
+    deny = rag_audit.run_pre_ask_guards(
+        tenant_id,
+        username=uname,
+        query=query,
+        rate_limit_key=f"ai-interaction.chat:{tenant_id}:{uname or 'anonymous'}",
+        channel="ai-interaction.chat",
+    )
+    if deny == "queue_backpressure":
+        raise HTTPException(status_code=503, detail="系统繁忙（队列堆积），请稍后重试")
+    if deny == "rate_limited":
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
 
     scope = body.kb_scope or KbScope()
     raw_selected_collection_ids = [str(x).strip() for x in (scope.selected_collection_ids or []) if str(x).strip()]
@@ -112,11 +111,12 @@ def ai_interaction_chat(request: Request, body: ChatBody):
     selected_collection_ids = list(raw_selected_collection_ids)
     selected_table_ids = list(raw_selected_table_ids)
 
-    # folder_ids → collection_ids（可见性最终仍由 ACL/子集校验保证）
+    # folder_ids → collection_ids（可见性校验）+ doc_ids（限检索范围）
     folder_ids = list(raw_selected_folder_ids)
+    folder_doc_ids: list[str] = []
     if folder_ids:
         try:
-            from backend.services.kb_folders import list_folders
+            from backend.services.kb_folders import collect_subtree_doc_ids, list_folders
 
             folders = list_folders(tenant_id)
             f2c = {str(f.get("folder_id")): list(f.get("collection_ids") or []) for f in folders}
@@ -125,10 +125,13 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                     cc = str(cid).strip()
                     if cc:
                         selected_collection_ids.append(cc)
-        except Exception:
-            # folder 解析失败不阻断主流程（仍可按用户显式选中的 collections 继续）
+                folder_doc_ids.extend(collect_subtree_doc_ids(tenant_id, fid))
+            folder_doc_ids = list(dict.fromkeys(folder_doc_ids))
+        except Exception as e:
+            _logger.warning("KB_SCOPE_DEBUG folder expansion failed: %s", e)
             pass
 
+    # DEBUG: log after folder expansion
     # 去重
     seen = set()
     selected_collection_ids = [x for x in selected_collection_ids if not (x in seen or seen.add(x))]
@@ -206,11 +209,13 @@ def ai_interaction_chat(request: Request, body: ChatBody):
             }
 
     # --- 直接读取路径：用户显式引用了文档/文件夹 → 从磁盘读取完整内容 ---
+    # 文件夹文档 >20 篇时跳过直接读取（全文灌入 LLM 会迷失），回退到 RAG 关键词检索
     model = (body.model or "").strip() or (
         (settings.llm_model or "").strip() if settings.llm_chat_configured else (settings.ollama_model or "").strip()
     ) or settings.ollama_model
     has_explicit_docs = bool(raw_attached_doc_ids or raw_selected_folder_ids)
-    if has_explicit_docs and settings.chat_llm_available:
+    skip_direct_for_large_folder = bool(raw_selected_folder_ids) and len(folder_doc_ids) > 20
+    if has_explicit_docs and settings.chat_llm_available and not skip_direct_for_large_folder:
         try:
             from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
             from backend.services.ai_interaction_llm import generate_answer_with_documents, generate_answer_with_evidence
@@ -248,19 +253,29 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                     extra_tbl = bool(raw_selected_table_ids)
                     if extra_col or extra_tbl:
                         try:
-                            rag_res = ask_knowledge(
+                            from backend.services.ai_interaction_kb import (
+                                citations_for_chat_llm,
+                                retrieve_kb_for_chat,
+                            )
+
+                            rag_res = retrieve_kb_for_chat(
                                 token,
                                 query,
-                                selected_collection_ids=selected_collection_ids if selected_collection_ids else None,
-                                selected_table_ids=selected_table_ids if selected_table_ids else None,
+                                selected_collection_ids=selected_collection_ids or None,
+                                selected_table_ids=selected_table_ids or None,
+                                attached_doc_ids=None,
+                                limit_to_attached=False,
                                 fixtures=fixtures,
                             )
                             if not rag_res.get("denied") and rag_res.get("citations"):
+                                rag_cites = citations_for_chat_llm(
+                                    rag_res, query, tenant_id=tenant_id, fixtures=fixtures
+                                )
                                 rag_llm = generate_answer_with_evidence(
                                     tenant_id=tenant_id,
                                     model=model,
                                     user_query=query,
-                                    citations=list(rag_res.get("citations") or []),
+                                    citations=rag_cites,
                                     fixtures=fixtures,
                                     skill_addon=skill_addon_dr or None,
                                 )
@@ -268,6 +283,17 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                         except Exception:
                             pass
                     skipped_note = f"（{len(skipped)} 篇文档尚未完成解析，已跳过）" if skipped else ""
+                    rag_audit.audit_answer_generate(
+                        tenant_id,
+                        username=uname,
+                        query=query,
+                        citations=[],
+                        meta={
+                            "channel": "ai-interaction.chat",
+                            "read_mode": "direct",
+                            "attached_doc_count": len(doc_ids),
+                        },
+                    )
                     return {
                         "denied": False,
                         "reply": reply,
@@ -301,6 +327,13 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                 messages=[m.model_dump() for m in (body.messages or [])],  # type: ignore[attr-defined]
                 skill_addon=skill_addon or None,
             )
+            rag_audit.audit_answer_generate(
+                tenant_id,
+                username=uname,
+                query=query,
+                citations=[],
+                meta={"channel": "ai-interaction.chat", "read_mode": "chat_only"},
+            )
             return {"denied": False, "reply": llm_reply, "citations": [], "tool_calls": tool_calls, "llm_model": model}
         except Exception as e:
             return {
@@ -311,15 +344,40 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                 "llm_model": model,
             }
 
-    res = ask_knowledge(
+    # 合并显式附带的文档 + 文件夹解析出的文档
+    all_attached = list(raw_attached_doc_ids) + folder_doc_ids
+    limit_to_attached = bool(folder_doc_ids)
+    audit_meta = {
+        "channel": "ai-interaction.chat",
+        "selected_collection_ids": selected_collection_ids,
+        "selected_table_ids": selected_table_ids,
+        "selected_folder_ids": folder_ids,
+        "attached_doc_ids": all_attached if all_attached else None,
+    }
+    rag_audit.audit_retrieve_attempt(tenant_id, username=uname, query=query, meta=audit_meta)
+    from backend.services.ai_interaction_kb import (
+        attach_pack_to_chat_response,
+        citations_for_chat_llm,
+        retrieve_kb_for_chat,
+    )
+
+    res = retrieve_kb_for_chat(
         token,
         query,
-        selected_collection_ids=selected_collection_ids if selected_collection_ids else None,
-        selected_table_ids=selected_table_ids if selected_table_ids else None,
+        selected_collection_ids=None if limit_to_attached else (selected_collection_ids or None),
+        selected_table_ids=None if limit_to_attached else (selected_table_ids or None),
+        attached_doc_ids=all_attached if all_attached else None,
+        limit_to_attached=limit_to_attached,
         fixtures=fixtures,
-        attached_doc_ids=raw_attached_doc_ids if raw_attached_doc_ids else None,
     )
     if res.get("denied"):
+        rag_audit.audit_after_ask_result(
+            tenant_id,
+            username=uname,
+            query=query,
+            result=res,
+            extra_meta={"channel": "ai-interaction.chat"},
+        )
         raise HTTPException(status_code=403, detail=res.get("deny_reason") or "denied")
 
     # --- LLM：基于证据生成最终答复（v1.2.2：AI互动需要调用 LLM） ---
@@ -327,27 +385,51 @@ def ai_interaction_chat(request: Request, body: ChatBody):
     if not settings.chat_llm_available:
         res["tool_calls"] = tool_calls
         res["reply"] = (res.get("reply") or "") + "（未配置对话 LLM，当前仅返回检索结果摘要）"
+        res["read_mode"] = "rag_pack"
+        attach_pack_to_chat_response(res)
+        rag_audit.audit_after_ask_result(
+            tenant_id,
+            username=uname,
+            query=query,
+            result=res,
+            extra_meta={"channel": "ai-interaction.chat", "read_mode": "rag_no_llm"},
+        )
         return res
     try:
         from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
         from backend.services.ai_interaction_llm import generate_answer_with_evidence
 
         skill_addon_kb = build_system_addon_for_enabled_skills(enabled_skills)
+        llm_cites = citations_for_chat_llm(res, query, tenant_id=tenant_id, fixtures=fixtures)
         llm_reply = generate_answer_with_evidence(
             tenant_id=tenant_id,
             model=model,
             user_query=query,
-            citations=list(res.get("citations") or []),
+            citations=llm_cites,
             fixtures=fixtures,
             skill_addon=skill_addon_kb or None,
         )
         res["reply"] = llm_reply
+        res["citations"] = llm_cites
         res["llm_model"] = model
+        res["read_mode"] = "rag_pack"
+        attach_pack_to_chat_response(res)
     except Exception as e:
         # 回退：至少把检索摘要返回，避免全失败
         res["reply"] = (res.get("reply") or "") + f"（LLM 生成失败：{e}）"
 
     res["tool_calls"] = tool_calls
+    rag_audit.audit_after_ask_result(
+        tenant_id,
+        username=uname,
+        query=query,
+        result=res,
+        extra_meta={
+            "channel": "ai-interaction.chat",
+            "read_mode": res.get("read_mode") or "rag",
+            "task_type": (res.get("evidence_pack") or {}).get("task_type"),
+        },
+    )
     return res
 
 

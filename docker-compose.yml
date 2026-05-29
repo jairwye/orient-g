@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
     # 健康检查：确认 PostgreSQL 已就绪，backend 的 depends_on 会等此通过后再启动
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mgmt}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mgmt} -d ${POSTGRES_DB:-mgmt_web}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -63,10 +63,10 @@ services:
     ports:
       - "${BIND_IP:-127.0.0.1}:8080:5001"
     environment:
-      # 代理（官方镜像拉取/运行时下载模型可能需要）
-      HTTP_PROXY: ${HTTP_PROXY:-http://192.168.104.108:7890}
-      HTTPS_PROXY: ${HTTPS_PROXY:-http://192.168.104.108:7890}
-      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1}
+      # 代理（可选；需外网拉模型时在 .env 设置 HTTP_PROXY/HTTPS_PROXY，如 http://mihomo:7890）
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,docling,backend,db,frontend,caddy,ollama}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
       # 官方镜像默认走 HTTP 模式
@@ -89,6 +89,11 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:-orient-g-auth-secret-change-in-production}
       DOCLING_MODE: ${DOCLING_MODE:-http}
       DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:5001}
+      HERMES_ENABLED: ${HERMES_ENABLED:-false}
+      HERMES_BASE_URL: ${HERMES_BASE_URL:-}
+      HERMES_INTERNAL_TOKEN: ${HERMES_INTERNAL_TOKEN:-}
+      HERMES_MODEL: ${HERMES_MODEL:-hermes-agent}
+      HERMES_DEV_MOCK: ${HERMES_DEV_MOCK:-false}
     volumes:
       - uploads_data:/app/uploads
     depends_on:

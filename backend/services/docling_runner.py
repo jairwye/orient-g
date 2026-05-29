@@ -131,8 +131,19 @@ def _convert_local(source_path: Path, output_dir: Path, timeout_s: int) -> Docli
 def _save_docling_task_id(tenant_id: str, kb_task_id: str, docling_task_id: str, task_position: int | None) -> None:
     """Save the docling task ID to kb_tasks immediately after submission."""
     try:
+        from backend.services.bigpdf_tasks import stage_to_progress
         from backend.services.kb_tasks import update_task
-        update_task(tenant_id, kb_task_id, docling_task_id=docling_task_id, task_position=task_position)
+
+        update_task(
+            tenant_id,
+            kb_task_id,
+            status="running",
+            stage="parsing",
+            progress=stage_to_progress("parsing"),
+            detail=None,
+            docling_task_id=docling_task_id,
+            task_position=task_position,
+        )
     except Exception:
         pass  # best-effort; don't fail the conversion
 
@@ -141,7 +152,14 @@ def _save_task_position(tenant_id: str, kb_task_id: str, task_position: int) -> 
     """Update the task_position in kb_tasks during polling."""
     try:
         from backend.services.kb_tasks import update_task
-        update_task(tenant_id, kb_task_id, task_position=task_position)
+
+        update_task(
+            tenant_id,
+            kb_task_id,
+            status="running",
+            stage="parsing",
+            task_position=task_position,
+        )
     except Exception:
         pass
 

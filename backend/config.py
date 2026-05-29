@@ -1,11 +1,16 @@
+from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# 固定项目根 .env，避免从 backend/ 等子目录启动时读不到 HERMES_* / DATABASE_URL
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=[".env", "../.env"],
+        env_file=[str(_ENV_FILE), ".env", "../.env"],
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -54,9 +59,10 @@ class Settings(BaseSettings):
     # 在线请求降级阈值：当 high 队列堆积超过阈值时，在线路径直接降级/拒绝
     queue_degrade_high_threshold: int = 10
     # 持久化队列：租约/心跳/回收
-    queue_worker_lease_seconds: int = 120
+    # 大 PDF + 远程 Docling 可能跑数小时；租约/心跳过短会误回收为 queued（UI 仍显示排队中）
+    queue_worker_lease_seconds: int = 3600
     queue_worker_heartbeat_seconds: int = 15
-    queue_running_timeout_seconds: int = 300
+    queue_running_timeout_seconds: int = 7200
     queue_queued_timeout_seconds: int = 7200
     queue_task_max_attempts: int = 3
     queue_retry_backoff_seconds: int = 30
@@ -119,6 +125,48 @@ class Settings(BaseSettings):
     # - legacy：启动时自动建表/补列（现状）
     # - alembic：schema 由 alembic 显式迁移管理（生产推荐）
     db_migration_mode: str = "legacy"
+
+    # Hermes Agent（内网 HTTP，见 specs/features/1.2.3）
+    hermes_enabled: bool = False
+    hermes_base_url: Optional[str] = None  # 例：http://hermes-agent:8642（Hermes API gateway，无 /v1 后缀）
+    hermes_internal_token: Optional[str] = None  # 与 Hermes API_SERVER_KEY 一致
+    hermes_model: str = "hermes-agent"
+    hermes_request_timeout_s: int = 300
+    hermes_searxng_enabled: bool = False
+    hermes_lark_cli_enabled: bool = False
+    # Windows 等无 Docker/Hermes 的开发机：/agent 直接调 orientg MCP 工具（不走 Hermes HTTP）
+    hermes_dev_mock: bool = False
+    # True：Hermes 前注入 KB 预检索摘要（不阻止 Hermes 再调 MCP）；False：完全由 Hermes 工具环检索
+    hermes_agent_kb_prefetch: bool = True
+    # True：有 kb_scope 时走 Hermes 编排（多轮 MCP，产品默认）；False：仅本地 LLM（调试/无 Hermes）
+    hermes_agent_kb_synthesize: bool = True
+    # True：预检索已有 citations 时跳过 Hermes MCP（兼容旧配置；优先用 agent_kb_router）
+    hermes_agent_kb_fast_path: bool = False
+    # Agent KB 三路分流默认文档语义：tier0 | hermes_lite | hermes_full（见 1.2.3.b evidence pack）
+    hermes_agent_route_default: str = "tier0"
+    # 多 query 预检索 + Evidence Pack（标准模式 Tier 0 前置）；env: KB_MULTI_QUERY 或 HERMES_AGENT_KB_MULTI_QUERY
+    kb_multi_query: bool | None = None
+    hermes_agent_kb_multi_query: bool = True
+    # 标准/auto：pack 覆盖率足够时走 Tier 0 本地综合（非默认 Hermes lite）
+    hermes_agent_standard_tier0: bool = True
+    hermes_agent_kb_ask_budget_lite: int = 2
+    hermes_agent_simple_query_fast: bool = True
+    # Agent 回复走 Hermes SSE 流式（/api/agent/chat/stream）
+    hermes_agent_stream: bool = True
+    # True：在 Gateway 支持时改用 POST /v1/runs + GET .../events（可 POST .../stop 中断）
+    hermes_agent_use_runs_api: bool = False
+    # 证据综合时单 chunk 最大字符（与 kb_documents.max_section_chars 对齐；超长才截断）
+    kb_evidence_chunk_max_chars: int = 15000
+
+    @property
+    def effective_kb_multi_query(self) -> bool:
+        if self.kb_multi_query is not None:
+            return bool(self.kb_multi_query)
+        return bool(self.hermes_agent_kb_multi_query)
+
+    @property
+    def hermes_configured(self) -> bool:
+        return bool(self.hermes_enabled and (self.hermes_base_url or "").strip())
 
 
 settings = Settings()

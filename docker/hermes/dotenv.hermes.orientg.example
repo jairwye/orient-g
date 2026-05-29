@@ -1,0 +1,10 @@
+# 仅用于【单人】hermes chat 联调（非多用户 /agent 链路）。见 docs/hermes.md §2.4 / §4。
+# 合并进 %USERPROFILE%\.hermes\.env（Gateway 段见 dotenv.hermes.gateway.example）
+# 与 config.yaml 中 ORIENTG_USER_TOKEN: "${ORIENTG_USER_TOKEN}" 配合使用
+#
+# /agent 完整链路：不要设置本变量；JWT 由浏览器 → backend → hermes_token_bridge。
+# 获取临时 JWT：浏览器登录 Orient-G → F12 → Authorization: Bearer <token>
+#
+# MCP 仍读项目根 .env 的 DATABASE_URL（本机开发库，见 .env.example）
+
+ORIENTG_USER_TOKEN=

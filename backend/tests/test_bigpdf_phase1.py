@@ -13,7 +13,9 @@ Endpoints to test:
 from __future__ import annotations
 
 import io
+import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -742,7 +744,169 @@ def test_get_running_task(monkeypatch):
 def test_auto_organization_folder_name():
     from backend.services.bigpdf_tasks import _auto_organization_folder_name
 
-    # 当前实现会去掉扩展名
-    assert _auto_organization_folder_name("财务报表2024.pdf") == "大PDF-财务报表2024"
-    assert _auto_organization_folder_name("a" * 100) == f"大PDF-{'a' * 50}"
-    assert _auto_organization_folder_name("") == "大PDF-未命名"
+    assert _auto_organization_folder_name("财务报表2024.pdf") == "财务报表2024"
+    assert _auto_organization_folder_name("a" * 100) == "a" * 50
+    assert _auto_organization_folder_name("") == "未命名"
+
+
+def test_resolve_pdf_title(tmp_path):
+    from backend.services.bigpdf_tasks import _resolve_pdf_title
+
+    raw = tmp_path / "raw" / "original.pdf"
+    raw.parent.mkdir(parents=True)
+    raw.write_bytes(b"%PDF")
+
+    assert (
+        _resolve_pdf_title({"file_name": "华清2024年报.pdf"}, tmp_path, "# 文档标题\n", raw)
+        == "华清2024年报.pdf"
+    )
+
+    meta_path = tmp_path / "meta.json"
+    meta_path.write_text(json.dumps({"original_filename": "meta名称.pdf"}), encoding="utf-8")
+    assert _resolve_pdf_title(None, tmp_path, "", raw) == "meta名称.pdf"
+
+    meta_path.unlink()
+    assert _resolve_pdf_title(None, tmp_path, "# 第一章\n", raw) == "第一章"
+
+
+def test_rag_package_display_name_matches_pdf_filename():
+    from backend.services.bigpdf_tasks import _auto_organization_folder_name, _resolve_pdf_title
+
+    title = _resolve_pdf_title({"file_name": "财务报表2024.pdf"}, Path("."), "", Path("original.pdf"))
+    assert _auto_organization_folder_name(title) == "财务报表2024"
+
+
+def test_export_base_label_uses_document_name():
+    from backend.services.rag_packages import _export_base_label
+
+    assert _export_base_label({"package_id": "rp_abc123", "name": "财务报表2024"}) == "财务报表2024"
+    assert _export_base_label({"package_id": "rp_abc123", "name": ""}) == "rp_abc123"
+
+
+def test_bigpdf_display_stage_maps_running_to_parsing():
+    from backend.services.bigpdf_status import bigpdf_display_stage, resolve_bigpdf_ui_state
+
+    assert bigpdf_display_stage({"status": "running", "stage": "running"}) == "parsing"
+    assert bigpdf_display_stage({"status": "queued", "stage": "queued", "docling_task_id": "d1"}) == "parsing"
+    assert resolve_bigpdf_ui_state({"task_id": "t1", "status": "queued", "stage": "queued"}, running_task_id="t0", queue_position=2)["is_waiting_for_slot"] is True
+
+
+def test_upload_filename_from_task():
+    from backend.services.bigpdf_tasks import _upload_filename_from_task
+
+    assert _upload_filename_from_task({"file_name": "report.pdf"}) == "report.pdf"
+    assert _upload_filename_from_task({"detail": "legacy.pdf"}) == "legacy.pdf"
+    assert _upload_filename_from_task({"detail": "folder:f_123; user_doc:d_456"}) == ""
+    assert _upload_filename_from_task(None) == ""
+
+
+def test_bigpdf_display_file_name():
+    from backend.routers.knowledge import _bigpdf_display_file_name
+
+    assert _bigpdf_display_file_name({"file_name": "a.pdf"}) == "a.pdf"
+    assert _bigpdf_display_file_name({"detail": "b.pdf"}) == "b.pdf"
+    assert _bigpdf_display_file_name({"detail": "folder:x"}) is None
+
+
+def test_section_display_filename():
+    from backend.services.bigpdf_tasks import _section_display_filename
+
+    used: set[str] = set()
+    assert _section_display_filename({"filename": "s0001.md", "title": "第一章 概述"}, used) == "第一章 概述.md"
+    assert _section_display_filename({"filename": "s0002.md", "title": "第一章 概述"}, used) == "第一章 概述_2.md"
+    assert _section_display_filename({"filename": "s0003.md", "title": "section"}, used) == "s0003.md"
+
+
+def test_import_section_docs_to_folder(tmp_path, monkeypatch):
+    from backend.services import bigpdf_tasks as bt
+
+    sections_dir = tmp_path / "sections"
+    sections_dir.mkdir()
+    (sections_dir / "s0001.md").write_text("# A\nbody1", encoding="utf-8")
+    (sections_dir / "s0002.md").write_text("# B\nbody2", encoding="utf-8")
+    section_items = [
+        {"section_id": "s0001", "filename": "s0001.md", "title": "章节A"},
+        {"section_id": "s0002", "filename": "s0002.md", "title": "章节B"},
+    ]
+
+    created: list[dict[str, Any]] = []
+    bound: list[tuple[str, str]] = []
+
+    def fake_create_user_document_record(tenant_id, owner, *, filename, raw, initial_status="uploaded"):
+        doc_id = f"ud_{len(created)+1:03d}"
+        created.append({"doc_id": doc_id, "filename": filename, "size": len(raw), "status": initial_status})
+        return {"doc_id": doc_id}
+
+    def fake_bind_resource_to_folder(tenant_id, *, folder_id, resource_type, resource_id):
+        bound.append((folder_id, resource_id))
+
+    class _FakeDb:
+        def execute(self, *a, **k):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("backend.services.kb_documents._create_user_document_record", fake_create_user_document_record)
+    monkeypatch.setattr("backend.services.kb_folders.bind_resource_to_folder", fake_bind_resource_to_folder)
+    monkeypatch.setattr("backend.services.kb_acl_store.set_resource_assignments", lambda *a, **k: None)
+    monkeypatch.setattr(bt, "get_db", lambda: _FakeDb())
+    monkeypatch.setattr(bt.settings, "upload_dir", str(tmp_path / "uploads"))
+
+    doc_ids = bt._import_section_docs_to_folder(
+        "tenant1",
+        "alice",
+        "f_pdf_001",
+        "c_private_alice",
+        sections_dir,
+        section_items,
+        package_id="rp_test",
+    )
+    assert doc_ids == ["ud_001", "ud_002"]
+    assert [c["filename"] for c in created] == ["章节A.md", "章节B.md"]
+    assert bound == [("f_pdf_001", "ud_001"), ("f_pdf_001", "ud_002")]
+
+
+def test_auto_organize_to_private_kb_uses_pdf_name_and_sections(tmp_path, monkeypatch):
+    from backend.services import bigpdf_tasks as bt
+
+    sections_dir = tmp_path / "sections"
+    sections_dir.mkdir()
+    (sections_dir / "s0001.md").write_text("chunk", encoding="utf-8")
+    section_items = [{"section_id": "s0001", "filename": "s0001.md", "title": "intro"}]
+
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr("backend.services.kb_collections.dynamic_private_collection_id", lambda u: f"c_private_{u}")
+    monkeypatch.setattr("backend.services.kb_acl_store.set_private_owner", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "backend.services.kb_folders.create_folder",
+        lambda tenant_id, name, **kw: captured.update({"folder_name": name}) or {"folder_id": "f_001"},
+    )
+    monkeypatch.setattr("backend.services.kb_folders.set_folder_collections", lambda *a, **k: None)
+    monkeypatch.setattr("backend.services.kb_folders.bind_resource_to_folder", lambda *a, **k: None)
+    monkeypatch.setattr("backend.services.kb_acl_store.set_resource_assignments", lambda *a, **k: None)
+    monkeypatch.setattr("backend.services.kb_tasks.update_task", lambda *a, **k: None)
+    def fake_import(*a, **k):
+        captured["imported"] = True
+        return ["ud_001"]
+
+    monkeypatch.setattr(bt, "_import_section_docs_to_folder", fake_import)
+
+    out = bt._auto_organize_to_private_kb(
+        "tenant1",
+        "t_task",
+        "alice",
+        "rp_abc",
+        {"section_count": 1},
+        section_items,
+        original_filename="华清2024年报.pdf",
+        sections_dir=sections_dir,
+    )
+    assert out is not None
+    assert captured["folder_name"] == "华清2024年报"
+    assert captured.get("imported") is True
+    assert out["section_doc_ids"] == ["ud_001"]

@@ -6,21 +6,35 @@
 
 ### Added
 
-（待发布内容在此追加。）
+- **Agent KB 三路分流（Tier 0–2）**：`fast` / `hermes_lite` / `hermes_full` 路由；Evidence Pack 预检索、ask budget、KB scope 解析与 fast path 本地综合。
+- **Hermes 集成**：`/api/agent` 阻塞/流式对话、运行注册与取消；`hermes_client`、token bridge、Orient-G MCP 工具与 `docker-compose.hermes.yml` 示例。
+- **知识库检索增强**：检索计划/打包/直答（`kb_retrieval_plan`、`kb_retrieve_pack`、`kb_retrieve_answer`）、文件夹子树 scope、fixture bindings、RAG 审计桥接。
+- **前端 Agent 体验**：AI 互动页 Agent 模式（auto/fast/standard/deep）、SSE Trace 面板、知识库浏览树（`KbBrowseTree`）、BigPDF 全局通知与任务 stage 归一。
+- **规制目录 `specs/`**：API 契约迁至 `specs/api/api-contract.md`；Agent KB Router 计划与 UI spec 入库。
+- **Alembic**：`kb_folders.parent_folder_id`；`kb_tasks` worker 租约/心跳/去重列与索引。
 
 ### Changed
 
-- BigPDF 队列重构：解析任务升级为持久化队列（`kb_tasks`），支持 worker 重启自动续跑，新增租约/心跳/超时/退避重试机制；修复任务目录辅助函数并抽取 `_kb_helpers` 共享写入工具。
-- Docling 配置升级：默认 CPU 线程与批处理参数对齐 compose 与 `.env.example`，消除长任务误回收。
-- 前端编译优化：Next.js 回退至 15.5.7（webpack），AI 互动 `page.tsx` 拆分为 6 个独立模块；ESLint 适配 `eslint-config-next@15`（FlatCompat）。
+- AI 互动页与知识库页布局/交互对齐 2026 spec；Markdown 气泡、KB 预检索与证据引用展示。
+- BigPDF 队列：持久化 `kb_tasks`、worker 重启续跑、智能轮询与 UI 状态归一。
+- `.env.example` 扩充 Hermes、Agent、Evidence Pack、上游白名单等配置项；Docling 代理改为可选（compose 不再硬编码内网 IP）。
+- `CONTRIBUTING.md` / `README.md`：文档索引指向 `specs/`；`docs/superpowers/*` 大量迁移为指针文档。
+
+### Removed
+
+- `knowledge_retrieve_testharness.py`、旧 ACL smoke 测试（由新测试套件替代）。
 
 ### DB / Migrations
 
-- 无新增 schema 迁移；沿用 head `20260512_122g_bigpdf_refactor`。上线执行 `alembic -c backend/alembic.ini upgrade head`。
+- **有迁移**；head：`20260522_122h_kb_tasks_worker`。
+- 链：`122_schema` → `123_folder_resources` → `122g_bigpdf_refactor` → `08cd345b6500`（`parent_folder_id`）→ `122h`（worker 列）。
+- **非破坏性**：`ADD COLUMN IF NOT EXISTS` + 索引 `IF NOT EXISTS`。
+- 上线：`alembic -c backend/alembic.ini upgrade head`（生产若停在 `122g`，须连升至 `122h` 否则 worker 缺列）。
 
 ### Docs
 
-- `docs/bigpdf-refactor-plan.md`：标注为历史设计方案，以实际代码为准。
+- 新增 `docs/hermes.md`；BigPDF 重构计划标注为历史设计。
+- `docs/reference/` 改为本地参考图目录（不入 Git）。
 
 ---
 

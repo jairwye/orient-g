@@ -4,7 +4,9 @@ Knowledge：options/ask、用户上传文档、RAG 包列表。
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import jwt
@@ -16,10 +18,11 @@ from backend.config import settings
 from backend.services.kb_acl_store import get_all_resource_assignments
 from backend.services import kb_documents as kb_docs
 from backend.services import kb_tasks
+from backend.services.bigpdf_status import bigpdf_display_stage, resolve_bigpdf_ui_state
 from backend.services.bigpdf_tasks import prepare_task_input, stage_to_progress
 from backend.services.knowledge_acl import compute_acl_scope, load_fixtures
 from backend.services.knowledge_pipeline import ask_knowledge
-from backend.services.knowledge_audit import write_event as audit_write_event
+from backend.services import rag_audit_bridge as rag_audit
 from backend.services.task_queue import (
     TASK_KIND_BIGPDF_PARSE,
     enqueue_bigpdf_task,
@@ -28,8 +31,6 @@ from backend.services.task_queue import (
     submit,
     TASK_EMBED_AND_INDEX_REFRESH,
 )
-from backend.services.task_queue import get_stats as get_queue_stats
-from backend.services.online_rate_limiter import allow as rate_limit_allow
 from backend.services.user_acl_store import get_user
 from backend.services import rag_packages
 from backend.services.kb_vector_index import index_uploaded_document_task
@@ -45,6 +46,7 @@ from backend.services.kb_folders import (
     get_folder,
     list_folder_resources,
     list_folders,
+    prune_stale_folder_doc_bindings,
     set_folder_collections,
     share_folder_to_kb_kind,
     share_folder_scope,
@@ -171,6 +173,10 @@ def knowledge_options(request: Request):
     scope = compute_acl_scope(token, fixtures=fixtures)
     allowed_col_ids = set(scope["allowed_collection_ids"])
     allowed_table_ids = set(scope["allowed_table_ids"])
+    # 确保当前用户的动态私有集合在允许列表中
+    uname = _get_username_from_request(request)
+    if uname:
+        allowed_col_ids.add(kb_docs.dynamic_private_collection_id(uname))
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     table_to_cids: dict[str, set[str]] = {}
     try:
@@ -200,7 +206,6 @@ def knowledge_options(request: Request):
                 }
             )
 
-    uname = _get_username_from_request(request)
     # folder-first：确保用户有默认私有文件夹（用于 UI 选择范围）
     if uname:
         try:
@@ -276,20 +281,48 @@ def knowledge_options(request: Request):
 
     default_table_ids = [t["table_id"] for t in tables_out][:3]
 
-    # folders（collection 分组）：仅返回“包含至少一个可见 collection”的 folder
+    # folders（collection 分组）：仅返回"包含至少一个可见 collection"的 folder
+    # doc_count 递归统计：本文件夹 + 所有子文件夹的文档总数
     folders_out: list[dict[str, Any]] = []
     default_folder_ids: list[str] = []
     try:
-        for f in list_folders(tenant_id):
+        all_folders = list_folders(tenant_id)
+        # 文档数映射（直接绑定在本文件夹的文档数）
+        direct_counts: dict[str, int] = {}
+        # 父子关系映射
+        children_map: dict[str, list[str]] = {}
+        for f in all_folders:
+            fid = str(f.get("folder_id") or "").strip()
+            if not fid:
+                continue
+            direct_counts[fid] = int((f.get("resource_counts") or {}).get("doc") or 0)
+            pfid = str(f.get("parent_folder_id") or "").strip() or None
+            if pfid:
+                children_map.setdefault(pfid, []).append(fid)
+
+        # 递归计算子树文档总数（带缓存）
+        _total_cache: dict[str, int] = {}
+        def _subtree_doc_count(fid: str) -> int:
+            if fid in _total_cache:
+                return _total_cache[fid]
+            total = direct_counts.get(fid, 0)
+            for child in children_map.get(fid, []):
+                total += _subtree_doc_count(child)
+            _total_cache[fid] = total
+            return total
+
+        for f in all_folders:
             cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
             visible = [cid for cid in cids if cid in allowed_col_ids]
             if not visible:
                 continue
+            fid = str(f.get("folder_id") or "").strip()
             folders_out.append(
                 {
-                    "folder_id": f.get("folder_id"),
+                    "folder_id": fid,
                     "name": f.get("name"),
                     "collection_ids": visible,
+                    "doc_count": _subtree_doc_count(fid),
                 }
             )
         # v1.2.2：不默认勾选 folder，避免误扩大范围；由用户选择
@@ -297,6 +330,33 @@ def knowledge_options(request: Request):
     except Exception:
         folders_out = []
         default_folder_ids = []
+    except Exception:
+        folders_out = []
+        default_folder_ids = []
+
+    # 为每个 collection 补充文档数
+    try:
+        from backend.database import get_db as _gdb3
+        with _gdb3() as db3:
+            all_cids = [c["collection_id"] for c in collections_out]
+            if all_cids:
+                doc_rows = db3.execute(
+                    text(
+                        """
+                        SELECT r.collection_id, COUNT(DISTINCT r.resource_id) AS cnt
+                        FROM kb_resource_assignments r
+                        WHERE r.tenant_id = :t AND r.resource_type = 'doc' AND r.collection_id IN :cids
+                        GROUP BY r.collection_id
+                        """
+                    ).bindparams(bindparam("cids", expanding=True)),
+                    {"t": tenant_id, "cids": all_cids},
+                ).fetchall()
+                cid_counts = {str(r[0]): int(r[1]) for r in doc_rows}
+                for c in collections_out:
+                    c["doc_count"] = cid_counts.get(c["collection_id"], 0)
+    except Exception:
+        for c in collections_out:
+            c.setdefault("doc_count", 0)
 
     return OptionsResponse(
         collections=collections_out,
@@ -348,6 +408,7 @@ def kb_list_folders(request: Request):
 
 class CreateFolderBody(BaseModel):
     name: str
+    parent_folder_id: str | None = None
 
 
 @router.post("/folders")
@@ -367,7 +428,10 @@ def kb_create_folder(request: Request, body: CreateFolderBody):
         target_name=body.name,
     ):
         raise HTTPException(status_code=409, detail="文件夹名称已存在（含共享到你可见范围的知识库）。请使用其他名称。")
-    info = create_folder(tenant_id, name=body.name, created_by=un, kind="Private", scope={}, owner_username=un)
+    info = create_folder(
+        tenant_id, name=body.name, created_by=un, kind="Private", scope={}, owner_username=un,
+        parent_folder_id=(body.parent_folder_id or "").strip() or None,
+    )
     # 默认绑定动态私有 collection，保证 folder 可用于问答范围过滤
     pcid = kb_docs.dynamic_private_collection_id(un)
     set_folder_collections(tenant_id, folder_id=info["folder_id"], collection_ids=[pcid])
@@ -457,6 +521,10 @@ def kb_folder_resources(folder_id: str, request: Request):
         if not any(cid in allowed_col_ids for cid in cids):
             raise HTTPException(status_code=403, detail="forbidden")
 
+    try:
+        prune_stale_folder_doc_bindings(tenant_id, folder_id=folder_id)
+    except Exception:
+        pass
     resources = list_folder_resources(tenant_id, folder_id=folder_id)
     # 目前先输出 doc 的基本信息（table 后续补齐）
     doc_ids = [r["resource_id"] for r in resources if r.get("resource_type") == "doc" and str(r.get("resource_id") or "").strip()]
@@ -487,7 +555,45 @@ def kb_folder_resources(folder_id: str, request: Request):
                 "created_at": r[6].isoformat() if r[6] else None,
             }
     docs_out = [docs_map.get(did) for did in doc_ids if docs_map.get(did)]
-    return {"folder": f, "resources": resources, "docs": docs_out}
+    # 子文件夹
+    subfolders: list[dict[str, Any]] = []
+    try:
+        from backend.database import get_db as _gdb
+        with _gdb() as db2:
+            sub_rows = db2.execute(
+                text(
+                    """
+                    SELECT folder_id, name, kind, scope_json, owner_username, created_by, created_at, updated_at, parent_folder_id
+                    FROM kb_folders
+                    WHERE tenant_id=:t AND parent_folder_id=:pf
+                    ORDER BY name
+                    """
+                ),
+                {"t": tenant_id, "pf": folder_id},
+            ).fetchall()
+        for sr in sub_rows:
+            sfid = str(sr[0] or "").strip()
+            scope_s = str(sr[3] or "").strip()
+            try:
+                sscope = json.loads(scope_s) if scope_s else {}
+            except Exception:
+                sscope = {}
+            if not isinstance(sscope, dict):
+                sscope = {}
+            subfolders.append({
+                "folder_id": sfid,
+                "name": str(sr[1] or "").strip() or sfid,
+                "kind": str(sr[2] or "").strip() or None,
+                "scope": sscope,
+                "owner_username": str(sr[4] or "").strip() or None,
+                "created_by": str(sr[5] or "").strip() or None,
+                "created_at": sr[6].isoformat() if getattr(sr[6], "isoformat", None) else None,
+                "updated_at": sr[7].isoformat() if getattr(sr[7], "isoformat", None) else None,
+                "parent_folder_id": str(sr[8] or "").strip() or None,
+            })
+    except Exception:
+        pass
+    return {"folder": f, "resources": resources, "docs": docs_out, "subfolders": subfolders}
 
 
 class MoveResourcesBody(BaseModel):
@@ -795,56 +901,28 @@ def knowledge_ask(request: Request, body: AskBody):
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     uname = _get_username_from_request(request)
 
-    # 2.e：队列堆积降级（高优先级堆积过多时，在线路径快速失败，避免系统不可恢复）
-    try:
-        qs = get_queue_stats()
-        if int(qs.get("queue_size_high") or 0) >= int(settings.queue_degrade_high_threshold):
-            try:
-                audit_write_event(
-                    tenant_id,
-                    username=uname,
-                    event_type="ai.answer.deny",
-                    query=body.query,
-                    meta={"reason": "queue_backpressure", "queue_size_high": qs.get("queue_size_high")},
-                )
-            except Exception:
-                pass
-            raise HTTPException(status_code=503, detail="系统繁忙（队列堆积），请稍后重试")
-    except HTTPException:
-        raise
-    except Exception:
-        # 观测失败不影响主流程
-        pass
-
-    # 2.e：在线互动按用户限速（token bucket）
-    key = f"knowledge.ask:{tenant_id}:{uname or 'anonymous'}"
-    if not rate_limit_allow(key=key):
-        try:
-            audit_write_event(
-                tenant_id,
-                username=uname,
-                event_type="ai.answer.deny",
-                query=body.query,
-                meta={"reason": "rate_limited"},
-            )
-        except Exception:
-            pass
+    deny = rag_audit.run_pre_ask_guards(
+        tenant_id,
+        username=uname,
+        query=body.query,
+        rate_limit_key=f"knowledge.ask:{tenant_id}:{uname or 'anonymous'}",
+        channel="knowledge.ask",
+    )
+    if deny == "queue_backpressure":
+        raise HTTPException(status_code=503, detail="系统繁忙（队列堆积），请稍后重试")
+    if deny == "rate_limited":
         raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
 
-    # 审计：attempt（不记录 query 明文，仅 hash+len；meta 不含敏感明文）
-    try:
-        audit_write_event(
-            tenant_id,
-            username=uname,
-            event_type="knowledge.retrieve.attempt",
-            query=body.query,
-            meta={
-                "selected_collection_ids": list(body.selected_collection_ids or []),
-                "selected_table_ids": list(body.selected_table_ids or []),
-            },
-        )
-    except Exception:
-        pass
+    rag_audit.audit_retrieve_attempt(
+        tenant_id,
+        username=uname,
+        query=body.query,
+        meta={
+            "channel": "knowledge.ask",
+            "selected_collection_ids": list(body.selected_collection_ids or []),
+            "selected_table_ids": list(body.selected_table_ids or []),
+        },
+    )
     res = ask_knowledge(
         token,
         body.query,
@@ -854,33 +932,22 @@ def knowledge_ask(request: Request, body: AskBody):
     )
 
     if res.get("denied"):
-        try:
-            audit_write_event(
-                tenant_id,
-                username=uname,
-                event_type="knowledge.retrieve.deny",
-                query=body.query,
-                meta={"reason": res.get("deny_reason") or "denied"},
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=403, detail=res.get("deny_reason") or "denied")
-
-    try:
-        citations = res.get("citations") or []
-        audit_write_event(
+        rag_audit.audit_after_ask_result(
             tenant_id,
             username=uname,
-            event_type="ai.answer.generate",
             query=body.query,
-            meta={
-                "citation_count": len(citations),
-                "doc_ids": sorted({str(c.get("doc_id")) for c in citations if c.get("doc_id")}),
-                "table_ids": sorted({str(c.get("table_id")) for c in citations if c.get("table_id")}),
-            },
+            result=res,
+            extra_meta={"channel": "knowledge.ask"},
         )
-    except Exception:
-        pass
+        raise HTTPException(status_code=403, detail=res.get("deny_reason") or "denied")
+
+    rag_audit.audit_after_ask_result(
+        tenant_id,
+        username=uname,
+        query=body.query,
+        result=res,
+        extra_meta={"channel": "knowledge.ask"},
+    )
     return res
 
 
@@ -1168,7 +1235,7 @@ def rag_package_export(package_id: str, request: Request, profile: str = "standa
     return Response(
         content=data,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": rag_packages._attachment_content_disposition(filename)},
     )
 
 
@@ -1211,6 +1278,14 @@ async def bigpdf_create_task(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="文件过大（最大 200MB）")
     t = kb_tasks.create_task(tenant_id, un, kind=TASK_KIND_BIGPDF_PARSE, detail=file.filename or "upload")
     prepare_task_input(tenant_id, t["task_id"], filename=file.filename or "upload.pdf", raw=raw)
+    kb_tasks.update_task_with_file_info(
+        tenant_id,
+        t["task_id"],
+        file_name=file.filename or "upload.pdf",
+        file_size=len(raw),
+        page_count=0,
+        estimated_duration=kb_tasks.estimate_duration(len(raw)),
+    )
     ok = enqueue_bigpdf_task(tenant_id, un, t["task_id"])
     if not ok:
         kb_tasks.update_task(tenant_id, t["task_id"], status="failed", stage="failed", progress=100, detail="队列已满，稍后重试")
@@ -1240,7 +1315,24 @@ def bigpdf_list_my_tasks(request: Request, limit: int = 30):
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     items = kb_tasks.list_my_tasks(tenant_id, un, kind=TASK_KIND_BIGPDF_PARSE, limit=limit)
-    return {"items": items}
+    running = kb_tasks.get_running_task(tenant_id)
+    running_id = str(running["task_id"]) if running else None
+    enriched: list[dict[str, Any]] = []
+    for it in items:
+        tid = str(it.get("task_id") or "")
+        qpos = kb_tasks.get_task_queue_position(tenant_id, tid) if str(it.get("status") or "") == "queued" else None
+        ui = resolve_bigpdf_ui_state(it, running_task_id=running_id, queue_position=qpos)
+        enriched.append(
+            {
+                **it,
+                "stage": ui.get("display_stage") or it.get("stage"),
+                "display_label": ui.get("display_label"),
+                "is_processing": bool(ui.get("is_processing")),
+                "queue_position": ui.get("queue_position"),
+                "is_waiting_for_slot": bool(ui.get("is_waiting_for_slot")),
+            }
+        )
+    return {"items": enriched}
 
 
 @router.post("/bigpdf/tasks/{task_id}/retry", response_model=BigPdfTaskResponse)
@@ -1339,7 +1431,7 @@ def bigpdf_get_status(request: Request):
             "owner": running["owner_username"],
             "is_mine": running["owner_username"] == un,
             "status": running["status"],
-            "stage": running["stage"],
+            "stage": _bigpdf_display_stage(running),
             "progress": running["progress"],
             "estimated_remaining": estimated_remaining,
             "file_name": running.get("file_name") or running.get("detail") or "",
@@ -1428,8 +1520,41 @@ class BigPdfTaskDetailResponse(BaseModel):
     file_size: int | None = None
     page_count: int | None = None
     docling_task_id: str | None = None
+    display_label: str | None = None
+    is_processing: bool = False
+    queue_position: int | None = None
+    is_waiting_for_slot: bool = False
     result: dict[str, Any] | None = None
     error: str | None = None
+
+
+def _bigpdf_display_file_name(task: dict[str, Any]) -> str | None:
+    fn = str(task.get("file_name") or "").strip()
+    if fn:
+        return fn
+    detail = str(task.get("detail") or "").strip()
+    if detail and not detail.startswith("folder:") and "user_doc:" not in detail:
+        return detail
+    return None
+
+
+def _parse_task_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _bigpdf_display_stage(task: dict[str, Any]) -> str:
+    return bigpdf_display_stage(task)
 
 
 @router.get("/bigpdf/tasks/{task_id}/detail", response_model=BigPdfTaskDetailResponse)
@@ -1448,15 +1573,12 @@ def bigpdf_get_task_detail(task_id: str, request: Request):
     # Calculate elapsed and remaining
     elapsed_time = 0
     estimated_remaining = 0
-    if t.get("started_at"):
-        from datetime import datetime, timezone
-        try:
-            started = datetime.fromisoformat(t["started_at"])
-            elapsed_time = int((datetime.now(timezone.utc) - started).total_seconds())
-            if t.get("estimated_duration"):
-                estimated_remaining = max(0, t["estimated_duration"] - elapsed_time)
-        except Exception:
-            pass
+    started = _parse_task_datetime(t.get("started_at"))
+    if started:
+        elapsed_time = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+        est = int(t.get("estimated_duration") or 0)
+        if est > 0:
+            estimated_remaining = max(0, est - elapsed_time)
 
     result = None
     if t.get("result_package_id"):
@@ -1466,17 +1588,28 @@ def bigpdf_get_task_detail(task_id: str, request: Request):
             "folder_path": t.get("detail") or "",
         }
 
+    display_stage = _bigpdf_display_stage(t)
+    running = kb_tasks.get_running_task(tenant_id)
+    running_id = str(running["task_id"]) if running else None
+    queue_pos = kb_tasks.get_task_queue_position(tenant_id, task_id) if str(t.get("status") or "") == "queued" else None
+    ui = resolve_bigpdf_ui_state(t, running_task_id=running_id, queue_position=queue_pos)
+    display_stage = str(ui.get("display_stage") or display_stage)
+
     return BigPdfTaskDetailResponse(
         task_id=t["task_id"],
         status=t["status"],
-        stage=t["stage"],
-        progress=t["progress"],
+        stage=display_stage,
+        progress=t["progress"] if display_stage != "parsing" else max(int(t.get("progress") or 0), stage_to_progress("parsing")),
         estimated_remaining=estimated_remaining,
         elapsed_time=elapsed_time,
-        file_name=t.get("file_name"),
+        file_name=_bigpdf_display_file_name(t),
         file_size=t.get("file_size"),
         page_count=t.get("page_count"),
         docling_task_id=t.get("docling_task_id"),
+        display_label=str(ui.get("display_label") or ""),
+        is_processing=bool(ui.get("is_processing")),
+        queue_position=ui.get("queue_position"),
+        is_waiting_for_slot=bool(ui.get("is_waiting_for_slot")),
         result=result,
         error=t.get("last_error") or t.get("detail") if t["status"] == "failed" else None,
     )

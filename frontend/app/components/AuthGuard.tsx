@@ -8,6 +8,8 @@ import DashboardLayout from "./DashboardLayout";
 
 const LOGIN_PATH = "/login";
 const CHANGE_PASSWORD_PATH = "/change-password";
+/** 股权全景实验模块：仅管理员可见（2026-05） */
+const EQUITY_ROUTE_PREFIXES = ["/equity", "/compare", "/analysis", "/targets"];
 /** 路由切换时鉴权缓存 TTL（毫秒），已鉴权且在此时间内切换页面则跳过重复请求 */
 const AUTH_CACHE_TTL_MS = 5000;
 
@@ -23,6 +25,11 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const initialAuthDoneRef = useRef(false);
   const lastAuthCheckRef = useRef(0);
+  const authenticatedRef = useRef(false);
+
+  useEffect(() => {
+    authenticatedRef.current = authenticated;
+  }, [authenticated]);
 
   useEffect(() => {
     if (pathname === LOGIN_PATH) {
@@ -31,12 +38,18 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       return;
     }
     const isFirstCheck = !initialAuthDoneRef.current;
-    if (isFirstCheck) {
+    const hasToken =
+      typeof window !== "undefined" && !!sessionStorage.getItem("orient_g_token");
+    if (isFirstCheck && !hasToken) {
       setLoading(true);
       setAuthCheckDone(false);
     }
     const now = Date.now();
-    if (!isFirstCheck && authenticated && now - lastAuthCheckRef.current < AUTH_CACHE_TTL_MS) {
+    if (
+      !isFirstCheck &&
+      authenticatedRef.current &&
+      now - lastAuthCheckRef.current < AUTH_CACHE_TTL_MS
+    ) {
       return;
     }
     let cancelled = false;
@@ -98,7 +111,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [pathname, authenticated]);
+  }, [pathname]);
 
   useEffect(() => {
     if (loading || pathname === LOGIN_PATH) return;
@@ -123,6 +136,14 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     }
     // 非管理员不可进入财务后台（含自定义路径，规划 2.a：仅管理员可进）
     if ((pathname === financePath || pathname === "/finance") && !isAdmin) {
+      router.replace("/ai-interaction");
+      return;
+    }
+    // 股权全景及相关分析页：仅管理员
+    if (
+      !isAdmin &&
+      EQUITY_ROUTE_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`))
+    ) {
       router.replace("/ai-interaction");
     }
   }, [loading, authCheckDone, authenticated, mustChangePassword, pathname, router, viewBusinessDashboard, isAdmin, financePath]);

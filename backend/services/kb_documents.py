@@ -29,6 +29,7 @@ from backend.services.kb_collections import dynamic_private_collection_id, resol
 from backend.services.kb_folders import bind_resource_to_folder, ensure_private_folder
 from backend.services.task_queue import Priority, submit, TASK_EMBED_AND_INDEX_REFRESH
 from backend.services.kb_vector_index import index_uploaded_document_task
+from backend.services.kb_doc_lifecycle import transition_document_status, validate_manifest
 from backend.services.kb_vector_store import vector_enabled
 
 
@@ -249,6 +250,7 @@ def _parse_and_package_document(
     source_hash: str,
     private_collection_id: str,
     is_cancelled: callable | None = None,
+    status_before_parse: str = "uploaded",
 ) -> dict[str, Any]:
     root = _doc_root(tenant_id, doc_id)
     archive_dir = root / "archive"
@@ -293,29 +295,24 @@ def _parse_and_package_document(
                 shutil.move(str(res.json_path), str(full_json))
             parser_version = res.docling_version or "docling"
 
-        with get_db() as db:
-            db.execute(
-                text(
-                    """
-                    UPDATE kb_user_documents
-                    SET status='parsed', source_hash=:h, parser_version=:pv, updated_at=CURRENT_TIMESTAMP, last_error=NULL
-                    WHERE tenant_id=:t AND doc_id=:d
-                    """
-                ),
-                {"t": tenant_id, "d": doc_id, "h": source_hash, "pv": parser_version},
-            )
+        transition_document_status(
+            tenant_id,
+            doc_id,
+            "parsed",
+            from_status=status_before_parse,
+            parser_version=parser_version,
+            source_hash=source_hash,
+        )
     except Exception as e:
-        with get_db() as db:
-            db.execute(
-                text(
-                    """
-                    UPDATE kb_user_documents
-                    SET status='failed', source_hash=:h, updated_at=CURRENT_TIMESTAMP, last_error=:err
-                    WHERE tenant_id=:t AND doc_id=:d
-                    """
-                ),
-                {"t": tenant_id, "d": doc_id, "h": source_hash, "err": str(e)},
-            )
+        transition_document_status(
+            tenant_id,
+            doc_id,
+            "failed",
+            from_status=status_before_parse,
+            last_error=str(e),
+            source_hash=source_hash,
+            skip_validation=True,
+        )
         raise
 
     # 打包分段 -> kb/sections/*.md + manifest.json
@@ -345,31 +342,20 @@ def _parse_and_package_document(
         "sections": section_items,
     }
     _write_json(kb_dir / "manifest.json", manifest)
+    missing = validate_manifest(manifest)
+    if missing:
+        raise RuntimeError(f"manifest missing keys: {missing}")
 
-    with get_db() as db:
-        db.execute(
-            text(
-                """
-                UPDATE kb_user_documents
-                SET status='packaged', manifest_json=:mj, updated_at=CURRENT_TIMESTAMP, last_error=NULL
-                WHERE tenant_id=:t AND doc_id=:d
-                """
-            ),
-            {"t": tenant_id, "d": doc_id, "mj": json.dumps(manifest, ensure_ascii=False)},
-        )
+    transition_document_status(
+        tenant_id,
+        doc_id,
+        "packaged",
+        from_status="parsed",
+        manifest_json=json.dumps(manifest, ensure_ascii=False),
+    )
 
     # assigned/active：当前 internal 闭环下，打包完成即视为已归属可用
-    with get_db() as db:
-        db.execute(
-            text(
-                """
-                UPDATE kb_user_documents
-                SET status='active', updated_at=CURRENT_TIMESTAMP
-                WHERE tenant_id=:t AND doc_id=:d
-                """
-            ),
-            {"t": tenant_id, "d": doc_id},
-        )
+    transition_document_status(tenant_id, doc_id, "active", from_status="packaged")
 
     # chunks：按 section 边界整块切分（保留文档结构，替代旧 1200 字符等距切）
     struct_chunks = _chunk_by_sections(sections)
@@ -410,36 +396,23 @@ def _parse_and_package_document(
 
 
 def mark_document_failed(tenant_id: str, doc_id: str, detail: str) -> None:
-    with get_db() as db:
-        db.execute(
-            text(
-                """
-                UPDATE kb_user_documents
-                SET status='failed', updated_at=CURRENT_TIMESTAMP, last_error=:err
-                WHERE tenant_id=:t AND doc_id=:d
-                """
-            ),
-            {"t": tenant_id, "d": doc_id, "err": str(detail or "")[:4000]},
-        )
+    transition_document_status(
+        tenant_id,
+        doc_id,
+        "failed",
+        last_error=str(detail or ""),
+        skip_validation=True,
+    )
 
 
 def mark_document_status(tenant_id: str, doc_id: str, status: str, detail: str | None = None) -> None:
-    with get_db() as db:
-        db.execute(
-            text(
-                """
-                UPDATE kb_user_documents
-                SET status=:st, updated_at=CURRENT_TIMESTAMP, last_error=:err
-                WHERE tenant_id=:t AND doc_id=:d
-                """
-            ),
-            {
-                "t": tenant_id,
-                "d": doc_id,
-                "st": str(status or "queued"),
-                "err": (str(detail)[:4000] if detail else None),
-            },
-        )
+    transition_document_status(
+        tenant_id,
+        doc_id,
+        str(status or "queued"),
+        last_error=detail,
+        skip_validation=True,
+    )
 
 
 def recover_pending_document_tasks(tenant_id: str, *, limit: int = 200) -> dict[str, int]:
@@ -537,16 +510,7 @@ def process_uploaded_document_task(tenant_id: str, doc_id: str, is_cancelled=Non
         ).fetchone()
         if not row:
             raise RuntimeError(f"document not found: {doc_id}")
-        db.execute(
-            text(
-                """
-                UPDATE kb_user_documents
-                SET status='parsing', updated_at=CURRENT_TIMESTAMP, last_error=NULL
-                WHERE tenant_id=:t AND doc_id=:d
-                """
-            ),
-            {"t": tenant_id, "d": doc_id},
-        )
+        transition_document_status(tenant_id, doc_id, "parsing", from_status="queued")
     owner_username = str(row[0] or "")
     title = str(row[1] or doc_id)
     safe_name = str(row[2] or "upload")
@@ -569,6 +533,7 @@ def process_uploaded_document_task(tenant_id: str, doc_id: str, is_cancelled=Non
         raw_path=raw_path,
         source_hash=source_hash,
         private_collection_id=pcid,
+        status_before_parse="parsing",
     )
 
 

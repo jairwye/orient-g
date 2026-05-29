@@ -423,6 +423,20 @@ def compute_acl_scope(
                 if tid:
                     allowed_table_ids_set.add(str(tid))
 
+    # 已分享到用户可见知识库（含部门公共库）的文件夹内文档，可读
+    try:
+        from backend.services.kb_folders import collect_doc_ids_in_visible_folders
+
+        allowed_doc_ids_set.update(
+            collect_doc_ids_in_visible_folders(
+                ctx.tenant_id,
+                username=ctx.username,
+                allowed_collection_ids=set(allowed_collection_ids),
+            )
+        )
+    except Exception:
+        pass
+
     allowed_doc_ids = sorted(allowed_doc_ids_set)
     allowed_table_ids = sorted(allowed_table_ids_set)
 

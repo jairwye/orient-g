@@ -39,22 +39,18 @@ def resolve_doc_ids_from_context(
             doc_ids.append(d)
             seen.add(d)
 
-    # 2. 文件夹 → 解析为文档列表
+    # 2. 文件夹 → 解析为文档列表（含所有后代子文件夹）
     for fid in (folder_ids or []):
         fid_s = str(fid).strip()
         if not fid_s:
             continue
         try:
-            from backend.services.kb_folders import list_folder_resources
+            from backend.services.kb_folders import collect_subtree_doc_ids
 
-            resources = list_folder_resources(tenant_id, folder_id=fid_s)
-            for r in resources:
-                if str(r.get("resource_type") or "") != "doc":
-                    continue
-                rid = str(r.get("resource_id") or "").strip()
-                if rid and rid not in seen:
-                    doc_ids.append(rid)
-                    seen.add(rid)
+            for did in collect_subtree_doc_ids(tenant_id, fid_s):
+                if did not in seen:
+                    doc_ids.append(did)
+                    seen.add(did)
         except Exception:
             pass
 
@@ -202,13 +198,12 @@ def assemble_document_context(
         title = meta.get("title", did) if meta else did
         status = meta.get("status", "") if meta else ""
 
-        if status and status not in ("active", "packaged", "parsed"):
-            skipped.append(title)
-            continue
-
         content = read_document_content(tenant_id, did, max_chars=max_per_doc)
         if not content:
-            skipped.append(title)
+            if status and status not in ("active", "packaged", "parsed"):
+                skipped.append(f"{title}（状态 {status}，未完成解析或无 sections/full.md）")
+            else:
+                skipped.append(title)
             continue
 
         doc_block = f"[文档: {title}]\n{content}"

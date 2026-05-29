@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
+import { parseContentDispositionFilename } from "../lib/downloadFilename";
 import { KnowledgeWorkspacePanel } from "../components/KnowledgeWorkspacePanel";
 import { PdfPackagesPanel } from "../knowledge/components/PdfPackagesPanel";
 import {
@@ -12,12 +13,16 @@ import {
   writeKbScopeCapsule,
 } from "../lib/kb_scope_capsule";
 import {
+  ArrowDown,
   ArrowUp,
+  Bot,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileText,
   Folder,
+  History,
   MoreHorizontal,
   Plus,
   ScrollText,
@@ -29,11 +34,36 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import {
+  AGENT_CHART_ACCENT_CLASS,
+  BUSINESS_CHART_COLORS,
+  CHART_POSITIVE_CLASS,
+} from "../lib/business_chart_colors";
 import AiInlineChart from "./AiInlineChart";
 import AiInlineTable from "./AiInlineTable";
 import AiAvatar from "./AiAvatar";
+import AgentTracePanel from "./AgentTracePanel";
+import {
+  appendAgentTraceStep,
+  buildAgentMetaFromDone,
+  mergeAssistantOnAgentDone,
+  traceFromLegacyStreamStatus,
+  upsertAgentToolTrace,
+} from "./agentTraceUtils";
+import {
+  mapToolProgressToTraceStep,
+  shouldSkipRedundantToolCall,
+} from "./agentSseTrace";
+import {
+  assistantMessageBubbleWrapClass,
+  assistantMessageRowClass,
+} from "./agentLayoutUtils";
+import { normalizeAgentDisplayText, UI_AGENT } from "../lib/ui_labels";
+import { MarkdownBubble } from "./MarkdownBubble";
 import TypingIndicator from "./TypingIndicator";
 import type {
+  AgentMeta,
+  AgentTraceStep,
   AskResponse,
   ChatMessage,
   ChatSession,
@@ -76,6 +106,27 @@ function mergeConfigById<T extends { id: string }>(builtins: T[], saved: T[] | n
 
 function formatMb(bytes: number) {
   return Math.round((bytes / 1024 / 1024) * 10) / 10;
+}
+
+function sessionCreatedAt(s: ChatSession): number {
+  return s.created_at ?? s.updated_at ?? 0;
+}
+
+/** 历史列表固定按创建时间排序，不用 updated_at（避免仅切换会话就顶到最上） */
+function sessionModeOf(s: ChatSession): "chat" | "agent" {
+  return s.session_mode === "agent" ? "agent" : "chat";
+}
+
+function compareSessionsForList(a: ChatSession, b: ChatSession): number {
+  return sessionCreatedAt(b) - sessionCreatedAt(a);
+}
+
+function chatMessagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].role !== b[i].role || a[i].content !== b[i].content) return false;
+  }
+  return true;
 }
 
 async function estimatePdfPages(file: File): Promise<number | null> {
@@ -162,11 +213,13 @@ export default function AiInteractionPage() {
   const sp = useSearchParams();
   const scopeHydratedRef = useRef(false);
   const sessionsHydratedRef = useRef(false);
-  const [activeLeftView, setActiveLeftView] = useState<"chat" | "workspace">("chat");
+  const [activeLeftView, setActiveLeftView] = useState<"chat" | "workspace" | "agent">("chat");
   const [workspaceTab, setWorkspaceTab] = useState<"knowledge" | "pdf_packages" | "prompts" | "skills" | "tools" | "workflows">("knowledge");
   const [startAreaHint, setStartAreaHint] = useState<string | null>(null);
   const [sessionMenuOpenId, setSessionMenuOpenId] = useState<string | null>(null);
   const suppressNextSessionClickRef = useRef(false);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [options, setOptions] = useState<KnowledgeOptionsResponse | null>(null);
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
@@ -176,6 +229,16 @@ export default function AiInteractionPage() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [agentLoading, setAgentLoading] = useState(false);
+  const agentRunIdRef = useRef<string | null>(null);
+  const agentAbortRef = useRef<AbortController | null>(null);
+  const [hermesSessionId, setHermesSessionId] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<import("./types").AgentMode>("standard");
+  const lastChatSessionIdRef = useRef<string | null>(null);
+  const lastAgentSessionIdRef = useRef<string | null>(null);
+  const pendingAgentFromUrlRef = useRef(false);
+  const [llmModelLabel, setLlmModelLabel] = useState("");
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [uploadHint, setUploadHint] = useState<string | null>(null);
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -232,14 +295,42 @@ export default function AiInteractionPage() {
     }
   }, [sessions]);
 
-  const ensureActiveSession = useCallback(() => {
-    if (activeSessionId) return activeSessionId;
-    const id = `s_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const s: ChatSession = { id, title: "新对话", updated_at: Date.now(), messages: [] };
-    setActiveSessionId(id);
-    setSessions((prev) => [s, ...prev]);
-    return id;
-  }, [activeSessionId]);
+  const ensureActiveSession = useCallback(
+    (mode: "chat" | "agent" = "chat"): { id: string; isNew: boolean } => {
+      if (activeSessionId) {
+        const cur = sessions.find((s) => s.id === activeSessionId);
+        if (cur && sessionModeOf(cur) === mode) return { id: activeSessionId, isNew: false };
+      }
+      const id = `s_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const now = Date.now();
+      const s: ChatSession = {
+        id,
+        title: mode === "agent" ? UI_AGENT.newSessionTitle : "新对话",
+        session_mode: mode,
+        created_at: now,
+        updated_at: now,
+        messages: [],
+        attachments: [],
+        hermes_session_id: null,
+      };
+      setActiveSessionId(id);
+      setSessions((prev) => [s, ...prev]);
+      setMessages([]);
+      setHermesSessionId(null);
+      setComposerAttachments([]);
+      setDataParseSessionId(null);
+      excelParseSidRef.current = null;
+      setActiveWorkflowId(null);
+      setEnabledSkills([]);
+      setEnabledTools([]);
+      setEnabledPromptIds([]);
+      setStartAreaHint(null);
+      if (mode === "agent") lastAgentSessionIdRef.current = id;
+      else lastChatSessionIdRef.current = id;
+      return { id, isNew: true };
+    },
+    [activeSessionId, sessions]
+  );
 
   const refreshKnowledgeOptions = useCallback(async () => {
     const res = await fetch("/api/knowledge/options", { credentials: "include", headers: getAuthHeaders() });
@@ -267,11 +358,23 @@ export default function AiInteractionPage() {
         `/api/knowledge/rag-packages/${encodeURIComponent(pkgId)}/export?profile=${encodeURIComponent(profile)}`,
         { credentials: "include", headers: getAuthHeaders() },
       );
-      if (!res.ok) return;
+      if (!res.ok) {
+        let errMsg = `导出失败（HTTP ${res.status}）`;
+        try {
+          const ct = res.headers.get("content-type") || "";
+          if (ct.includes("application/json")) {
+            const j = (await res.json()) as { detail?: unknown };
+            if (typeof j.detail === "string" && j.detail.trim()) errMsg = j.detail.trim();
+          }
+        } catch {
+          // ignore parse errors
+        }
+        alert(errMsg);
+        return;
+      }
       const blob = await res.blob();
-      const cd = res.headers.get("content-disposition") || "";
-      const m = cd.match(/filename="([^"]+)"/i);
-      const filename = m?.[1] || `${pkgId}_${profile}.zip`;
+      const cd = res.headers.get("content-disposition");
+      const filename = parseContentDispositionFilename(cd, `${pkgId}_${profile}.zip`);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -300,6 +403,67 @@ export default function AiInteractionPage() {
       setRagBusyId(null);
     }
   }, [refreshRagPackages]);
+
+  const isAgentView = activeLeftView === "agent";
+  const isConversationView = activeLeftView === "chat" || isAgentView;
+  const panelMessages = messages;
+  const panelLoading = isAgentView ? agentLoading : chatLoading;
+
+  const updateScrollToBottomFab = useCallback(() => {
+    const el = chatContainerRef.current;
+    if (!el || panelMessages.length === 0) {
+      setShowScrollToBottom(false);
+      return;
+    }
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollToBottom(dist > 80);
+  }, [panelMessages.length]);
+
+  const scrollChatToBottom = useCallback(
+    (behavior: ScrollBehavior = "auto") => {
+      const end = chatEndRef.current;
+      if (end) {
+        end.scrollIntoView({ block: "end", behavior });
+      } else {
+        const el = chatContainerRef.current;
+        if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+      }
+      if (behavior === "auto") {
+        requestAnimationFrame(() => updateScrollToBottomFab());
+      } else {
+        window.setTimeout(() => updateScrollToBottomFab(), 280);
+      }
+    },
+    [updateScrollToBottomFab],
+  );
+
+  // 新消息 / 回复 / 图表渲染后滚到底部，保证最新一条完整可见
+  useEffect(() => {
+    if (!isConversationView || panelMessages.length === 0) return;
+    const run = () => scrollChatToBottom("smooth");
+    const id = requestAnimationFrame(() => requestAnimationFrame(run));
+    return () => cancelAnimationFrame(id);
+  }, [isConversationView, panelMessages, panelLoading, scrollChatToBottom]);
+
+  useEffect(() => {
+    const root = chatContainerRef.current;
+    if (!root || !isConversationView || panelMessages.length === 0) return;
+    const ro = new ResizeObserver(() => {
+      scrollChatToBottom("auto");
+      updateScrollToBottomFab();
+    });
+    ro.observe(root);
+    return () => ro.disconnect();
+  }, [isConversationView, panelMessages.length, scrollChatToBottom, updateScrollToBottomFab]);
+
+  useEffect(() => {
+    const el = chatContainerRef.current;
+    if (!el || !isConversationView) return;
+    const onScroll = () => updateScrollToBottomFab();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [isConversationView, panelMessages.length, updateScrollToBottomFab]);
 
   // 清理已消费的 URL 参数（同页面「带到 AI 互动」会通过 router.push 改变 search params）
   const replaceConsumedParams = useCallback((keys: string[]) => {
@@ -358,6 +522,16 @@ export default function AiInteractionPage() {
 
     let consumed = false;
 
+    // 响应 tab 参数（从大 PDF 工具页跳转过来，指定工作空间中的标签页）
+    const tab = (sp.get("tab") || "").trim();
+    if (tab) {
+      if (tab === "pdf_packages") {
+        setActiveLeftView("workspace");
+        setWorkspaceTab("pdf_packages");
+      }
+      replaceConsumedParams(["tab"]);
+    }
+
     // 响应 scope 参数（folder_id/collections/tables）
     if (hadUrlScope) {
       if (fromUrl.folder_ids?.length) setSelectedFolderIds(fromUrl.folder_ids);
@@ -411,8 +585,11 @@ export default function AiInteractionPage() {
       replaceConsumedParams(["doc_ids", "view"]);
       consumed = true;
     }
-    // 如果 URL 明确指定 view=chat，或带入 scope/doc_ids，优先回到聊天界面
-    if (view === "chat" || consumed) {
+    if (view === "agent") {
+      pendingAgentFromUrlRef.current = true;
+      replaceConsumedParams(["view"]);
+    } else if ((view === "chat" || consumed) && !tab) {
+      // 如果 URL 明确指定 view=chat，或带入 scope/doc_ids，优先回到聊天界面
       setActiveLeftView("chat");
     }
   }, [loading, sp, replaceConsumedParams]);
@@ -459,7 +636,17 @@ export default function AiInteractionPage() {
                       const mm = m as { role?: unknown; content?: unknown; citations?: unknown; deny_reason?: unknown };
                       return (mm.role === "user" || mm.role === "assistant") && typeof mm.content === "string";
                     })
-                    .map((m) => ({ role: m.role, content: m.content, citations: m.citations, deny_reason: m.deny_reason }));
+                    .map((m) => {
+                      const mm = m as ChatMessage;
+                      return {
+                        role: mm.role,
+                        content: mm.content,
+                        citations: mm.citations,
+                        deny_reason: mm.deny_reason,
+                        chart_spec: mm.chart_spec ?? null,
+                        table_spec: mm.table_spec ?? null,
+                      };
+                    });
                   const attachmentsRaw = Array.isArray(obj.attachments) ? (obj.attachments as unknown[]) : [];
                   const attachments = attachmentsRaw
                     .filter((a): a is ComposerAttachment => {
@@ -503,6 +690,8 @@ export default function AiInteractionPage() {
                       };
                     });
                   const wf = obj as {
+                    session_mode?: unknown;
+                    hermes_session_id?: unknown;
                     data_parse_session_id?: unknown;
                     active_workflow_id?: unknown;
                     enabled_skills?: unknown;
@@ -510,10 +699,19 @@ export default function AiInteractionPage() {
                     enabled_prompt_ids?: unknown;
                     start_area_hint?: unknown;
                   };
+                  const sessionMode =
+                    wf.session_mode === "agent" || wf.session_mode === "chat" ? wf.session_mode : "chat";
+                  const updatedAt = typeof obj.updated_at === "number" ? obj.updated_at : Date.now();
+                  const rawCreated = (obj as { created_at?: unknown }).created_at;
+                  const createdAt = typeof rawCreated === "number" ? rawCreated : updatedAt;
                   return {
                     id: obj.id,
                     title: typeof obj.title === "string" && obj.title.trim() ? obj.title : "对话",
-                    updated_at: typeof obj.updated_at === "number" ? obj.updated_at : Date.now(),
+                    session_mode: sessionMode,
+                    hermes_session_id:
+                      typeof wf.hermes_session_id === "string" ? wf.hermes_session_id : null,
+                    created_at: createdAt,
+                    updated_at: updatedAt,
                     messages,
                     attachments,
                     data_parse_session_id: typeof wf.data_parse_session_id === "string" ? wf.data_parse_session_id : null,
@@ -530,12 +728,18 @@ export default function AiInteractionPage() {
                     start_area_hint: typeof wf.start_area_hint === "string" ? wf.start_area_hint : null,
                   } satisfies ChatSession;
                 })
-                .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+                .sort(compareSessionsForList);
               setSessions(cleaned);
               if (cleaned.length) {
-                const s0 = cleaned[0];
+                for (const s of cleaned) {
+                  if (sessionModeOf(s) === "agent") lastAgentSessionIdRef.current = s.id;
+                  else lastChatSessionIdRef.current = s.id;
+                }
+                const s0 =
+                  cleaned.find((s) => sessionModeOf(s) === "chat") ?? cleaned[0];
                 setActiveSessionId(s0.id);
                 setMessages(s0.messages);
+                setHermesSessionId(s0.hermes_session_id ?? null);
                 const att0 = (s0.attachments as ComposerAttachment[] | undefined) ?? [];
                 setComposerAttachments(att0);
                 setDataParseSessionId(activeExcelParseSessionId(att0) ?? s0.data_parse_session_id ?? null);
@@ -565,6 +769,31 @@ export default function AiInteractionPage() {
       cancelled = true;
     };
   }, [refreshKnowledgeOptions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/ai-interaction/models", {
+          credentials: "include",
+          headers: getAuthHeaders(),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          default?: string;
+          items?: Array<{ id?: string; label?: string }>;
+        };
+        if (!res.ok || cancelled) return;
+        const def = (data.default || "").trim();
+        const first = (data.items?.[0]?.label || data.items?.[0]?.id || "").trim();
+        setLlmModelLabel(def || first || "");
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (loading || activeLeftView !== "workspace" || workspaceTab !== "skills") return;
@@ -841,8 +1070,9 @@ export default function AiInteractionPage() {
       null;
     setChatLoading(true);
     setChatInput("");
-    ensureActiveSession();
-    setMessages((prev) => [...prev, { role: "user", content: q }]);
+    const { isNew: newChatSession } = ensureActiveSession("chat");
+    const chatBase = newChatSession ? [] : messages;
+    setMessages([...chatBase, { role: "user", content: q }]);
     try {
       if (activeWorkflowId === WF_DATA_PARSE_EXCEL_ID && !excelSid) {
         setMessages((prev) => [
@@ -902,7 +1132,7 @@ export default function AiInteractionPage() {
         return;
       }
 
-      const nextMessages = [...messages, { role: "user" as const, content: q }];
+      const nextMessages = [...chatBase, { role: "user" as const, content: q }];
       // 收集 composerAttachments 中 kb_doc 类型的文档引用，作为 attached_doc_ids 发送
       const attachedIds = composerAttachments
         .filter((a) => a.kind === "kb_doc" && a.docId)
@@ -932,12 +1162,377 @@ export default function AiInteractionPage() {
       }
       const reply = data.reply ?? "";
       const citations = (data.citations ?? []) as Citation[];
+      if ((data.llm_model || "").trim()) setLlmModelLabel((data.llm_model || "").trim());
       setMessages((prev) => [...prev, { role: "assistant", content: reply, citations }]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "请求失败";
       setMessages((prev) => [...prev, { role: "assistant", content: msg, citations: [] }]);
     } finally {
       setChatLoading(false);
+    }
+  };
+
+  const appendAgentTrace = useCallback((step: Omit<AgentTraceStep, "at">) => {
+    setMessages((prev) => {
+      const copy = [...prev];
+      const last = copy[copy.length - 1];
+      if (last?.role !== "assistant") return prev;
+      copy[copy.length - 1] = {
+        ...last,
+        agentTrace: appendAgentTraceStep(last.agentTrace || [], step),
+      };
+      return copy;
+    });
+  }, []);
+
+  const upsertAgentTool = useCallback(
+    (step: {
+      toolCallId: string;
+      message: string;
+      toolStatus: "running" | "completed";
+      emoji?: string;
+      tool?: string;
+    }) => {
+      setMessages((prev) => {
+        const copy = [...prev];
+        const last = copy[copy.length - 1];
+        if (last?.role !== "assistant") return prev;
+        copy[copy.length - 1] = {
+          ...last,
+          agentTrace: upsertAgentToolTrace(last.agentTrace || [], step),
+        };
+        return copy;
+      });
+    },
+    [],
+  );
+
+  const appendAgentStreamStatus = useCallback(
+    (line: string, step?: string) => {
+      appendAgentTrace({ kind: "status", message: line, step });
+    },
+    [appendAgentTrace],
+  );
+
+  const handleAgentStop = useCallback(async () => {
+    const runId = agentRunIdRef.current;
+    agentAbortRef.current?.abort();
+    agentAbortRef.current = null;
+    if (runId) {
+      try {
+        await fetch("/api/agent/cancel", {
+          method: "POST",
+          credentials: "include",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: runId }),
+        });
+      } catch {
+        /* 忽略取消请求失败 */
+      }
+    }
+    agentRunIdRef.current = null;
+    setAgentLoading(false);
+    appendAgentStreamStatus("已请求停止（Hermes 侧可能仍需数十秒才会完全结束）");
+    setMessages((prev) => {
+      const copy = [...prev];
+      const last = copy[copy.length - 1];
+      if (last?.role === "assistant" && !last.content?.trim()) {
+        copy[copy.length - 1] = { ...last, content: "（已停止）" };
+      }
+      return copy;
+    });
+  }, [appendAgentStreamStatus]);
+
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden" && agentRunIdRef.current) {
+        void handleAgentStop();
+      }
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      const rid = agentRunIdRef.current;
+      if (!rid) return;
+      agentAbortRef.current?.abort();
+      void fetch("/api/agent/cancel", {
+        method: "POST",
+        credentials: "include",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: rid }),
+      }).catch(() => undefined);
+    };
+  }, [handleAgentStop]);
+
+  const handleAgentAsk = async () => {
+    const q = chatInput.trim();
+    if (!q || agentLoading || composerUploading) return;
+    setAgentLoading(true);
+    setChatInput("");
+    const runId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `run_${Date.now()}`;
+    agentRunIdRef.current = runId;
+    const abortCtrl = new AbortController();
+    agentAbortRef.current = abortCtrl;
+    const { isNew: newAgentSession } = ensureActiveSession("agent");
+    const agentBase = newAgentSession ? [] : messages;
+    const nextMessages: ChatMessage[] = [...agentBase, { role: "user", content: q }];
+    setMessages([
+      ...nextMessages,
+      {
+        role: "assistant",
+        content: "",
+        agentTrace: [{ at: Date.now(), kind: "status", message: "已提交任务，连接流式通道…" }],
+      },
+    ]);
+    try {
+      const attachedIds = composerAttachments
+        .filter((a) => a.kind === "kb_doc" && a.docId)
+        .map((a) => String(a.docId!).trim())
+        .filter(Boolean);
+      const hasKbScope =
+        selectedCollectionIds.length > 0 ||
+        selectedTableIds.length > 0 ||
+        selectedFolderIds.length > 0 ||
+        attachedIds.length > 0;
+      const payload = {
+        messages: nextMessages,
+        kb_scope: hasKbScope
+          ? {
+              selected_collection_ids: selectedCollectionIds.length ? selectedCollectionIds : undefined,
+              selected_table_ids: selectedTableIds.length ? selectedTableIds : undefined,
+              selected_folder_ids: selectedFolderIds.length ? selectedFolderIds : undefined,
+            }
+          : undefined,
+        attached_doc_ids: attachedIds.length ? attachedIds : undefined,
+        allow_kb_write: true,
+        hermes_session_id: hermesSessionId,
+        enabled_skills: enabledSkills.length ? enabledSkills : undefined,
+        agent_mode: agentMode,
+      };
+      const headers = {
+        ...getAuthHeaders(),
+        "Content-Type": "application/json",
+        "X-Agent-Run-Id": runId,
+      };
+      const tryStream = async (): Promise<boolean> => {
+        const res = await fetch("/api/agent/chat/stream", {
+          method: "POST",
+          credentials: "include",
+          headers,
+          body: JSON.stringify(payload),
+          signal: abortCtrl.signal,
+        });
+        const ct = res.headers.get("content-type") || "";
+        if (!res.ok || !ct.includes("text/event-stream") || !res.body) return false;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let doneMeta: {
+          hermes_session_id?: string;
+          citations?: Citation[];
+          chart_spec?: Record<string, unknown> | null;
+          table_spec?: { columns: string[]; rows: string[][] } | null;
+          agentMeta?: AgentMeta;
+        } = {};
+        let gotDone = false;
+        let gotDelta = false;
+        let lastDoneEvt: Record<string, unknown> | null = null;
+
+        const appendDelta = (text: string) => {
+          if (!text) return;
+          setMessages((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last?.role === "assistant") {
+              copy[copy.length - 1] = { ...last, content: (last.content || "") + text };
+            }
+            return copy;
+          });
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const blocks = buf.split("\n\n");
+          buf = blocks.pop() || "";
+          for (const block of blocks) {
+            for (const line of block.split("\n")) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith("data:")) continue;
+              const raw = trimmed.slice(5).trim();
+              if (!raw || raw === "[DONE]") continue;
+              let evt: Record<string, unknown> & {
+                type?: string;
+                content?: string;
+                message?: string;
+                name?: string;
+                code?: string;
+                step?: string;
+                reply?: string;
+                hermes_session_id?: string;
+                citations?: Citation[];
+                chart_spec?: Record<string, unknown> | null;
+                table_spec?: { columns: string[]; rows: string[][] } | null;
+              };
+              try {
+                evt = JSON.parse(raw) as typeof evt;
+              } catch {
+                continue;
+              }
+              if (evt.type === "status" && evt.message) {
+                appendAgentTrace({
+                  kind: "status",
+                  message: String(evt.message),
+                  step: typeof evt.step === "string" ? evt.step : undefined,
+                });
+                continue;
+              }
+              if (evt.type === "tool_progress") {
+                const step = mapToolProgressToTraceStep(evt as Record<string, unknown>);
+                if (step.toolCallId) {
+                  upsertAgentTool({
+                    toolCallId: step.toolCallId,
+                    message: step.message,
+                    toolStatus: step.toolStatus || "running",
+                    emoji: step.emoji,
+                    tool: step.tool,
+                  });
+                } else {
+                  appendAgentTrace(step);
+                }
+                continue;
+              }
+              if (evt.type === "tool_call") {
+                setMessages((prev) => {
+                  const copy = [...prev];
+                  const last = copy[copy.length - 1];
+                  if (last?.role !== "assistant") return prev;
+                  const trace = last.agentTrace || [];
+                  if (
+                    shouldSkipRedundantToolCall(trace, {
+                      name: String(evt.name || ""),
+                    })
+                  ) {
+                    return prev;
+                  }
+                  copy[copy.length - 1] = {
+                    ...last,
+                    agentTrace: appendAgentTraceStep(trace, {
+                      kind: "tool",
+                      message: String(evt.message || `工具：${evt.name || "unknown"}`),
+                      step: "tool",
+                    }),
+                  };
+                  return copy;
+                });
+                continue;
+              }
+              if (evt.type === "thinking" && evt.content) {
+                appendAgentTrace({ kind: "thinking", message: String(evt.content) });
+                continue;
+              }
+              if (evt.type === "error") {
+                if (evt.code === "cancelled") {
+                  appendAgentStreamStatus(evt.message || "已停止");
+                  return true;
+                }
+                const errMsg = evt.message || "Hermes 流式错误";
+                appendAgentStreamStatus(errMsg);
+                throw new Error(errMsg);
+              }
+              if (evt.type === "delta" && evt.content) {
+                gotDelta = true;
+                appendDelta(evt.content);
+              }
+              if (evt.type === "done") {
+                gotDone = true;
+                lastDoneEvt = evt;
+                const agentMeta = buildAgentMetaFromDone(evt);
+                doneMeta = {
+                  hermes_session_id:
+                    typeof evt.hermes_session_id === "string" ? evt.hermes_session_id : undefined,
+                  citations: evt.citations as Citation[] | undefined,
+                  chart_spec: (evt.chart_spec as Record<string, unknown> | null) ?? null,
+                  table_spec:
+                    (evt.table_spec as { columns: string[]; rows: string[][] } | null) ?? null,
+                  agentMeta,
+                };
+                if (!gotDelta && typeof evt.reply === "string" && evt.reply.trim()) {
+                  appendDelta(evt.reply);
+                  gotDelta = true;
+                }
+              }
+            }
+          }
+        }
+        const agentMeta =
+          doneMeta.agentMeta || (lastDoneEvt ? buildAgentMetaFromDone(lastDoneEvt) : undefined);
+        if (!gotDone) {
+          appendAgentTrace({ kind: "error", message: "流式连接已结束，但未收到完成信号" });
+        }
+        if (doneMeta.hermes_session_id) setHermesSessionId(doneMeta.hermes_session_id);
+        const emptyReplyHint =
+          "未返回正文。请展开「执行过程」查看路径；若 Gateway/LLM 已停，请检查后重试。";
+        setMessages((prev) => {
+          const copy = [...prev];
+          const last = copy[copy.length - 1];
+          if (last?.role === "assistant") {
+            const trimmed = (last.content || "").trim();
+            copy[copy.length - 1] = mergeAssistantOnAgentDone(last, {
+              content: trimmed || emptyReplyHint,
+              agentMeta,
+              citations: (doneMeta.citations ?? last.citations) as Citation[] | undefined,
+              chart_spec: doneMeta.chart_spec ?? last.chart_spec ?? null,
+              table_spec: doneMeta.table_spec ?? last.table_spec ?? null,
+              appendMetaTrace: Boolean(agentMeta && gotDone),
+            });
+          }
+          return copy;
+        });
+        return true;
+      };
+
+      const streamed = await tryStream().catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") return true;
+        return false;
+      });
+      if (streamed) return;
+
+      appendAgentStreamStatus("流式连接失败，未回退阻塞请求（避免 300s 超时）");
+      setMessages((prev) => {
+        const copy = [...prev];
+        const last = copy[copy.length - 1];
+        if (last?.role === "assistant") {
+          copy[copy.length - 1] = {
+            ...last,
+            content:
+              (last.content || "").trim() ||
+              "流式连接失败或已中断。请点击「停止」后重试；若 Hermes 仍在消耗 token，可重启 Hermes Gateway。",
+          };
+        }
+        return copy;
+      });
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      const msg = e instanceof Error ? e.message : "发送失败";
+      setMessages((prev) => {
+        const copy = [...prev];
+        const last = copy[copy.length - 1];
+        if (last?.role === "assistant" && !last.content?.trim()) {
+          copy[copy.length - 1] = { ...last, content: msg };
+          return copy;
+        }
+        return [...prev, { role: "assistant", content: msg, citations: [] }];
+      });
+    } finally {
+      agentAbortRef.current = null;
+      agentRunIdRef.current = null;
+      setAgentLoading(false);
     }
   };
 
@@ -1117,19 +1712,23 @@ export default function AiInteractionPage() {
       const idx = prev.findIndex((s) => s.id === activeSessionId);
       if (idx < 0) return prev;
       const current = prev[idx];
+      const defaultTitle = sessionModeOf(current) === "agent" ? UI_AGENT.newSessionTitle : "新对话";
       const title =
-        current.title && current.title !== "新对话"
+        current.title && current.title !== defaultTitle
           ? current.title
           : (() => {
               const firstUser = messages.find((m) => m.role === "user")?.content?.trim();
-              return firstUser ? firstUser.slice(0, 20) : "新对话";
+              return firstUser ? firstUser.slice(0, 20) : defaultTitle;
             })();
+      const messagesChanged = !chatMessagesEqual(current.messages, messages);
       const next: ChatSession = {
         ...current,
+        session_mode: sessionModeOf(current),
         title,
-        updated_at: Date.now(),
+        updated_at: messagesChanged ? Date.now() : current.updated_at,
         messages,
         attachments: stable,
+        hermes_session_id: sessionModeOf(current) === "agent" ? hermesSessionId : current.hermes_session_id,
         data_parse_session_id: dataParseSessionId,
         active_workflow_id: activeWorkflowId,
         enabled_skills: [...enabledSkills],
@@ -1137,7 +1736,7 @@ export default function AiInteractionPage() {
         enabled_prompt_ids: [...enabledPromptIds],
         start_area_hint: startAreaHint,
       };
-      return [next, ...prev.filter((s) => s.id !== activeSessionId)].sort((a, b) => b.updated_at - a.updated_at);
+      return prev.map((s) => (s.id === activeSessionId ? next : s));
     });
   }, [
     messages,
@@ -1149,13 +1748,25 @@ export default function AiInteractionPage() {
     enabledTools,
     enabledPromptIds,
     startAreaHint,
+    hermesSessionId,
   ]);
 
   const startNewChat = () => {
     const id = `s_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const s: ChatSession = { id, title: "新对话", updated_at: Date.now(), messages: [], attachments: [] };
+    const now = Date.now();
+    const s: ChatSession = {
+      id,
+      title: "新对话",
+      session_mode: "chat",
+      created_at: now,
+      updated_at: now,
+      messages: [],
+      attachments: [],
+    };
     setActiveSessionId(id);
+    lastChatSessionIdRef.current = id;
     setMessages([]);
+    setHermesSessionId(null);
     setComposerAttachments([]);
     excelParseSidRef.current = null;
     setUploadHint(null);
@@ -1171,11 +1782,43 @@ export default function AiInteractionPage() {
     setSessions((prev) => [s, ...prev]);
   };
 
-  const openSession = (id: string) => {
+  const startNewAgentSession = () => {
+    const id = `s_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const now = Date.now();
+    const s: ChatSession = {
+      id,
+      title: UI_AGENT.newSessionTitle,
+      session_mode: "agent",
+      hermes_session_id: null,
+      created_at: now,
+      updated_at: now,
+      messages: [],
+      attachments: [],
+    };
+    setActiveSessionId(id);
+    lastAgentSessionIdRef.current = id;
+    setMessages([]);
+    setHermesSessionId(null);
+    setComposerAttachments([]);
+    excelParseSidRef.current = null;
+    setUploadHint(null);
+    setDataParseSessionId(null);
+    setActiveWorkflowId(null);
+    setEnabledSkills([]);
+    setEnabledTools([]);
+    setEnabledPromptIds([]);
+    setStartAreaHint(null);
+    setSessions((prev) => [s, ...prev]);
+  };
+
+  const openSession = useCallback((id: string) => {
     const s = sessions.find((x) => x.id === id);
     if (!s) return;
     setActiveSessionId(id);
+    if (sessionModeOf(s) === "agent") lastAgentSessionIdRef.current = id;
+    else lastChatSessionIdRef.current = id;
     setMessages(s.messages || []);
+    setHermesSessionId(s.hermes_session_id ?? null);
     const att = (s.attachments as ComposerAttachment[] | undefined) ?? [];
     setComposerAttachments(att);
     setUploadHint(null);
@@ -1186,7 +1829,35 @@ export default function AiInteractionPage() {
     setEnabledTools(Array.isArray(s.enabled_tools) ? [...s.enabled_tools] : []);
     setEnabledPromptIds(Array.isArray(s.enabled_prompt_ids) ? [...s.enabled_prompt_ids] : []);
     setStartAreaHint(s.start_area_hint ?? null);
-  };
+    setActiveLeftView(sessionModeOf(s) === "agent" ? "agent" : "chat");
+  }, [sessions]);
+
+  const activateView = useCallback(
+    (view: "chat" | "agent") => {
+      const remembered = view === "agent" ? lastAgentSessionIdRef.current : lastChatSessionIdRef.current;
+      const pick =
+        (remembered && sessions.find((s) => s.id === remembered && sessionModeOf(s) === view)) ||
+        sessions.find((s) => sessionModeOf(s) === view);
+      if (pick) {
+        openSession(pick.id);
+        return;
+      }
+      if (view === "agent") {
+        startNewAgentSession();
+        setActiveLeftView("agent");
+      } else {
+        startNewChat();
+        setActiveLeftView("chat");
+      }
+    },
+    [sessions, openSession]
+  );
+
+  useEffect(() => {
+    if (loading || !sessionsHydratedRef.current || !pendingAgentFromUrlRef.current) return;
+    pendingAgentFromUrlRef.current = false;
+    activateView("agent");
+  }, [loading, activateView]);
 
   const deleteSession = useCallback(
     (id: string) => {
@@ -1194,7 +1865,7 @@ export default function AiInteractionPage() {
       setSessionMenuOpenId((cur) => (cur === id ? null : cur));
       if (activeSessionId !== id) return;
       // 删除当前会话：优先切到最新一条，否则新建
-      const remaining = sessions.filter((s) => s.id !== id).sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+      const remaining = sessions.filter((s) => s.id !== id);
       if (remaining.length) {
         const next = remaining[0];
         setActiveSessionId(next.id);
@@ -1220,17 +1891,6 @@ export default function AiInteractionPage() {
     },
     [activeSessionId, sessions]
   );
-
-  const formatSessionTime = (ts: number) => {
-    try {
-      const d = new Date(ts);
-      return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(
-        d.getMinutes()
-      ).padStart(2, "0")}`;
-    } catch {
-      return "";
-    }
-  };
 
   const handleUploadFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1284,7 +1944,7 @@ export default function AiInteractionPage() {
       const nameLow = (file.name || "").toLowerCase();
       const isExcel = nameLow.endsWith(".xlsx") || nameLow.endsWith(".xls");
       if (isExcel && activeWorkflowId === WF_DATA_PARSE_EXCEL_ID) {
-        ensureActiveSession();
+        ensureActiveSession("chat");
         const localId = `a_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         setComposerAttachments((prev) => [
           ...prev,
@@ -1389,12 +2049,19 @@ export default function AiInteractionPage() {
     })();
   };
 
+  /** Kimi 式输入卡：空态（居中）与已有消息（贴底）共用同一外壳样式 */
+  const composerShellClass =
+    "w-full rounded-2xl border border-zinc-700/70 bg-zinc-900/50 shadow-[0_12px_40px_rgba(0,0,0,0.42)] ring-1 ring-zinc-800/60 backdrop-blur-sm";
+
   const renderComposer = (variant: "center" | "bottom") => {
-    const boxClass =
-      variant === "center"
-        ? "w-full max-w-4xl rounded-2xl border border-zinc-800 bg-zinc-950/60 shadow-[0_10px_40px_rgba(0,0,0,0.35)]"
-        : "w-full max-w-4xl rounded-2xl border border-zinc-800 bg-zinc-950/60";
-    const sendDisabled = chatLoading || composerUploading || !chatInput.trim();
+    const boxClass = `${composerShellClass} w-full`;
+    /** 贴底输入时菜单向上弹出，避免被屏幕下缘裁切 */
+    const popoverPlacementClass =
+      variant === "bottom"
+        ? "absolute left-0 bottom-[calc(100%+10px)]"
+        : "absolute left-0 top-[calc(100%+10px)]";
+    const agentStopping = isAgentView && agentLoading;
+    const sendDisabled = (!agentStopping && panelLoading) || composerUploading || !chatInput.trim();
     const waitingExcelUpload =
       activeWorkflowId === WF_DATA_PARSE_EXCEL_ID &&
       !composerAttachments.some((a) => a.kind === "excel_parse" && (a.phase === "uploading" || a.phase === "done"));
@@ -1403,7 +2070,7 @@ export default function AiInteractionPage() {
       : "有什么我能帮您的吗？";
     return (
       <div className="w-full">
-        <div className={`${boxClass} mx-auto`}>
+        <div className={boxClass}>
           <div className="relative flex flex-col">
             {waitingExcelUpload ? (
               <div className="mx-3 mt-3 rounded-lg border border-amber-900/50 bg-amber-950/25 px-3 py-2 text-xs text-amber-200/90">
@@ -1413,7 +2080,7 @@ export default function AiInteractionPage() {
             ) : null}
             {uploadHint ? (
               <div
-                className={`px-3 pt-3 text-xs ${uploadHint.includes("失败") ? "text-red-400" : "text-emerald-400/90"}`}
+                className={`px-3 pt-3 text-xs ${uploadHint.includes("失败") ? "text-red-400" : CHART_POSITIVE_CLASS.textMuted}`}
               >
                 {uploadHint}
               </div>
@@ -1426,12 +2093,14 @@ export default function AiInteractionPage() {
                     key={a.localId}
                     className={[
                       "flex min-w-[160px] max-w-[260px] flex-col gap-1.5 rounded-lg border px-2 py-1.5",
-                      a.kind === "excel_parse" ? "border-emerald-900/50 bg-emerald-950/20" : "border-zinc-800 bg-zinc-900/45",
+                      a.kind === "excel_parse"
+                        ? `${CHART_POSITIVE_CLASS.attachmentBorder} ${CHART_POSITIVE_CLASS.attachmentBg}`
+                        : "border-zinc-800 bg-zinc-900/45",
                     ].join(" ")}
                   >
                     <div className="flex items-start gap-2">
                       {a.kind === "excel_parse" ? (
-                        <Table size={14} className="mt-0.5 shrink-0 text-emerald-400/90" aria-hidden />
+                        <Table size={14} className={`mt-0.5 shrink-0 ${CHART_POSITIVE_CLASS.icon}`} aria-hidden />
                       ) : (
                         <FileText size={14} className="mt-0.5 shrink-0 text-zinc-400" aria-hidden />
                       )}
@@ -1458,13 +2127,13 @@ export default function AiInteractionPage() {
                     {a.phase === "uploading" ? (
                       <div className="h-1 overflow-hidden rounded-full bg-zinc-800">
                         <div
-                          className="h-full rounded-full bg-emerald-500/80 transition-[width] duration-150"
+                          className={`h-full rounded-full transition-[width] duration-150 ${CHART_POSITIVE_CLASS.progressBar}`}
                           style={{ width: `${Math.max(6, a.progress)}%` }}
                         />
                       </div>
                     ) : null}
                     {a.phase === "done" ? (
-                      <div className="flex items-center gap-1 text-[11px] text-emerald-400/90">
+                      <div className={`flex items-center gap-1 text-[11px] ${CHART_POSITIVE_CLASS.textMuted}`}>
                         <Check size={12} strokeWidth={3} aria-hidden />
                         {a.kind === "excel_parse" ? "已应用 · 电子表解析" : "已上传"}
                       </div>
@@ -1493,7 +2162,7 @@ export default function AiInteractionPage() {
               if (isComposing) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void handleAsk();
+                void (isAgentView ? handleAgentAsk() : handleAsk());
               }
             }}
             placeholder={taPlaceholder}
@@ -1520,7 +2189,7 @@ export default function AiInteractionPage() {
                 {plusOpen && (
                   <div
                     id="ai-plus-popover"
-                    className="absolute left-0 top-[calc(100%+10px)] z-30 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-2 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+                    className={`${popoverPlacementClass} z-30 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-2 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur`}
                   >
                     {plusTab === "" ? (
                       <div className="py-1">
@@ -1583,12 +2252,31 @@ export default function AiInteractionPage() {
                             <div className="text-sm text-zinc-500">暂无文件夹</div>
                           ) : (
                             <div className="space-y-1">
-                              {folders.map((f) => (
-                                <label key={f.folder_id} className="flex items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-200 hover:bg-zinc-900/40">
-                                  <input type="checkbox" checked={selectedFolderIds.includes(f.folder_id)} onChange={() => toggleFolder(f.folder_id)} />
-                                  <span className="truncate">{f.name}</span>
-                                </label>
-                              ))}
+                              {folders.map((f) => {
+                                const docCount = f.doc_count ?? 0;
+                                const disabled = docCount === 0;
+                                return (
+                                  <label
+                                    key={f.folder_id}
+                                    className={`flex items-center gap-2 rounded-md px-2 py-1 text-sm ${
+                                      disabled
+                                        ? "cursor-not-allowed text-zinc-500 opacity-60"
+                                        : "text-zinc-200 hover:bg-zinc-900/40"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedFolderIds.includes(f.folder_id)}
+                                      disabled={disabled}
+                                      onChange={() => {
+                                        if (!disabled) toggleFolder(f.folder_id);
+                                      }}
+                                    />
+                                    <span className="truncate flex-1">{f.name}</span>
+                                    <span className="text-xs text-zinc-600 shrink-0">{docCount} 篇</span>
+                                  </label>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -1733,7 +2421,7 @@ export default function AiInteractionPage() {
                 {toolsOpen && (
                   <div
                     id="ai-tools-popover"
-                    className="absolute left-0 top-[calc(100%+10px)] z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+                    className={`${popoverPlacementClass} z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur`}
                   >
                     <div className="text-xs text-zinc-500 mb-2">工具（允许调用）</div>
                     <div className="space-y-2">
@@ -1782,7 +2470,7 @@ export default function AiInteractionPage() {
                 {skillsOpen && (
                   <div
                     id="ai-skills-popover"
-                    className="absolute left-0 top-[calc(100%+10px)] z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+                    className={`${popoverPlacementClass} z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur`}
                   >
                     <div className="text-xs text-zinc-500 mb-2">技能（允许调用）</div>
                     <div className="space-y-2">
@@ -1831,7 +2519,7 @@ export default function AiInteractionPage() {
                 {promptsOpen && (
                   <div
                     id="ai-prompts-popover"
-                    className="absolute left-0 top-[calc(100%+10px)] z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+                    className={`${popoverPlacementClass} z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur`}
                   >
                     <div className="text-xs text-zinc-500 mb-2">提示词（勾选后随「电子表数据解析」请求拼接为 prompt_addon）</div>
                     <div className="max-h-64 space-y-2 overflow-y-auto">
@@ -1943,7 +2631,7 @@ export default function AiInteractionPage() {
                 {workflowOpen && (
                   <div
                     id="ai-workflow-popover"
-                    className="absolute left-0 top-[calc(100%+10px)] z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+                    className={`${popoverPlacementClass} z-20 w-[340px] rounded-xl border border-zinc-800 bg-zinc-950/95 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur`}
                   >
                     <div className="text-xs text-zinc-500 mb-2">工作流</div>
                     <div className="space-y-2">
@@ -1960,7 +2648,9 @@ export default function AiInteractionPage() {
                           }}
                           className={[
                             "w-full rounded-lg border px-3 py-2 text-left text-xs hover:bg-zinc-900/60",
-                            activeWorkflowId === wf.id ? "border-emerald-800/60 bg-emerald-950/25 text-emerald-100" : "border-zinc-800 bg-zinc-950/40 text-zinc-200",
+                            activeWorkflowId === wf.id
+                              ? CHART_POSITIVE_CLASS.chipActive
+                              : "border-zinc-800 bg-zinc-950/40 text-zinc-200",
                           ].join(" ")}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -1992,16 +2682,39 @@ export default function AiInteractionPage() {
               </div>
 
             </div>
-            <button
-              type="button"
-              onClick={() => void handleAsk()}
-              disabled={sendDisabled}
-              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-zinc-900 hover:bg-white disabled:opacity-50"
-              title="发送"
-              aria-label="发送"
-            >
-              {chatLoading ? <span className="text-[11px] font-medium">…</span> : <ArrowUp size={20} strokeWidth={2.2} />}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              {llmModelLabel ? (
+                <span
+                  className="inline-flex max-w-[180px] items-center gap-0.5 truncate text-xs text-zinc-500"
+                  title={`当前模型：${llmModelLabel}`}
+                >
+                  <span className="truncate">{llmModelLabel}</span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-50" aria-hidden />
+                </span>
+              ) : null}
+              {agentStopping ? (
+                <button
+                  type="button"
+                  onClick={() => void handleAgentStop()}
+                  className="inline-flex h-10 shrink-0 items-center justify-center rounded-full border border-red-500/60 bg-red-950/40 px-4 text-sm font-medium text-red-200 hover:bg-red-900/50"
+                  title={UI_AGENT.stopTaskTitle}
+                  aria-label="停止"
+                >
+                  停止
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void (isAgentView ? handleAgentAsk() : handleAsk())}
+                  disabled={sendDisabled}
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-zinc-900 hover:bg-white disabled:opacity-50"
+                  title="发送"
+                  aria-label="发送"
+                >
+                  {panelLoading ? <span className="text-[11px] font-medium">…</span> : <ArrowUp size={20} strokeWidth={2.2} />}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -2081,202 +2794,565 @@ export default function AiInteractionPage() {
     );
   };
 
-  return (
-    <div className="flex h-[calc(100vh-64px)]">
-      {/* 左侧：更严格贴近 Open-WebUI：顶部动作 + 导航项（带文字）+ 对话历史 */}
-      <aside className="hidden md:flex flex-col w-[320px] shrink-0 border-r border-zinc-900 bg-zinc-950/30">
-        <div className="p-6">
-          <div className="text-2xl font-semibold tracking-tight text-zinc-100">AI 互动</div>
+  const sidebarRowClass = (active: boolean) =>
+    [
+      "flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-[15px] leading-snug transition-colors",
+      active ? "bg-zinc-800/60 text-zinc-100" : "text-zinc-500 hover:bg-zinc-900/45 hover:text-zinc-300",
+    ].join(" ");
 
-          <div className="mt-3 space-y-1">
-            <button
-              type="button"
-              onClick={() => {
-                startNewChat();
-                setActiveLeftView("chat");
-              }}
-              className="flex w-full items-center gap-3 rounded-lg px-0 py-2 text-sm text-zinc-100 hover:bg-zinc-900/40"
-              title="新对话"
-            >
-              <Plus size={16} className="shrink-0" />
-              新对话
-            </button>
+  /** 会话条目在「历史对话」下：底色缩进于分组，文字相对底色保留 pl-3 内边距 */
+  const sessionRowClass = (active: boolean) =>
+    [
+      "flex w-full items-start rounded-lg py-2.5 pl-3 pr-9 text-left text-[15px] leading-snug transition-colors",
+      active ? "bg-zinc-800/60 text-zinc-100" : "text-zinc-500 hover:bg-zinc-900/45 hover:text-zinc-300",
+    ].join(" ");
+  const historySessionsIndentClass = "mt-1 space-y-0.5 pl-7";
+  const chatBubbleUserStyle = {
+    backgroundColor: BUSINESS_CHART_COLORS.current,
+    color: "#f4f4f5",
+  } as const;
+  const chatBubbleAssistantClass =
+    "min-w-0 break-words rounded-2xl border border-zinc-800 bg-zinc-900/50 px-4 py-2 text-sm leading-relaxed text-zinc-200";
+
+  const sidebarIconClass = "mt-0.5 h-[18px] w-[18px] shrink-0 opacity-80";
+  const agentAccent = AGENT_CHART_ACCENT_CLASS;
+
+  /** Kimi 式：圆角框外边距 p-1（4px）/ md:p-1.5（6px）；滚动条贴框右缘 */
+  const chatPanelSurfaceClass = "bg-zinc-900/25";
+  const mainPanelFrameClass =
+    `flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800/45 ${chatPanelSurfaceClass}`;
+  const mainPanelOuterPadClass =
+    "flex min-h-0 flex-1 flex-col p-1 md:p-1.5";
+  const chatContentInnerClass = "mx-auto w-full min-w-0 max-w-3xl px-5 md:px-6";
+  /** 固定顶区：仅占位对齐标题，不单独铺色（与框体/滚动区同一底色） */
+  const chatTitleSyncSpacerClass = "shrink-0 h-5 md:h-[1.625rem]";
+  const chatPanelScrollClass = "chat-panel-scroll";
+  const chatScrollViewportClass = "relative min-h-0 flex-1";
+  const chatScrollAreaClass = `h-full min-h-0 overflow-y-auto overscroll-y-contain ${chatPanelScrollClass}`;
+  const chatMessagesStackClass = "space-y-3 break-words pb-4 pt-0 [overflow-wrap:anywhere]";
+  const chatScrollToBottomBtnClass =
+    "absolute bottom-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-700/80 bg-zinc-900/95 text-zinc-300 shadow-lg backdrop-blur-sm transition-colors hover:bg-zinc-800 hover:text-zinc-100 right-[max(0.75rem,calc((100%-min(100%,48rem))/2))]";
+
+  return (
+    <div className="flex h-[calc(100dvh)] min-h-0 w-full">
+      {/* 左侧：新对话 + 工作空间/历史会话并列导航；会话列表仅文字 */}
+      <aside className="hidden md:flex w-[300px] shrink-0 flex-col bg-transparent pt-6 md:pt-8">
+        <div className="shrink-0 px-6 pb-3 md:px-8">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">AI 互动</h1>
+          <button
+            type="button"
+            onClick={() => {
+              if (activeLeftView === "agent") {
+                startNewAgentSession();
+                setActiveLeftView("agent");
+                setChatInput("");
+                setUploadHint(null);
+                return;
+              }
+              startNewChat();
+              setActiveLeftView("chat");
+            }}
+            className="mt-4 flex w-full items-center justify-start gap-3 rounded-lg border border-zinc-700/70 bg-zinc-900/55 px-3 py-2.5 text-left text-[15px] font-medium text-zinc-100 transition-colors hover:bg-zinc-800/70"
+            title="新对话"
+          >
+            <Plus size={18} className="shrink-0 text-zinc-300" />
+            新对话
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-5 md:px-8">
+          <nav className="space-y-1" aria-label="页内导航">
             <button
               type="button"
               onMouseDown={() => {
-                // 防止极少数情况下“点击穿透/误触”到下方会话条目导致自动切回聊天
                 suppressNextSessionClickRef.current = true;
                 window.setTimeout(() => {
                   suppressNextSessionClickRef.current = false;
                 }, 0);
               }}
               onClick={() => setActiveLeftView("workspace")}
-              className={[
-                "flex w-full items-center gap-3 rounded-lg px-0 py-2 text-sm hover:bg-zinc-900/40",
-                activeLeftView === "workspace" ? "bg-zinc-900/60 text-zinc-100" : "text-zinc-200",
-              ].join(" ")}
+              className={sidebarRowClass(activeLeftView === "workspace")}
               title="工作空间"
             >
-              <Folder size={16} className="shrink-0" />
-              工作空间
+              <Folder className={sidebarIconClass} aria-hidden />
+              <span className="min-w-0 flex-1 truncate">工作空间</span>
             </button>
-          </div>
-        </div>
+            <button
+              type="button"
+              onMouseDown={() => {
+                suppressNextSessionClickRef.current = true;
+                window.setTimeout(() => {
+                  suppressNextSessionClickRef.current = false;
+                }, 0);
+              }}
+              onClick={() => activateView("agent")}
+              className={sidebarRowClass(activeLeftView === "agent")}
+              title={UI_AGENT.label}
+            >
+              <Bot
+                className={[sidebarIconClass, activeLeftView === "agent" ? agentAccent.icon : ""].join(" ")}
+                aria-hidden
+              />
+              <span className="min-w-0 flex-1 truncate">{UI_AGENT.label}</span>
+            </button>
+            <div className={sidebarRowClass(false)} aria-label="历史对话">
+              <History className={sidebarIconClass} aria-hidden />
+              <span className="min-w-0 flex-1 truncate">历史对话</span>
+            </div>
+          </nav>
 
-        <div className="px-6 pb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">对话历史</div>
-        <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-2">
-          {sessions.length === 0 ? (
-            <div className="text-sm text-zinc-500">暂无历史（本页会把对话保存在浏览器本地）。</div>
-          ) : (
-            sessions.slice(0, 30).map((s) => (
-              <div key={s.id} className="group relative" data-session-menu-root="1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (suppressNextSessionClickRef.current) return;
-                    openSession(s.id);
-                    setActiveLeftView("chat");
-                  }}
-                  className={[
-                    "w-full text-left rounded-lg px-0 py-2 pr-10",
-                    s.id === activeSessionId
-                      ? "bg-transparent"
-                      : "bg-transparent",
-                  ].join(" ")}
-                >
-                  <div className="text-sm text-zinc-200 truncate">{s.title || "对话"}</div>
-                  <div className="mt-1 text-xs text-zinc-500">{formatSessionTime(s.updated_at || 0)}</div>
-                  {Array.isArray((s as { attachments?: unknown }).attachments) && (s as { attachments?: unknown[] }).attachments!.length ? (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {(s as { attachments?: Array<{ name?: string }> }).attachments!.slice(0, 3).map((a, i) => (
-                        <span key={i} className="max-w-[140px] truncate rounded bg-zinc-900/60 px-1.5 py-0.5 text-[10px] text-zinc-300">
-                          {a?.name || "附件"}
-                        </span>
-                      ))}
-                      {(s as { attachments?: unknown[] }).attachments!.length > 3 ? <span className="text-[10px] text-zinc-500">…</span> : null}
-                    </div>
-                  ) : null}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    setSessionMenuOpenId((cur) => (cur === s.id ? null : s.id));
-                  }}
-                  className={[
-                    "absolute right-1 top-1 inline-flex h-8 w-8 items-center justify-center rounded-md",
-                    "text-white/90 hover:text-white",
-                  ].join(" ")}
-                  title="更多"
-                  aria-label="更多"
-                >
-                  <MoreHorizontal size={18} />
-                </button>
-
-                {sessionMenuOpenId === s.id ? (
-                  <div className="absolute right-1 top-9 z-30 w-32 rounded-lg border border-zinc-800 bg-zinc-950/95 p-1 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        deleteSession(s.id);
-                      }}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-red-300 hover:bg-zinc-900/50"
-                    >
-                      <Trash2 size={14} />
-                      删除
-                    </button>
-                  </div>
-                ) : null}
+          <div className={historySessionsIndentClass} role="list" aria-label="历史会话列表">
+            {sessions.length === 0 ? (
+              <div className="py-2.5 pl-3 pr-2 text-left text-sm leading-relaxed text-zinc-600">
+                {UI_AGENT.historyEmptyHint}
               </div>
-            ))
-          )}
+            ) : (
+              sessions.map((s) => {
+                  const active = s.id === activeSessionId;
+                  const isAgentSession = sessionModeOf(s) === "agent";
+                  const attachments = (s as { attachments?: Array<{ name?: string }> }).attachments;
+                  const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+                  return (
+                    <div key={s.id} className="group relative" data-session-menu-root="1" role="listitem">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (suppressNextSessionClickRef.current) return;
+                          openSession(s.id);
+                        }}
+                        className={sessionRowClass(active)}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span
+                            className={[
+                              "block truncate",
+                              active ? "font-medium text-zinc-100" : "text-zinc-400 group-hover:text-zinc-300",
+                            ].join(" ")}
+                          >
+                            {isAgentSession ? (
+                              <span className="inline-flex items-center gap-1.5">
+                                <Bot className={`h-3 w-3 shrink-0 ${agentAccent.iconMuted}`} aria-hidden />
+                                <span className="truncate">
+                                  {normalizeAgentDisplayText(s.title || UI_AGENT.sessionFallbackTitle)}
+                                </span>
+                              </span>
+                            ) : (
+                              s.title || "对话"
+                            )}
+                          </span>
+                          {hasAttachments ? (
+                            <span className="mt-1.5 flex flex-wrap gap-1">
+                              {attachments!.slice(0, 3).map((a, i) => (
+                                <span
+                                  key={i}
+                                  className="max-w-[108px] truncate rounded-md bg-zinc-900/70 px-1.5 py-0.5 text-[10px] text-zinc-500"
+                                >
+                                  {a?.name || "附件"}
+                                </span>
+                              ))}
+                              {attachments!.length > 3 ? (
+                                <span className="text-[10px] text-zinc-600">+{attachments!.length - 3}</span>
+                              ) : null}
+                            </span>
+                          ) : null}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setSessionMenuOpenId((cur) => (cur === s.id ? null : s.id));
+                        }}
+                        className={[
+                          "absolute right-0.5 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-500",
+                          "hover:bg-zinc-900/60 hover:text-zinc-200",
+                          active ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                        ].join(" ")}
+                        title="更多"
+                        aria-label="更多"
+                      >
+                        <MoreHorizontal size={16} />
+                      </button>
+
+                      {sessionMenuOpenId === s.id ? (
+                        <div className="absolute right-0 top-9 z-30 w-32 rounded-lg border border-zinc-800 bg-zinc-950/95 p-1 shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              deleteSession(s.id);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-red-300 hover:bg-zinc-900/50"
+                          >
+                            <Trash2 size={14} />
+                            删除
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+            )}
+          </div>
         </div>
       </aside>
 
-      {/* 右侧：聊天主面板 */}
-      <main className="flex-1 flex flex-col bg-zinc-950/20">
+      {/* 右侧：主面板 */}
+      <main className="flex min-h-0 flex-1 flex-col bg-zinc-950 pt-0">
         <input ref={fileInputRef} type="file" className="hidden" onChange={handleUploadFile} />
         {activeLeftView === "workspace" ? (
-          <div className="sticky top-0 z-10 border-b border-zinc-900 bg-zinc-950/30 backdrop-blur">
-            <div className="px-6 pt-5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-lg font-medium text-zinc-200">工作空间</div>
+          <div className={mainPanelOuterPadClass}>
+            <div className={mainPanelFrameClass}>
+              <div className="shrink-0 border-b border-zinc-800/60 px-4 py-4 md:px-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-lg font-medium text-zinc-200">工作空间</div>
+                </div>
+                <div className="mt-4 flex items-center gap-5 text-sm text-zinc-400">
+                  {(
+                    [
+                      ["knowledge", "知识库"],
+                      ["pdf_packages", "大PDF文档包"],
+                      ["prompts", "提示词"],
+                      ["skills", "技能"],
+                      ["tools", "工具"],
+                      ["workflows", "工作流"],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setWorkspaceTab(id)}
+                      className={[
+                        "pb-3 transition-colors",
+                        workspaceTab === id
+                          ? "border-b-2 border-zinc-200 text-zinc-200"
+                          : "border-b-2 border-transparent hover:text-zinc-200",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="mt-4 flex items-center gap-5 text-sm text-zinc-400">
-                {(
-                  [
-                    ["knowledge", "知识库"],
-                    ["pdf_packages", "大PDF文档包"],
-                    ["prompts", "提示词"],
-                    ["skills", "技能"],
-                    ["tools", "工具"],
-                    ["workflows", "工作流"],
-                  ] as const
-                ).map(([id, label]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setWorkspaceTab(id)}
-                    className={[
-                      "pb-3 transition-colors",
-                      workspaceTab === id
-                        ? "border-b-2 border-zinc-200 text-zinc-200"
-                        : "border-b-2 border-transparent hover:text-zinc-200",
-                    ].join(" ")}
-                  >
-                    {label}
-                  </button>
-                ))}
+              <div className={`min-h-0 flex-1 overflow-y-auto p-4 md:p-5 ${chatPanelScrollClass}`}>
+                {workspaceTab === "knowledge" ? (
+                  <div className="relative min-h-[70vh] overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950/40">
+                    <div className="p-4">
+                      <KnowledgeWorkspacePanel />
+                    </div>
+                  </div>
+                ) : workspaceTab === "pdf_packages" ? (
+                  <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
+                    <PdfPackagesPanel
+                      items={ragItems}
+                      busyPackageId={ragBusyId}
+                      onDownload={downloadRagExport}
+                      onDelete={deleteRagPackage}
+                    />
+                  </div>
+                ) : workspaceTab === "prompts" ? (
+                  <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium text-zinc-200">提示词（全站）</div>
+                      <button
+                        type="button"
+                        onClick={() => openConfigEditor("prompts")}
+                        className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
+                      >
+                        编辑 JSON
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      术语与分层见仓库 <span className="font-mono text-zinc-400">docs/agent-skills-glossary.md</span>
+                      ：此处登记<strong>全站可复用</strong>的 Prompt 设计（摘要 + 可选正文）；成熟 prompt/口径素材可写入{" "}
+                      <span className="font-mono text-zinc-400">body</span> 或拆条。{UI_AGENT.skillLabel}
+                      正文见「技能」Tab 中的仓库{" "}
+                      <span className="font-mono text-zinc-400">SKILL.md</span>。
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {promptConfigs.map((p) => (
+                        <div key={p.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-zinc-200">{p.label}</div>
+                              <div className="mt-1 text-xs text-zinc-500 font-mono">{p.id}</div>
+                            </div>
+                            <div className="flex shrink-0 flex-wrap gap-2 text-[11px] text-zinc-500">
+                              {p.role ? (
+                                <span className="rounded border border-zinc-800 px-1.5 py-0.5 font-mono">{p.role}</span>
+                              ) : null}
+                              {p.scope ? (
+                                <span className="rounded border border-zinc-800 px-1.5 py-0.5 font-mono">{p.scope}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                          {p.description ? <div className="mt-2 text-xs text-zinc-400">{p.description}</div> : null}
+                          {p.summary ? <div className="mt-2 text-[11px] text-zinc-500">摘要：{p.summary}</div> : null}
+                          {p.body && p.body.trim() ? (
+                            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300">
+                              {p.body}
+                            </pre>
+                          ) : (
+                            <div className="mt-2 text-[11px] text-zinc-600">（正文可在「编辑 JSON」中填写 body 字段）</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : workspaceTab === "skills" ? (
+                  <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium text-zinc-200">技能（SKILL.md）</div>
+                      <button
+                        type="button"
+                        onClick={() => openConfigEditor("skills")}
+                        className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
+                      >
+                        编辑 JSON
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      正文来自后端{" "}
+                      <span className="font-mono text-zinc-400">backend/data/agent_skills/&lt;skill_id&gt;/SKILL.md</span>（
+                      <span className="font-mono text-zinc-400">manifest.json</span> 登记）。勾选「启用」后，对应文档会注入当前对话的 system，模型须按文档约束执行。
+                    </p>
+                    {skillCatalogLoading ? (
+                      <div className="mt-3 text-xs text-zinc-500">正在加载 SKILL.md…</div>
+                    ) : skillCatalogError ? (
+                      <div className="mt-3 text-xs text-amber-400">{skillCatalogError}</div>
+                    ) : null}
+                    <div className="mt-3 space-y-2">
+                      {skillConfigs.map((s) => {
+                        const doc = skillCatalog?.find((d) => d.id === s.id);
+                        return (
+                          <div key={s.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium text-zinc-200">{s.label}</div>
+                                <div className="mt-1 text-xs text-zinc-500 font-mono">{s.id}</div>
+                              </div>
+                              <label className="flex items-center gap-2 text-xs text-zinc-200">
+                                <input type="checkbox" checked={enabledSkills.includes(s.id)} onChange={() => toggleEnabledSkill(s.id)} />
+                                启用
+                              </label>
+                            </div>
+                            {doc?.name && doc.name !== s.id ? (
+                              <div className="mt-1 text-[11px] text-zinc-500">SKILL 名：{doc.name}</div>
+                            ) : null}
+                            {doc?.description ? <div className="mt-1 text-[11px] text-zinc-500">{doc.description}</div> : null}
+                            {s.description ? <div className="mt-2 text-xs text-zinc-400">{s.description}</div> : null}
+                            {s.trigger_hint ? <div className="mt-1 text-[11px] text-zinc-500">触发：{s.trigger_hint}</div> : null}
+                            {s.example ? <div className="mt-2 rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300">{s.example}</div> : null}
+                            <details className="mt-2 rounded border border-zinc-900 bg-zinc-950/40">
+                              <summary className="cursor-pointer select-none px-2 py-1.5 text-[11px] text-zinc-400 hover:text-zinc-300">
+                                查看 SKILL.md 全文
+                              </summary>
+                              {doc?.raw_markdown ? (
+                                <pre className="max-h-[min(70vh,520px)] overflow-auto whitespace-pre-wrap border-t border-zinc-900 p-2 text-[11px] leading-relaxed text-zinc-300">
+                                  {doc.raw_markdown}
+                                </pre>
+                              ) : (
+                                <div className="border-t border-zinc-900 px-2 py-2 text-[11px] text-zinc-600">
+                                  未找到该技能的 SKILL.md（请检查后端 manifest 与文件路径）。
+                                </div>
+                              )}
+                            </details>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : workspaceTab === "tools" ? (
+                  <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium text-zinc-200">工具配置</div>
+                      <button
+                        type="button"
+                        onClick={() => openConfigEditor("tools")}
+                        className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
+                      >
+                        编辑 JSON
+                      </button>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {toolConfigs.map((t) => (
+                        <div key={t.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-zinc-200">{t.label}</div>
+                              <div className="mt-1 text-xs text-zinc-500 font-mono">{t.id}</div>
+                            </div>
+                            <label className="flex items-center gap-2 text-xs text-zinc-200">
+                              <input type="checkbox" checked={enabledTools.includes(t.id)} onChange={() => toggleEnabledTool(t.id)} />
+                              启用
+                            </label>
+                          </div>
+                          {t.description ? <div className="mt-2 text-xs text-zinc-400">{t.description}</div> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : workspaceTab === "workflows" ? (
+                  <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium text-zinc-200">工作流</div>
+                      <button
+                        type="button"
+                        onClick={() => openConfigEditor("workflows")}
+                        className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
+                      >
+                        编辑 JSON
+                      </button>
+                    </div>
+                    <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                      {workflowConfigs.map((wf) => (
+                        <button
+                          key={wf.id}
+                          type="button"
+                          onClick={() => {
+                            const prompt = (wf.example_prompt || "").trim();
+                            if (prompt) setChatInput((prev) => (prev ? `${prev}\n${prompt}` : prompt));
+                          }}
+                          className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 text-left hover:bg-zinc-900/40"
+                        >
+                          <div className="text-sm font-medium text-zinc-200">{wf.label}</div>
+                          {wf.description ? <div className="mt-1 text-xs text-zinc-500">{wf.description}</div> : null}
+                          {wf.example_prompt ? (
+                            <div className="mt-2 rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300 line-clamp-4">
+                              {wf.example_prompt}
+                            </div>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
         ) : null}
 
-        {activeLeftView === "chat" ? (
-          <>
-            {/* 对话区 */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {messages.length === 0 ? (
-                <div className="h-full flex items-start justify-center pt-[38vh] md:pt-[34vh]">
-                  <div className="w-full max-w-5xl px-4">
-                    <div className="mx-auto max-w-3xl text-center">
-                      <div className="text-lg font-medium text-zinc-200">开始对话</div>
-                      <div className="mt-2 text-sm text-zinc-500">
-                        {startAreaHint ??
-                          "未选择范围时为纯对话；在下方「+」里选择文件夹/高级集合后，再提问即可启用知识库检索（RAG）。"}
-                      </div>
+        {isConversationView ? (
+          <div className={mainPanelOuterPadClass}>
+            <div className={mainPanelFrameClass}>
+              {isAgentView ? (
+                <div className={`shrink-0 px-4 py-3 md:px-5 ${agentAccent.headerBar}`}>
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-300">
+                    <Bot className={`h-4 w-4 ${agentAccent.icon}`} aria-hidden />
+                    <span className={agentAccent.headerTitle}>{UI_AGENT.label}</span>
+                    <span className={agentAccent.headerDesc}>
+                      与「对话」共用输入区、知识库与技能；有范围时预检索后按模式分流
+                    </span>
+                    <div
+                      className={`ml-auto flex rounded-lg p-0.5 text-xs ${agentAccent.modeGroup}`}
+                      role="group"
+                      aria-label={UI_AGENT.modeAriaLabel}
+                    >
+                      {(
+                        [
+                          ["fast", "快速"],
+                          ["standard", "标准"],
+                          ["deep", "深度"],
+                        ] as const
+                      ).map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          disabled={agentLoading}
+                          onClick={() => setAgentMode(mode)}
+                          className={`rounded-md px-2.5 py-1 transition-colors ${
+                            agentMode === mode ? agentAccent.modeActive : agentAccent.modeIdle
+                          }`}
+                          title={
+                            mode === "fast"
+                              ? "预检索后直接本地综合，响应最快"
+                              : mode === "deep"
+                                ? "Hermes 深度编排，允许多轮 MCP"
+                                : "默认：Hermes 标准编排，简单问句可自动走快速"
+                          }
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
-                    <div className="mt-6 flex justify-center">{renderComposer("center")}</div>
+                  </div>
+                </div>
+              ) : null}
+              {panelMessages.length === 0 ? (
+                <div
+                  ref={chatContainerRef}
+                  className={`flex min-h-0 flex-1 flex-col overflow-y-auto ${chatPanelScrollClass}`}
+                >
+                  <div className="flex min-h-full flex-1 flex-col items-center justify-center py-10">
+                    <div className={`w-full text-center ${chatContentInnerClass}`}>
+                      <p className="mx-auto max-w-lg text-sm leading-relaxed text-zinc-500">
+                        {isAgentView
+                          ? "描述任务即可。与「对话」相同：用「+」选择知识库、上传附件，在工具栏勾选技能。"
+                          : startAreaHint ?? "尽管问。需要知识库检索时，在输入框「+」里选择文件夹。"}
+                      </p>
+                      <div className="mt-8 w-full">{renderComposer("center")}</div>
+                    </div>
                   </div>
                 </div>
               ) : (
-                <div className="mx-auto max-w-3xl space-y-3">
-                  {messages.map((m, idx) => (
+                <>
+                  <div className={chatTitleSyncSpacerClass} aria-hidden />
+                  <div className={chatScrollViewportClass}>
+                    <div ref={chatContainerRef} className={chatScrollAreaClass}>
+                      <div className={chatContentInnerClass}>
+                        <div className={chatMessagesStackClass}>
+                  {panelMessages.map((m, idx) => {
+                    const isLastMsg = idx === panelMessages.length - 1;
+                    const awaitingReply =
+                      panelLoading && isLastMsg && m.role === "assistant" && !(m.content || "").trim();
+                    const trace =
+                      m.agentTrace ||
+                      (m.streamStatus?.length ? traceFromLegacyStreamStatus(m.streamStatus) : undefined);
+                    return (
                     <div key={idx} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
                       {m.role === "assistant" ? (
-                        <div className="flex max-w-[85%] gap-3">
-                          <div className="shrink-0 pt-1">
-                            <AiAvatar status={chatLoading && idx === messages.length - 1 ? "thinking" : "idle"} />
+                        <div className={assistantMessageRowClass(isAgentView)}>
+                          <div className="shrink-0 pt-0.5">
+                            <AiAvatar
+                              compact
+                              status={awaitingReply || (panelLoading && isLastMsg) ? "thinking" : "idle"}
+                            />
                           </div>
                           <div
-                            className="rounded-2xl px-4 py-2 text-sm leading-relaxed"
-                            style={{ backgroundColor: "#27272a", color: "#e4e4e7" }}
+                            className={[
+                              assistantMessageBubbleWrapClass(isAgentView),
+                              chatBubbleAssistantClass,
+                            ].join(" ")}
                           >
-                            {m.content ? (
-                              m.content
-                            ) : chatLoading && idx === messages.length - 1 ? (
-                              <TypingIndicator />
+                            {isAgentView && (trace?.length || m.agentMeta) ? (
+                              <AgentTracePanel
+                                trace={trace}
+                                meta={m.agentMeta}
+                                defaultOpen={awaitingReply}
+                              />
+                            ) : null}
+                            {awaitingReply ? (
+                              <div
+                                className="flex items-center gap-2 py-1 text-xs text-zinc-500"
+                                role="status"
+                                aria-live="polite"
+                              >
+                                <TypingIndicator />
+                                <span>加载中…</span>
+                              </div>
+                            ) : null}
+                            {(m.content || "").trim() ? (
+                              <MarkdownBubble text={m.content} />
                             ) : null}
                             {m.chart_spec && Object.keys(m.chart_spec).length > 0 && (
                               <div className="mt-2">
                                 <AiInlineChart spec={m.chart_spec} />
                                 <details className="mt-1 cursor-pointer">
                                   <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 chart_spec 原始数据</summary>
-                                  <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
+                                  <pre className="mt-1 max-h-36 max-w-full overflow-x-auto whitespace-pre-wrap break-all text-[11px] text-zinc-200/80">
                                     {JSON.stringify(m.chart_spec, null, 2)}
                                   </pre>
                                 </details>
@@ -2287,7 +3363,7 @@ export default function AiInteractionPage() {
                                 <AiInlineTable spec={m.table_spec} />
                                 <details className="mt-1 cursor-pointer">
                                   <summary className="text-xs text-zinc-200/70 hover:text-zinc-100">查看 table_spec 原始数据</summary>
-                                  <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-200/80">
+                                  <pre className="mt-1 max-h-36 max-w-full overflow-x-auto whitespace-pre-wrap break-all text-[11px] text-zinc-200/80">
                                     {JSON.stringify(m.table_spec, null, 2)}
                                   </pre>
                                 </details>
@@ -2305,39 +3381,55 @@ export default function AiInteractionPage() {
                         </div>
                       ) : (
                         <div
-                          className="max-w-[85%] rounded-2xl px-4 py-2 text-sm leading-relaxed"
-                          style={{ backgroundColor: "#3b82f6", color: "#e4e4e7" }}
+                          className="max-w-[85%] min-w-0 break-words rounded-2xl px-4 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]"
+                          style={chatBubbleUserStyle}
                         >
                           {m.content}
                         </div>
                       )}
                     </div>
-                  ))}
-                  {/* AI 正在思考/输入时的占位消息（还没有 assistant 消息时） */}
-                  {chatLoading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
+                  );
+                  })}
+                  {/* 对话模式：仅有 user、尚无 assistant 占位 */}
+                  {panelLoading && panelMessages.length > 0 && panelMessages[panelMessages.length - 1].role === "user" && (
                     <div className="flex justify-start">
-                      <div className="flex max-w-[85%] gap-3">
+                      <div className={assistantMessageRowClass(isAgentView)}>
                         <div className="shrink-0 pt-1">
-                          <AiAvatar status="thinking" />
+                          <AiAvatar compact status="thinking" />
                         </div>
                         <div
-                          className="rounded-2xl px-4 py-2 text-sm leading-relaxed"
-                          style={{ backgroundColor: "#27272a", color: "#e4e4e7" }}
+                          className={[
+                            assistantMessageBubbleWrapClass(isAgentView),
+                            chatBubbleAssistantClass,
+                          ].join(" ")}
                         >
-                          <TypingIndicator />
+                          <div className="flex items-center gap-2 text-xs text-zinc-500">
+                            <TypingIndicator />
+                            <span>加载中…</span>
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
-                </div>
-              )}
-            </div>
+                        </div>
+                        <div ref={chatEndRef} className="h-px shrink-0 scroll-mt-4" aria-hidden />
+                      </div>
+                    </div>
+                    {showScrollToBottom ? (
+                      <button
+                        type="button"
+                        onClick={() => scrollChatToBottom("smooth")}
+                        className={chatScrollToBottomBtnClass}
+                        title="回到最新对话"
+                        aria-label="回到最新对话"
+                      >
+                        <ArrowDown size={18} strokeWidth={2} />
+                      </button>
+                    ) : null}
+                  </div>
 
-            {/* 输入栏（底部粘住，Open-WebUI 风格） */}
-            {messages.length > 0 && (
-              <div className="bg-zinc-950/60 backdrop-blur">
-                <div className="px-4 pt-3">
-                  <div className="mx-auto w-full max-w-4xl">
+                  <div className="shrink-0 pb-3 pt-2">
+                    <div className={chatContentInnerClass}>
                     <div className="flex items-center gap-1.5 overflow-x-auto pb-3">
                       {[
                         ...workflowConfigs.slice(0, 3).map((wf) => ({
@@ -2398,208 +3490,14 @@ export default function AiInteractionPage() {
                         更多…
                       </button>
                     </div>
+                    <div className="pt-0">{renderComposer("bottom")}</div>
+                    </div>
                   </div>
-                </div>
-                <div className="p-4 pt-0">{renderComposer("bottom")}</div>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="flex-1 overflow-y-auto p-4">
-            {workspaceTab === "knowledge" ? (
-              <div className="relative min-h-[70vh] overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950/40">
-                <div className="p-4">
-                  <KnowledgeWorkspacePanel />
-                </div>
-              </div>
-            ) : workspaceTab === "pdf_packages" ? (
-              <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
-                <PdfPackagesPanel
-                  items={ragItems}
-                  busyPackageId={ragBusyId}
-                  onDownload={downloadRagExport}
-                  onDelete={deleteRagPackage}
-                />
-              </div>
-            ) : workspaceTab === "prompts" ? (
-              <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium text-zinc-200">提示词（全站）</div>
-                  <button
-                    type="button"
-                    onClick={() => openConfigEditor("prompts")}
-                    className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
-                  >
-                    编辑 JSON
-                  </button>
-                </div>
-                <p className="mt-2 text-xs text-zinc-500">
-                  术语与分层见仓库 <span className="font-mono text-zinc-400">docs/agent-skills-glossary.md</span>
-                  ：此处登记<strong>全站可复用</strong>的 Prompt 设计（摘要 + 可选正文）；成熟 prompt/口径素材可写入{" "}
-                  <span className="font-mono text-zinc-400">body</span> 或拆条。Agent Skill 正文见「技能」Tab 中的仓库{" "}
-                  <span className="font-mono text-zinc-400">SKILL.md</span>。
-                </p>
-                <div className="mt-3 space-y-2">
-                  {promptConfigs.map((p) => (
-                    <div key={p.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-zinc-200">{p.label}</div>
-                          <div className="mt-1 text-xs text-zinc-500 font-mono">{p.id}</div>
-                        </div>
-                        <div className="flex shrink-0 flex-wrap gap-2 text-[11px] text-zinc-500">
-                          {p.role ? (
-                            <span className="rounded border border-zinc-800 px-1.5 py-0.5 font-mono">{p.role}</span>
-                          ) : null}
-                          {p.scope ? (
-                            <span className="rounded border border-zinc-800 px-1.5 py-0.5 font-mono">{p.scope}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      {p.description ? <div className="mt-2 text-xs text-zinc-400">{p.description}</div> : null}
-                      {p.summary ? <div className="mt-2 text-[11px] text-zinc-500">摘要：{p.summary}</div> : null}
-                      {p.body && p.body.trim() ? (
-                        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300">
-                          {p.body}
-                        </pre>
-                      ) : (
-                        <div className="mt-2 text-[11px] text-zinc-600">（正文可在「编辑 JSON」中填写 body 字段）</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : workspaceTab === "skills" ? (
-              <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium text-zinc-200">技能（SKILL.md）</div>
-                  <button
-                    type="button"
-                    onClick={() => openConfigEditor("skills")}
-                    className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
-                  >
-                    编辑 JSON
-                  </button>
-                </div>
-                <p className="mt-2 text-xs text-zinc-500">
-                  正文来自后端{" "}
-                  <span className="font-mono text-zinc-400">backend/data/agent_skills/&lt;skill_id&gt;/SKILL.md</span>（
-                  <span className="font-mono text-zinc-400">manifest.json</span> 登记）。勾选「启用」后，对应文档会注入当前对话的 system，模型须按文档约束执行。
-                </p>
-                {skillCatalogLoading ? (
-                  <div className="mt-3 text-xs text-zinc-500">正在加载 SKILL.md…</div>
-                ) : skillCatalogError ? (
-                  <div className="mt-3 text-xs text-amber-400">{skillCatalogError}</div>
-                ) : null}
-                <div className="mt-3 space-y-2">
-                  {skillConfigs.map((s) => {
-                    const doc = skillCatalog?.find((d) => d.id === s.id);
-                    return (
-                      <div key={s.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium text-zinc-200">{s.label}</div>
-                            <div className="mt-1 text-xs text-zinc-500 font-mono">{s.id}</div>
-                          </div>
-                          <label className="flex items-center gap-2 text-xs text-zinc-200">
-                            <input type="checkbox" checked={enabledSkills.includes(s.id)} onChange={() => toggleEnabledSkill(s.id)} />
-                            启用
-                          </label>
-                        </div>
-                        {doc?.name && doc.name !== s.id ? (
-                          <div className="mt-1 text-[11px] text-zinc-500">SKILL 名：{doc.name}</div>
-                        ) : null}
-                        {doc?.description ? <div className="mt-1 text-[11px] text-zinc-500">{doc.description}</div> : null}
-                        {s.description ? <div className="mt-2 text-xs text-zinc-400">{s.description}</div> : null}
-                        {s.trigger_hint ? <div className="mt-1 text-[11px] text-zinc-500">触发：{s.trigger_hint}</div> : null}
-                        {s.example ? <div className="mt-2 rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300">{s.example}</div> : null}
-                        <details className="mt-2 rounded border border-zinc-900 bg-zinc-950/40">
-                          <summary className="cursor-pointer select-none px-2 py-1.5 text-[11px] text-zinc-400 hover:text-zinc-300">
-                            查看 SKILL.md 全文
-                          </summary>
-                          {doc?.raw_markdown ? (
-                            <pre className="max-h-[min(70vh,520px)] overflow-auto whitespace-pre-wrap border-t border-zinc-900 p-2 text-[11px] leading-relaxed text-zinc-300">
-                              {doc.raw_markdown}
-                            </pre>
-                          ) : (
-                            <div className="border-t border-zinc-900 px-2 py-2 text-[11px] text-zinc-600">
-                              未找到该技能的 SKILL.md（请检查后端 manifest 与文件路径）。
-                            </div>
-                          )}
-                        </details>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : workspaceTab === "tools" ? (
-              <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium text-zinc-200">工具配置</div>
-                  <button
-                    type="button"
-                    onClick={() => openConfigEditor("tools")}
-                    className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
-                  >
-                    编辑 JSON
-                  </button>
-                </div>
-                <div className="mt-3 space-y-2">
-                  {toolConfigs.map((t) => (
-                    <div key={t.id} className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-zinc-200">{t.label}</div>
-                          <div className="mt-1 text-xs text-zinc-500 font-mono">{t.id}</div>
-                        </div>
-                        <label className="flex items-center gap-2 text-xs text-zinc-200">
-                          <input type="checkbox" checked={enabledTools.includes(t.id)} onChange={() => toggleEnabledTool(t.id)} />
-                          启用
-                        </label>
-                      </div>
-                      {t.description ? <div className="mt-2 text-xs text-zinc-400">{t.description}</div> : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : workspaceTab === "workflows" ? (
-              <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium text-zinc-200">工作流</div>
-                  <button
-                    type="button"
-                    onClick={() => openConfigEditor("workflows")}
-                    className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-900/60"
-                  >
-                    编辑 JSON
-                  </button>
-                </div>
-                <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
-                  {workflowConfigs.map((wf) => (
-                    <button
-                      key={wf.id}
-                      type="button"
-                      onClick={() => {
-                        const prompt = (wf.example_prompt || "").trim();
-                        if (prompt) setChatInput((prev) => (prev ? `${prev}\n${prompt}` : prompt));
-                        setActiveLeftView("chat");
-                      }}
-                      className="rounded-lg border border-zinc-800 bg-zinc-950/20 p-3 text-left hover:bg-zinc-900/40"
-                    >
-                      <div className="text-sm font-medium text-zinc-200">{wf.label}</div>
-                      {wf.description ? <div className="mt-1 text-xs text-zinc-500">{wf.description}</div> : null}
-                      {wf.example_prompt ? (
-                        <div className="mt-2 rounded border border-zinc-900 bg-zinc-950/40 p-2 text-[11px] text-zinc-300 line-clamp-4">
-                          {wf.example_prompt}
-                        </div>
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+                </>
+              )}
+            </div>
           </div>
-        )}
+        ) : null}
       </main>
     </div>
   );

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from sqlalchemy import text
 
@@ -52,6 +54,24 @@ def normalize_profile(profile: str) -> tuple[Literal["standard", "openwebui", "c
         return "cn_kb", label
     # fallback：未知 profile 默认走通用包（避免前端/用户输入新工具名导致 400）
     return "cn_kb", "通用中文AI知识库"
+
+
+def _attachment_content_disposition(filename: str) -> str:
+    """HTTP 响应头须 latin-1；中文文件名用 filename* (RFC 5987)。"""
+    safe = (filename or "export.zip").replace('"', "'").replace("\\", "_")
+    ascii_fallback = re.sub(r"[^\x20-\x7E]+", "_", safe).strip("_") or "export.zip"
+    encoded = quote(safe, safe="")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+
+
+def _export_base_label(pkg: dict[str, Any]) -> str:
+    """Use package display name (PDF filename) for export paths; fallback to package_id."""
+    name = str(pkg.get("name") or "").strip()
+    package_id = str(pkg.get("package_id") or "package")
+    if not name:
+        return package_id
+    safe = re.sub(r'[<>:"/\\|?*]+', "_", name).strip()[:80]
+    return safe or package_id
 
 
 def _pkg_row(tenant_id: str, package_id: str) -> dict[str, Any] | None:
@@ -164,6 +184,7 @@ def export_package_zip(tenant_id: str, package_id: str, profile: ExportProfile) 
 
     mem = io.BytesIO()
     normalized, display = normalize_profile(str(profile))
+    export_base = _export_base_label(p)
     with zipfile.ZipFile(mem, "w", compression=zipfile.ZIP_DEFLATED) as z:
         if normalized == "standard":
             # 完整标准包结构（raw/archive/kb）
@@ -177,7 +198,7 @@ def export_package_zip(tenant_id: str, package_id: str, profile: ExportProfile) 
                         z.write(f, arcname=rel)
         else:
             # 兼容外部端：以 Markdown 分段文件为主（多客户端通吃）
-            base = f"{p['package_id']}_{normalized}"
+            base = f"{export_base}_{normalized}"
             # manifest 作为元信息附带
             add_file(z, kb_manifest, f"{base}/manifest.json")
 
@@ -212,7 +233,7 @@ def export_package_zip(tenant_id: str, package_id: str, profile: ExportProfile) 
             z.writestr(f"{base}/README.json", json.dumps(note, ensure_ascii=False, indent=2))
 
     mem.seek(0)
-    filename = f"{p['package_id']}_{normalized}.zip"
+    filename = f"{export_base}_{normalized}.zip"
     return mem.read(), filename
 
 

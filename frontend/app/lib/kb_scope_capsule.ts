@@ -81,6 +81,28 @@ export function mergeKbScopeCapsule(base: KbScopeCapsule, patch: Partial<KbScope
   };
 }
 
+/** URL 显式范围优先，否则回退 localStorage 胶囊（parse 返回 Partial，避免 undefined.length） */
+export function resolveKbScopeFromUrlAndCapsule(sp: URLSearchParams): KbScopeCapsule {
+  const fromUrl = parseKbScopeFromSearchParams(sp);
+  const capsule = readKbScopeCapsule() || emptyKbScopeCapsule();
+  return {
+    folder_ids: fromUrl.folder_ids?.length ? fromUrl.folder_ids : capsule.folder_ids,
+    collection_ids: fromUrl.collection_ids?.length ? fromUrl.collection_ids : capsule.collection_ids,
+    table_ids: fromUrl.table_ids?.length ? fromUrl.table_ids : capsule.table_ids,
+    updated_at: capsule.updated_at,
+  };
+}
+
+export function buildAgentHref(scope?: Partial<KbScopeCapsule>): string {
+  const q = new URLSearchParams();
+  q.set("view", "agent");
+  if (scope?.folder_ids?.length === 1) q.set("folder_id", scope.folder_ids[0]);
+  else if ((scope?.folder_ids?.length || 0) > 1) q.set("folders", (scope.folder_ids || []).join(","));
+  if (scope?.collection_ids?.length) q.set("collections", (scope.collection_ids || []).join(","));
+  if (scope?.table_ids?.length) q.set("tables", (scope.table_ids || []).join(","));
+  return `/ai-interaction?${q.toString()}`;
+}
+
 export function buildAiInteractionHref(scope: Partial<KbScopeCapsule>): string {
   const q = new URLSearchParams();
   if (scope.folder_ids?.length === 1) q.set("folder_id", scope.folder_ids[0]);

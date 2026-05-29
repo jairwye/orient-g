@@ -40,8 +40,8 @@ copy .env.example .env
 ## 本地配置
 
 1. 复制环境变量：`copy .env.example .env`
-2. 编辑 `.env`：
-   - `DATABASE_URL`：指向本机 PostgreSQL（如 `postgresql://user:pass@localhost:5432/mgmt_web`）
+2. 编辑 `.env`（字段说明见 `.env.example` 本地开发段）：
+   - `DATABASE_URL`：本机 PostgreSQL，如 `postgresql://postgres:你的密码@127.0.0.1:5432/mgmt_web`（库名 `mgmt_web` 需先创建；Windows 连不上时可把 `localhost` 改为 `127.0.0.1`，见 `docs/汇率-PostgreSQL排查.md`）
    - `UPLOAD_DIR`：本地上传目录（如 `./uploads`），该目录已加入 `.gitignore`；财务后台路径、登录用户名等应用设置保存在该目录下的 `app_settings.json`，请勿删除
    - `DB_MIGRATION_MODE`：数据库结构迁移模式。`legacy`=启动自动建表（偏开发便利，**不能替代迁移脚本**）；`alembic`=由 Alembic 显式迁移管理（生产推荐，且**结构变更必须使用**）
 3. 在 PostgreSQL 中创建数据库（若尚未创建）：
@@ -180,7 +180,8 @@ alembic -c backend\alembic.ini upgrade head
 ```
 ├── frontend/          # Next.js 前端（员工 X 负责首页、经营、竞品；他人负责汇率、政策新闻细致页）
 ├── backend/           # FastAPI 后端（鉴权、Excel、CRUD）
-├── docs/              # 部署说明、API 契约、汇率 PostgreSQL 排查（见 docs/api-contract.md、docs/汇率-PostgreSQL排查.md）
+├── specs/             # UI/功能规制与实施计划（见 specs/README.md、specs/ui/ai-interaction.md）
+├── docs/              # 参考、手册、API 契约（见 docs/README.md）
 ├── 规则/              # 项目规则与约束（不上传 GitHub）
 ├── 规划/              # 实现规划、待更新计划、各功能方案与清单（不上传 GitHub）
 ├── scripts/           # 一键安装、常用脚本（如 setup.ps1）
@@ -344,7 +345,7 @@ docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 
 ## 扩展与协同
 
-- 首页摘要所用 API 约定见 [docs/api-contract.md](docs/api-contract.md)。
+- 首页摘要所用 API 约定见 [specs/api/api-contract.md](specs/api/api-contract.md)。
 - 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`、`/knowledge`（知识库展位）、`/utils`（实用工具，含流程文档 `/utils/process-doc`、大 PDF 生知识库、「数据解析」等）。其中「数据解析」入口当前沿用路径 `/utils/excel-kanban`，目标是：用户上传电子表，通过本地 LLM + **MCP 风格 Tools** + 符合 [Agent Skills](https://agentskills.io) 习惯的 **Agent Skills**，以及工作空间登记的 **`prompt.*` 提示词资产**（见 [docs/agent-skills-glossary.md](docs/agent-skills-glossary.md)），对表格数据进行解析，生成可视化看板、整理为更符合逻辑和条理的表格视图，并完成信息归纳、专业评价与风险识别。财务后台默认路径为 `/admin`，可在后台页面修改。
 - **股权全景（实验）**：`/equity` 及关联分析页用于内网导入后的公司股权架构与地理等可视化；**为临时增加能力，后续可能移除**，接口与页面行为以当前版本为准、不作为长期对外契约。
 - 项目更新记录见 [changelog.md](changelog.md)。当前版本 **1.2.1.1**：股权全景实验能力、文档与规划修正等见 changelog。

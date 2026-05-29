@@ -2,40 +2,134 @@
 
 import { useCallback, useEffect } from "react";
 import { useBigpdfStore, type BigpdfTaskInfo } from "../stores/bigpdfStore";
-import { getAuthHeaders } from "../lib/auth";
+import { getAuthHeaders, AUTH_TOKEN_KEY } from "../lib/auth";
 import { useSmartPoll } from "../lib/smartPoll";
+import {
+  resolveBigpdfUiState,
+} from "../lib/bigpdfTaskUtils";
+
+export { normalizeBigpdfTaskStage } from "../lib/bigpdfTaskUtils";
 
 interface UseBigpdfTaskOptions {
   taskId: string | null;
+  enabled?: boolean;
   onComplete?: (task: BigpdfTaskInfo) => void;
   onError?: (task: BigpdfTaskInfo) => void;
   onCancel?: (task: BigpdfTaskInfo) => void;
 }
 
+function mapTaskFromDetail(raw: {
+  task_id?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  file_name?: string | null;
+  file_size?: number | null;
+  page_count?: number | null;
+  estimated_remaining?: number;
+  elapsed_time?: number;
+  docling_task_id?: string | null;
+  display_label?: string | null;
+  is_processing?: boolean;
+  queue_position?: number | null;
+  is_waiting_for_slot?: boolean;
+  result?: {
+    package_id?: string;
+    document_count?: number;
+    folder_path?: string;
+  } | null;
+  error?: string | null;
+}): BigpdfTaskInfo {
+  const status = (raw.status === "done" ? "completed" : raw.status || "queued") as BigpdfTaskInfo["status"];
+  const ui = resolveBigpdfUiState({
+    taskId: raw.task_id!,
+    status,
+    stage: raw.stage || "queued",
+    doclingTaskId: raw.docling_task_id,
+    queuePosition: raw.queue_position,
+  });
+  const stage = (
+    raw.display_label ? (raw.stage || ui.displayStage) : ui.displayStage
+  ) as BigpdfTaskInfo["stage"];
+  const effectiveStatus =
+    ui.isProcessing && status === "queued" ? ("running" as BigpdfTaskInfo["status"]) : status;
+  return {
+    taskId: raw.task_id!,
+    status: effectiveStatus,
+    stage,
+    progress: raw.progress ?? 0,
+    fileName: raw.file_name?.trim() || "未知文件",
+    fileSize: raw.file_size ?? 0,
+    pageCount: raw.page_count ?? 0,
+    estimatedRemaining: raw.estimated_remaining ?? 0,
+    elapsedTime: raw.elapsed_time ?? 0,
+    owner: "",
+    isMine: true,
+    doclingTaskId: raw.docling_task_id ?? undefined,
+    displayLabel: raw.display_label || ui.displayLabel,
+    isProcessing: raw.is_processing ?? ui.isProcessing,
+    queuePosition: raw.queue_position ?? null,
+    isWaitingForSlot: raw.is_waiting_for_slot ?? ui.isWaitingForSlot,
+    result: raw.result?.package_id
+      ? {
+          packageId: raw.result.package_id,
+          documentCount: raw.result.document_count ?? 0,
+          folderPath: raw.result.folder_path ?? "",
+        }
+      : undefined,
+    error: raw.error ?? undefined,
+  };
+}
+
 export function useBigpdfTask(options: UseBigpdfTaskOptions) {
-  const { taskId, onComplete, onError, onCancel } = options;
+  const { taskId, enabled = true, onComplete, onError, onCancel } = options;
 
   const setActiveTask = useBigpdfStore((s) => s.setActiveTask);
   const updateActiveTask = useBigpdfStore((s) => s.updateActiveTask);
-  const addNotification = useBigpdfStore((s) => s.addNotification);
 
   const load = useCallback(async () => {
     if (!taskId) throw new Error("No task ID provided");
+    // 未登录时不发请求，避免 401 风暴
+    if (typeof window !== "undefined" && !sessionStorage.getItem(AUTH_TOKEN_KEY)) {
+      throw new Error("not authenticated");
+    }
     const res = await fetch(
-      `/api/knowledge/bigpdf/tasks/${encodeURIComponent(taskId)}`,
+      `/api/knowledge/bigpdf/tasks/${encodeURIComponent(taskId)}/detail`,
       {
         credentials: "include",
         headers: getAuthHeaders(),
       }
     );
     if (!res.ok) throw new Error("任务查询失败");
-    const data = (await res.json().catch(() => ({}))) as BigpdfTaskInfo;
-    if (!data?.taskId) throw new Error("任务查询返回无效");
-    return data;
+    const raw = (await res.json().catch(() => ({}))) as {
+      task_id?: string;
+      status?: string;
+      stage?: string;
+      progress?: number;
+      file_name?: string | null;
+      file_size?: number | null;
+      page_count?: number | null;
+      estimated_remaining?: number;
+      elapsed_time?: number;
+      docling_task_id?: string | null;
+      display_label?: string | null;
+      is_processing?: boolean;
+      queue_position?: number | null;
+      is_waiting_for_slot?: boolean;
+      result?: {
+        package_id?: string;
+        document_count?: number;
+        folder_path?: string;
+      } | null;
+      error?: string | null;
+    };
+    if (!raw?.task_id) throw new Error("任务查询返回无效");
+    return mapTaskFromDetail(raw);
   }, [taskId]);
 
   const { data: task, setData: setTask, phase, errorCount, trigger } = useSmartPoll<BigpdfTaskInfo>({
-    enabled: Boolean(taskId),
+    enabled: enabled && Boolean(taskId),
+    pollKey: taskId,
     load,
     isTerminal: (data) =>
       data.status === "completed" ||
@@ -43,20 +137,14 @@ export function useBigpdfTask(options: UseBigpdfTaskOptions) {
       data.status === "cancelled" ||
       data.status === "force_cancelled" ||
       data.status === "user_abandoned",
-    isActive: (data) => {
-      if (
+    isActive: (data) =>
+      !(
         data.status === "completed" ||
         data.status === "failed" ||
         data.status === "cancelled" ||
         data.status === "force_cancelled" ||
         data.status === "user_abandoned"
-      ) {
-        return false;
-      }
-      const stage = (data.stage || "").toLowerCase();
-      if (!stage) return true;
-      return stage !== "queued";
-    },
+      ),
     activeMs: 2500,
     stableMs: 20000,
     errorMaxMs: 60000,
@@ -73,42 +161,16 @@ export function useBigpdfTask(options: UseBigpdfTaskOptions) {
     }
   }, [task, setActiveTask, persistTaskId]);
 
-  // Handle terminal states
+  // Terminal callbacks only — 站内提醒由 useBigpdfCompletionFeed 统一推送（支持连续上传/离开页面）
   useEffect(() => {
     if (!task) return;
 
     if (task.status === "completed") {
       onComplete?.(task);
-      addNotification({
-        type: "success",
-        title: "大 PDF 解析完成",
-        message: `${task.fileName} 已完成解析${task.result ? `，共生成 ${task.result.documentCount} 个知识片段` : ""}`,
-        action: task.result
-          ? {
-              label: "立即查看",
-              onClick: () => {
-                window.location.href = `/ai-interaction?workspace=knowledge&package=${task.result!.packageId}`;
-              },
-            }
-          : undefined,
-      });
     } else if (task.status === "failed") {
       onError?.(task);
-      addNotification({
-        type: "error",
-        title: "大 PDF 解析失败",
-        message: task.error || `${task.fileName} 解析失败`,
-      });
-    } else if (
-      task.status === "cancelled" ||
-      task.status === "force_cancelled"
-    ) {
+    } else if (task.status === "cancelled" || task.status === "force_cancelled") {
       onCancel?.(task);
-      addNotification({
-        type: "warning",
-        title: "大 PDF 解析已取消",
-        message: `${task.fileName} 已取消解析`,
-      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task?.status, task?.taskId]);
@@ -116,6 +178,10 @@ export function useBigpdfTask(options: UseBigpdfTaskOptions) {
   const cancelTask = useCallback(
     async (force = false) => {
       if (!taskId) return { success: false, message: "无任务" };
+      // 未登录时不发请求
+      if (typeof window !== "undefined" && !sessionStorage.getItem(AUTH_TOKEN_KEY)) {
+        return { success: false, message: "not authenticated" };
+      }
       try {
         const res = await fetch(
           `/api/knowledge/bigpdf/tasks/${encodeURIComponent(taskId)}/cancel`,
@@ -175,7 +241,12 @@ export function useBigpdfTask(options: UseBigpdfTaskOptions) {
     task,
     phase,
     errorCount,
-    isLoading: phase === "polling" || phase === "idle",
+    isLoading:
+      enabled &&
+      Boolean(taskId) &&
+      !task &&
+      phase !== "stopped" &&
+      phase !== "cooldown",
     isTerminal:
       task?.status === "completed" ||
       task?.status === "failed" ||

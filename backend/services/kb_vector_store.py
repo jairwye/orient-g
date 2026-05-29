@@ -9,6 +9,11 @@ from backend.database import get_db
 from backend.services.ollama_embeddings import embed_texts
 
 
+def _pgvector_literal(values: list[float]) -> str:
+    """PostgreSQL pgvector 字面量（用于 CAST(... AS vector)）。"""
+    return "[" + ",".join(f"{float(v):.8g}" for v in values) + "]"
+
+
 def vector_enabled() -> bool:
     """
     是否启用向量检索。
@@ -128,20 +133,21 @@ def search_doc_chunks(
     if exp_dim > 0 and len(qv) != exp_dim:
         raise RuntimeError(f"query embedding 维度不匹配：expect={exp_dim}, got={len(qv)} (model={m})")
     lim = max(1, min(30, int(k)))
+    qv_lit = _pgvector_literal(qv)
     with get_db() as db:
         rows = db.execute(
             text(
                 """
-                SELECT doc_id, chunk_id, chunk_seq_no, (embedding <=> :qv) AS score
+                SELECT doc_id, chunk_id, chunk_seq_no, (embedding <=> CAST(:qv AS vector)) AS score
                 FROM kb_doc_chunk_embeddings
                 WHERE tenant_id = :t
                   AND embed_model = :m
                   AND doc_id = ANY(:doc_ids)
-                ORDER BY embedding <=> :qv
+                ORDER BY embedding <=> CAST(:qv AS vector)
                 LIMIT :lim
                 """
             ),
-            {"t": tid, "m": m, "doc_ids": cand, "qv": qv, "lim": lim},
+            {"t": tid, "m": m, "doc_ids": cand, "qv": qv_lit, "lim": lim},
         ).fetchall()
 
     out: list[dict[str, Any]] = []

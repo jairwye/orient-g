@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useBigpdfStore, type BigpdfSystemStatus, type BigpdfQueueStatus } from "../stores/bigpdfStore";
-import { getAuthHeaders } from "../lib/auth";
+import { getAuthHeaders, AUTH_TOKEN_KEY } from "../lib/auth";
 
 interface UseDoclingStatusOptions {
   /** Poll interval in ms when page is visible */
@@ -28,6 +28,8 @@ export function useDoclingStatus(options: UseDoclingStatusOptions = {}) {
 
   const fetchStatus = useCallback(async () => {
     if (inFlightRef.current) return null;
+    // 未登录时不发请求，避免 401 风暴
+    if (typeof window !== "undefined" && !sessionStorage.getItem(AUTH_TOKEN_KEY)) return null;
     inFlightRef.current = true;
     setIsLoading(true);
     setError(null);
@@ -53,6 +55,8 @@ export function useDoclingStatus(options: UseDoclingStatusOptions = {}) {
 
   const fetchQueue = useCallback(async () => {
     if (inFlightRef.current) return null;
+    // 未登录时不发请求，避免 401 风暴
+    if (typeof window !== "undefined" && !sessionStorage.getItem(AUTH_TOKEN_KEY)) return null;
     inFlightRef.current = true;
     try {
       const res = await fetch("/api/knowledge/bigpdf/queue", {

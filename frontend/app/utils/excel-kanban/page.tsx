@@ -426,7 +426,7 @@ export default function ExcelKanbanPage() {
                   onChange={(e) => setEnableXlsxSkill(e.target.checked)}
                   className="h-4 w-4 shrink-0 rounded border-zinc-700 bg-zinc-800"
                 />
-                <span className="text-zinc-300">对话携带 Agent Skill：{XLSX_SKILL_DISPLAY_NAME}</span>
+                <span className="text-zinc-300">对话携带智能体技能：{XLSX_SKILL_DISPLAY_NAME}</span>
               </label>
               <div className="mb-4 max-h-[320px] space-y-3 overflow-y-auto">
                 {chatMessages.length === 0 && <p className="text-sm text-zinc-500">在此对当前表格提问或要求生成图表、表格。</p>}
@@ -500,7 +500,7 @@ export default function ExcelKanbanPage() {
             {skillsList && Object.keys(skillsList).length > 0 && (
               <div>
                 <h4 className="mb-1 font-medium text-zinc-400">解析口径摘要（JSON 配置）</h4>
-                <p className="mb-1 text-xs text-zinc-600">以下为后端 `kanban_skills.json` 的条数统计，与上方 Agent Skill 不是同一套列示。</p>
+                <p className="mb-1 text-xs text-zinc-600">以下为后端 `kanban_skills.json` 的条数统计，与上方智能体技能不是同一套列示。</p>
                 <ul className="space-y-0.5">
                   {Object.entries(skillsList).map(([k, v]) => (
                     <li key={k}>

@@ -19,13 +19,39 @@ def _safe_name(name: str, default: str) -> str:
     return (nm[:200] or default).strip() or default
 
 
+def compute_subtree_doc_counts(folders: list[dict[str, Any]]) -> dict[str, int]:
+    """本文件夹 + 所有后代文件夹的文档数（基于 resource_counts.doc 递归求和）。"""
+    direct_counts: dict[str, int] = {}
+    children_map: dict[str, list[str]] = {}
+    for f in folders:
+        fid = str(f.get("folder_id") or "").strip()
+        if not fid:
+            continue
+        direct_counts[fid] = int((f.get("resource_counts") or {}).get("doc") or 0)
+        pfid = str(f.get("parent_folder_id") or "").strip() or None
+        if pfid:
+            children_map.setdefault(pfid, []).append(fid)
+    cache: dict[str, int] = {}
+
+    def total(fid: str) -> int:
+        if fid in cache:
+            return cache[fid]
+        n = direct_counts.get(fid, 0)
+        for child in children_map.get(fid, []):
+            n += total(child)
+        cache[fid] = n
+        return n
+
+    return {fid: total(fid) for fid in direct_counts}
+
+
 def list_folders(tenant_id: str) -> list[dict[str, Any]]:
     tid = (tenant_id or "").strip() or "tenant1"
     with get_db() as db:
         rows = db.execute(
             text(
                 """
-                SELECT f.folder_id, f.name, f.kind, f.scope_json, f.owner_username, f.created_by, f.created_at, f.updated_at
+                SELECT f.folder_id, f.name, f.kind, f.scope_json, f.owner_username, f.created_by, f.created_at, f.updated_at, f.parent_folder_id
                 FROM kb_folders f
                 WHERE f.tenant_id=:t
                 ORDER BY f.name
@@ -53,6 +79,19 @@ def list_folders(tenant_id: str) -> list[dict[str, Any]]:
             ),
             {"t": tid},
         ).fetchall()
+        doc_count_rows = db.execute(
+            text(
+                """
+                SELECT fr.folder_id, COUNT(DISTINCT fr.resource_id) AS cnt
+                FROM kb_folder_resources fr
+                INNER JOIN kb_user_documents d
+                  ON d.tenant_id = fr.tenant_id AND d.doc_id = fr.resource_id
+                WHERE fr.tenant_id = :t AND fr.resource_type = 'doc'
+                GROUP BY fr.folder_id
+                """
+            ),
+            {"t": tid},
+        ).fetchall()
     folder_to_cols: dict[str, list[str]] = {}
     for r in maps:
         fid = str(r[0] or "").strip()
@@ -60,11 +99,15 @@ def list_folders(tenant_id: str) -> list[dict[str, Any]]:
         if fid and cid:
             folder_to_cols.setdefault(fid, []).append(cid)
     folder_to_counts: dict[str, dict[str, int]] = {}
+    for r in doc_count_rows:
+        fid = str(r[0] or "").strip()
+        if fid:
+            folder_to_counts[fid] = {"doc": int(r[1] or 0)}
     for r in rmap:
         fid = str(r[0] or "").strip()
         rt = str(r[1] or "").strip()
         rid = str(r[2] or "").strip()
-        if not fid or not rt or not rid:
+        if not fid or not rt or not rid or rt == "doc":
             continue
         d = folder_to_counts.setdefault(fid, {})
         d[rt] = int(d.get(rt) or 0) + 1
@@ -90,10 +133,15 @@ def list_folders(tenant_id: str) -> list[dict[str, Any]]:
                 "created_by": str(r[5] or "").strip() or None,
                 "created_at": r[6].isoformat() if getattr(r[6], "isoformat", None) else None,
                 "updated_at": r[7].isoformat() if getattr(r[7], "isoformat", None) else None,
+                "parent_folder_id": str(r[8] or "").strip() or None,
                 "collection_ids": sorted(set(folder_to_cols.get(fid, []))),
                 "resource_counts": folder_to_counts.get(fid, {}),
             }
         )
+    subtree_counts = compute_subtree_doc_counts(out)
+    for item in out:
+        fid = str(item.get("folder_id") or "").strip()
+        item["subtree_doc_count"] = subtree_counts.get(fid, 0)
     return out
 
 
@@ -107,6 +155,7 @@ def upsert_folder(
     kind: str | None = None,
     scope: dict[str, Any] | None = None,
     owner_username: str | None = None,
+    parent_folder_id: str | None = None,
 ) -> None:
     tid = (tenant_id or "").strip() or "tenant1"
     fid = (folder_id or "").strip()
@@ -119,13 +168,14 @@ def upsert_folder(
         db.execute(
             text(
                 """
-                INSERT INTO kb_folders (folder_id, tenant_id, name, kind, scope_json, owner_username, created_by, updated_at)
-                VALUES (:fid, :t, :n, :k, :sj, :ou, :cb, CURRENT_TIMESTAMP)
+                INSERT INTO kb_folders (folder_id, tenant_id, name, kind, scope_json, owner_username, created_by, updated_at, parent_folder_id)
+                VALUES (:fid, :t, :n, :k, :sj, :ou, :cb, CURRENT_TIMESTAMP, :pf)
                 ON CONFLICT (folder_id) DO UPDATE
                 SET name = EXCLUDED.name,
                     kind = EXCLUDED.kind,
                     scope_json = EXCLUDED.scope_json,
                     owner_username = EXCLUDED.owner_username,
+                    parent_folder_id = EXCLUDED.parent_folder_id,
                     updated_at = CURRENT_TIMESTAMP
                 """
             ),
@@ -137,6 +187,7 @@ def upsert_folder(
                 "sj": scope_json,
                 "ou": (owner_username or "").strip() or None,
                 "cb": (created_by or "").strip() or None,
+                "pf": (parent_folder_id or "").strip() or None,
             },
         )
         if collection_ids is not None:
@@ -190,6 +241,7 @@ def create_folder(
     kind: str | None = None,
     scope: dict[str, Any] | None = None,
     owner_username: str | None = None,
+    parent_folder_id: str | None = None,
 ) -> dict[str, Any]:
     tid = (tenant_id or "").strip() or "tenant1"
     fid = _new_folder_id("f")
@@ -202,6 +254,7 @@ def create_folder(
         kind=kind,
         scope=scope or {},
         owner_username=owner_username,
+        parent_folder_id=parent_folder_id,
     )
     return {"folder_id": fid}
 
@@ -227,7 +280,7 @@ def get_folder(tenant_id: str, *, folder_id: str) -> dict[str, Any] | None:
         row = db.execute(
             text(
                 """
-                SELECT folder_id, name, kind, scope_json, owner_username, created_by, created_at, updated_at
+                SELECT folder_id, name, kind, scope_json, owner_username, created_by, created_at, updated_at, parent_folder_id
                 FROM kb_folders
                 WHERE tenant_id=:t AND folder_id=:fid
                 """
@@ -263,6 +316,7 @@ def get_folder(tenant_id: str, *, folder_id: str) -> dict[str, Any] | None:
         "created_by": str(row[5] or "").strip() or None,
         "created_at": row[6].isoformat() if getattr(row[6], "isoformat", None) else None,
         "updated_at": row[7].isoformat() if getattr(row[7], "isoformat", None) else None,
+        "parent_folder_id": str(row[8] or "").strip() or None,
         "collection_ids": [str(r[0]) for r in cols if r and r[0]],
     }
 
@@ -397,6 +451,52 @@ def unlink_doc_from_folder(
         bind_resource_to_folder(tid, folder_id=pf, resource_type="doc", resource_id=did)
 
 
+def list_folder_user_doc_ids(tenant_id: str, *, folder_id: str) -> list[str]:
+    """本文件夹内、在 kb_user_documents 中仍存在的 doc_id（不含 rp_* 等大 PDF 包占位绑定）。"""
+    tid = (tenant_id or "").strip() or "tenant1"
+    fid = (folder_id or "").strip()
+    if not fid:
+        return []
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT fr.resource_id
+                FROM kb_folder_resources fr
+                INNER JOIN kb_user_documents d
+                  ON d.tenant_id = fr.tenant_id AND d.doc_id = fr.resource_id
+                WHERE fr.tenant_id = :t AND fr.folder_id = :fid AND fr.resource_type = 'doc'
+                ORDER BY fr.created_at DESC
+                """
+            ),
+            {"t": tid, "fid": fid},
+        ).fetchall()
+    return [str(r[0] or "").strip() for r in rows if str(r[0] or "").strip()]
+
+
+def prune_stale_folder_doc_bindings(tenant_id: str, *, folder_id: str) -> int:
+    """移除文件夹内已不存在于 kb_user_documents 的 doc 绑定（含历史 rp_* 占位）。"""
+    tid = (tenant_id or "").strip() or "tenant1"
+    fid = (folder_id or "").strip()
+    if not fid:
+        return 0
+    with get_db() as db:
+        res = db.execute(
+            text(
+                """
+                DELETE FROM kb_folder_resources fr
+                WHERE fr.tenant_id = :t AND fr.folder_id = :fid AND fr.resource_type = 'doc'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM kb_user_documents d
+                    WHERE d.tenant_id = fr.tenant_id AND d.doc_id = fr.resource_id
+                  )
+                """
+            ),
+            {"t": tid, "fid": fid},
+        )
+        return int(getattr(res, "rowcount", 0) or 0)
+
+
 def list_folder_resources(tenant_id: str, *, folder_id: str) -> list[dict[str, Any]]:
     tid = (tenant_id or "").strip() or "tenant1"
     fid = (folder_id or "").strip()
@@ -423,6 +523,77 @@ def list_folder_resources(tenant_id: str, *, folder_id: str) -> list[dict[str, A
                 "created_at": r[2].isoformat() if getattr(r[2], "isoformat", None) else None,
             }
         )
+    return out
+
+
+def folder_visible_to_user(
+    folder: dict[str, Any],
+    *,
+    username: str,
+    allowed_collection_ids: set[str],
+) -> bool:
+    """与 /api/knowledge/folders 列表可见性一致。"""
+    cids = [str(x) for x in (folder.get("collection_ids") or []) if str(x).strip()]
+    if any(cid in allowed_collection_ids for cid in cids):
+        return True
+    owner = (str(folder.get("owner_username") or "").strip() or "")
+    return bool(owner and owner == (username or "").strip())
+
+
+def collect_doc_ids_in_visible_folders(
+    tenant_id: str,
+    *,
+    username: str,
+    allowed_collection_ids: set[str] | list[str],
+) -> set[str]:
+    """
+    文件夹已分享到用户可见的 collection（如部门公共库）时，
+    其 kb_folder_resources 内文档应可读，即使 doc 仍挂在 owner 私有 collection 上。
+    """
+    tid = (tenant_id or "").strip() or "tenant1"
+    uname = (username or "").strip()
+    allowed = set(allowed_collection_ids or [])
+    if not allowed:
+        return set()
+    out: set[str] = set()
+    for f in list_folders(tid):
+        if not folder_visible_to_user(f, username=uname, allowed_collection_ids=allowed):
+            continue
+        fid = str(f.get("folder_id") or "").strip()
+        if not fid:
+            continue
+        for did in collect_subtree_doc_ids(tid, fid):
+            out.add(did)
+    return out
+
+
+def collect_subtree_doc_ids(tenant_id: str, folder_id: str) -> list[str]:
+    """递归收集 folder 及所有后代 folder 中绑定的 doc_id（去重，顺序稳定）。"""
+    tid = (tenant_id or "").strip() or "tenant1"
+    root = (folder_id or "").strip()
+    if not root:
+        return []
+    folders = list_folders(tid)
+    children_map: dict[str, list[str]] = {}
+    for f in folders:
+        fid = str(f.get("folder_id") or "").strip()
+        if not fid:
+            continue
+        parent = str(f.get("parent_folder_id") or "").strip() or None
+        if parent:
+            children_map.setdefault(parent, []).append(fid)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    stack = [root]
+    while stack:
+        fid = stack.pop()
+        for did in list_folder_user_doc_ids(tid, folder_id=fid):
+            if did not in seen:
+                out.append(did)
+                seen.add(did)
+        for child in children_map.get(fid, []):
+            stack.append(child)
     return out
 
 

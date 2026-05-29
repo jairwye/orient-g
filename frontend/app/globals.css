@@ -29,3 +29,23 @@ body {
 .exchange-chart-panable[data-pan="grabbing"] * {
   cursor: grabbing !important;
 }
+
+/* AI 互动：对话区滚动条（细、半透明，避免与深色底冲突） */
+.chat-panel-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(113, 113, 122, 0.28) transparent;
+  scrollbar-gutter: stable;
+}
+.chat-panel-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-panel-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-panel-scroll::-webkit-scrollbar-thumb {
+  background: rgba(113, 113, 122, 0.22);
+  border-radius: 9999px;
+}
+.chat-panel-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.38);
+}

@@ -41,13 +41,14 @@ def test_equity_panorama_smoke_import_and_query(monkeypatch):
     r = client.post("/api/equity/admin/import", json=payload, headers=_auth_header())
     assert r.status_code == 200, r.text
 
+    headers = _auth_header()
     # targets
-    r = client.get("/api/equity/targets", params={"snapshot_name": snapshot})
+    r = client.get("/api/equity/targets", params={"snapshot_name": snapshot}, headers=headers)
     assert r.status_code == 200, r.text
     assert len(r.json().get("items") or []) == 1
 
     # search
-    r = client.get("/api/equity/entities/search", params={"snapshot_name": snapshot, "q": "A"})
+    r = client.get("/api/equity/entities/search", params={"snapshot_name": snapshot, "q": "A"}, headers=headers)
     assert r.status_code == 200, r.text
     assert len(r.json().get("items") or []) >= 1
 
@@ -55,6 +56,7 @@ def test_equity_panorama_smoke_import_and_query(monkeypatch):
     r = client.get(
         "/api/equity/graph/ownership",
         params={"snapshot_name": snapshot, "target_entity_id": a, "direction": "down", "min_pct": 0.2, "max_depth": 5, "max_nodes": 500},
+        headers=headers,
     )
     assert r.status_code == 200, r.text
     g = r.json()
@@ -65,7 +67,7 @@ def test_equity_panorama_smoke_import_and_query(monkeypatch):
     assert g["stats"]["node_count"] <= 3
 
     # summary
-    r = client.get("/api/equity/analysis/summary", params={"snapshot_name": snapshot})
+    r = client.get("/api/equity/analysis/summary", params={"snapshot_name": snapshot}, headers=headers)
     assert r.status_code == 200, r.text
     dist = r.json().get("distributions") or {}
     assert "city" in dist

@@ -95,7 +95,7 @@ describe("useBigpdfTask", () => {
     });
   });
 
-  it("adds notification on completion", async () => {
+  it("does not push notifications (handled by completion feed)", async () => {
     const task = mockBigpdfTask({
       status: "completed",
       result: {
@@ -115,30 +115,7 @@ describe("useBigpdfTask", () => {
     renderHook(() => useBigpdfTask({ taskId: "t_001" }));
 
     await waitFor(() => {
-      const notifications = useBigpdfStore.getState().notifications;
-      expect(notifications).toHaveLength(1);
-      expect(notifications[0].type).toBe("success");
-      expect(notifications[0].title).toBe("大 PDF 解析完成");
-    });
-  });
-
-  it("adds error notification on failure", async () => {
-    const task = mockBigpdfTask({ status: "failed", error: "解析失败" });
-    mockedUseSmartPoll.mockReturnValue({
-      data: task,
-      setData: jest.fn(),
-      phase: "stopped",
-      errorCount: 0,
-      trigger: jest.fn(),
-    });
-
-    renderHook(() => useBigpdfTask({ taskId: "t_001" }));
-
-    await waitFor(() => {
-      const notifications = useBigpdfStore.getState().notifications;
-      expect(notifications).toHaveLength(1);
-      expect(notifications[0].type).toBe("error");
-      expect(notifications[0].title).toBe("大 PDF 解析失败");
+      expect(useBigpdfStore.getState().notifications).toHaveLength(0);
     });
   });
 
@@ -172,5 +149,53 @@ describe("useBigpdfTask", () => {
     );
 
     expect(typeof result.current.abandonTask).toBe("function");
+  });
+
+  it("isLoading is false once task data is available", () => {
+    mockedUseSmartPoll.mockReturnValue({
+      data: mockBigpdfTask(),
+      setData: jest.fn(),
+      phase: "polling",
+      errorCount: 0,
+      trigger: jest.fn(),
+    });
+
+    const { result } = renderHook(() =>
+      useBigpdfTask({ taskId: "t_001", enabled: true })
+    );
+
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it("isLoading is true while waiting for first task payload", () => {
+    mockedUseSmartPoll.mockReturnValue({
+      data: undefined,
+      setData: jest.fn(),
+      phase: "idle",
+      errorCount: 0,
+      trigger: jest.fn(),
+    });
+
+    const { result } = renderHook(() =>
+      useBigpdfTask({ taskId: "t_001", enabled: true })
+    );
+
+    expect(result.current.isLoading).toBe(true);
+  });
+
+  it("isLoading is false when polling stopped without data", () => {
+    mockedUseSmartPoll.mockReturnValue({
+      data: undefined,
+      setData: jest.fn(),
+      phase: "stopped",
+      errorCount: 0,
+      trigger: jest.fn(),
+    });
+
+    const { result } = renderHook(() =>
+      useBigpdfTask({ taskId: "t_001", enabled: true })
+    );
+
+    expect(result.current.isLoading).toBe(false);
   });
 });
