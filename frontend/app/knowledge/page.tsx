@@ -270,7 +270,7 @@ export default function KnowledgePage() {
     (docIds: string[]) => {
       const ids = Array.from(new Set((docIds || []).map((x) => (x || "").trim()).filter(Boolean)));
       if (!ids.length) {
-        setMsg({ type: "info", text: "请先选择要带到 AI 互动的文档。" });
+        setMsg({ type: "info", text: "请先选择要带到 AI内网的文档。" });
         return;
       }
       const q = new URLSearchParams();
@@ -1500,7 +1500,7 @@ export default function KnowledgePage() {
                           }}
                           className="w-full rounded px-2 py-1.5 text-left text-zinc-200 hover:bg-zinc-900/60"
                         >
-                          带到 AI 互动
+                          带到 AI内网
                         </button>
                         <button
                           type="button"
@@ -1646,7 +1646,7 @@ export default function KnowledgePage() {
                                     }}
                                     className="w-full rounded px-2 py-1.5 text-left text-zinc-200 hover:bg-zinc-900/60"
                                   >
-                                    带到 AI 互动
+                                    带到 AI内网
                                   </button>
                                   <button
                                     type="button"

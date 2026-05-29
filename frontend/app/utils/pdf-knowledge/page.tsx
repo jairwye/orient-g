@@ -318,13 +318,13 @@ export function PdfKnowledgePageContent() {
             href={(() => { const base = buildAiInteractionHref(info.folderId ? { folder_ids: [info.folderId] } : {}); return base + (base.includes("?") ? "&" : "?") + "tab=pdf_packages"; })()}
             className="rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
           >
-            去 AI 互动页查看 RAG 包
+            去 AI内网页查看 RAG 包
           </Link>
           <Link
             href={buildAiInteractionHref(info.folderId ? { folder_ids: [info.folderId] } : {})}
             className="rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
           >
-            返回 AI 互动
+            返回 AI内网
           </Link>
         </div>
       </div>

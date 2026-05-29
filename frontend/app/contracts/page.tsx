@@ -90,7 +90,7 @@ export default function ContractsPage() {
             </span>
           )}
           <Link href="/ai-interaction" className="ml-auto rounded border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700">
-            去 AI 互动
+            去 AI内网
           </Link>
         </div>
 

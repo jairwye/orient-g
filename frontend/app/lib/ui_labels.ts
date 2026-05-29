@@ -1,4 +1,12 @@
-/** 页面展示文案：产品「Agent」能力统一称「智能体」（路由/API 标识仍为 agent）。 */
+/** 页面展示文案：侧栏与页标题；产品「Agent」能力统一称「智能体」（路由/API 仍为 agent、/ai-interaction）。 */
+
+export const UI_AI_INTRANET = {
+  label: "AI内网",
+  pageTitle: "AI内网",
+  bringToChat: "带到 AI内网",
+  goToChat: "去 AI内网",
+  returnToChat: "返回 AI内网",
+} as const;
 
 export const UI_AGENT = {
   label: "智能体",
@@ -8,7 +16,7 @@ export const UI_AGENT = {
   stopTaskTitle: "停止智能体任务",
   historyEmptyHint: "暂无历史（对话与智能体均保存在本机浏览器）。",
   skillLabel: "智能体技能",
-  redirectMessage: "正在打开 AI 互动 · 智能体…",
+  redirectMessage: "正在打开 AI内网 · 智能体…",
 } as const;
 
 /** 历史会话标题兼容旧版「Agent」文案。 */

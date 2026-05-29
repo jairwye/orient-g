@@ -11,7 +11,7 @@ import { BigpdfGlobalShell } from "./bigpdf/BigpdfGlobalShell";
 const businessDashboardNavItem = { href: "/", label: "经营数据", icon: BarChart3 };
 
 const baseNavItems = [
-  { href: "/ai-interaction", label: "AI 互动", icon: MessageCircle },
+  { href: "/ai-interaction", label: "AI内网", icon: MessageCircle },
   { href: "/policy-news", label: "新闻政策", icon: Newspaper },
   { href: "/exchange", label: "汇率趋势", icon: TrendingUp },
   { href: "/contracts", label: "合同台账", icon: FileText },

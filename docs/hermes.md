@@ -20,7 +20,7 @@
             （服务密钥 HERMES_INTERNAL_TOKEN，非用户 JWT）
             → Hermes Gateway（编排 + LLM）
                 → MCP orientg（stdio）
-                    → 当前用户的 ORIENTG_USER_TOKEN（按会话注入，非运维手写每人一条）
+                    → MCP 参数 hermes_session_key → bridge 解析当前用户 JWT（非运维每人一条 env）
                         → orientg_server → PostgreSQL（本环境 DATABASE_URL）
 ```
 
@@ -289,7 +289,7 @@ docker compose -f docker-compose.yml -f docker-compose.hermes.yml -f docker-comp
 |------|--------|------|
 | 用户 JWT | 各用户浏览器 → backend | 识别「当前是哪个用户」 |
 | `HERMES_INTERNAL_TOKEN` / `API_SERVER_KEY` | 运维，全员共用 | backend ↔ Hermes 内网调用 |
-| `ORIENTG_USER_TOKEN`（MCP 子进程） | **应由 Hermes 按当前会话注入** | MCP 按该用户 ACL 访问 KB |
+| `ORIENTG_USER_TOKEN`（MCP 子进程） | 勿在生产写死；多用户靠 **`hermes_session_key` 工具参数**（见下） | MCP 按该用户 ACL 访问 KB |
 
 目标数据流：
 
@@ -309,7 +309,15 @@ docker compose -f docker-compose.yml -f docker-compose.hermes.yml -f docker-comp
 | `backend/services/hermes_client.py` | 每次 `run_agent_chat` 前 `register`；请求头 `X-Hermes-Session-Key`；system JSON 含 `orientg_hermes_session_key`、`orientg_mcp_instruction` |
 | `backend/services/orientg_mcp_tools.py` / `backend/mcp/orientg_server.py` | 各 `orientg_kb_*` 可选参数 `hermes_session_key`；`resolve_user_token()` 优先 bridge，否则 `ORIENTG_USER_TOKEN` 环境变量（单人 CLI） |
 
-**限制（联调须知晓）：** Hermes 子进程 MCP **读不到** backend 进程内存。当前依赖 **LLM 按 system 指令** 在调用 MCP 时带上 `hermes_session_key`；若模型未遵守，会回退到 env 固定 JWT 或 ACL 失败。长期更稳方案仍是 Hermes 原生按会话向 MCP 注入 `ORIENTG_USER_TOKEN`（无需改 Orient-G 源码时优先调研 Hermes 能力）。
+**Hermes 上游 MCP 环境变量（已核对 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) `tools/mcp_tool.py`，发布 `v2026.5.29` / 包 `0.15.1`）：**
+
+- stdio 子进程仅在 **连接 MCP 时** 得到 `config.env` + 安全基线（PATH/HOME 等）；`${VAR}` 在 **server-connect 时** 从 `os.environ`（含 `~/.hermes/.env`）解析一次。
+- **没有**「每次 tool call 前按 Orient-G 会话动态改写子进程环境」的 API。
+- 因此 **不能** 指望配置里写 `ORIENTG_USER_TOKEN: "${ORIENTG_USER_TOKEN}"` 就实现生产多用户 JWT 自动注入；compose 默认镜像 **`nousresearch/hermes-agent:latest`**（可用 `HERMES_IMAGE` 覆盖为具体 tag）。
+
+**Orient-G 当前多用户做法（开发与生产统一）：** backend `hermes_token_bridge` + system 要求 LLM 在 MCP 工具参数中带 `hermes_session_key`（与 `X-Hermes-Session-Key` 一致）。若模型漏传 → ACL 失败或误用 env 兜底（生产会打 warning）。
+
+**写库 / 写技能（与 JWT 机制无关，见下节 FAQ）：** MCP 已注册 `orientg_kb_upload` / `assign` / `import_artifact`；**无** `orientg_skill_submit` 类工具——技能固化不走 Hermes MCP。
 
 **单人 CLI 调试：** 在 `~/.hermes/.env` 或 MCP 启动环境设置 `ORIENTG_USER_TOKEN=<JWT>`，可不传 `hermes_session_key`。
 

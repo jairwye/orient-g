@@ -218,7 +218,7 @@ export function BigpdfProgressCard({
                 href="/ai-interaction"
                 className="text-xs text-blue-400 hover:text-blue-300 transition-colors ml-2"
               >
-                返回 AI 互动 →
+                返回 AI内网 →
               </a>
             </div>
           )}

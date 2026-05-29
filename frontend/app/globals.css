@@ -30,7 +30,7 @@ body {
   cursor: grabbing !important;
 }
 
-/* AI 互动：对话区滚动条（细、半透明，避免与深色底冲突） */
+/* AI内网：对话区滚动条（细、半透明，避免与深色底冲突） */
 .chat-panel-scroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(113, 113, 122, 0.28) transparent;

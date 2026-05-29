@@ -50,7 +50,7 @@ export default function ContractDetailPage() {
           ← 合同台账
         </Link>
         <Link href="/ai-interaction" className="ml-auto text-sm text-zinc-400 hover:text-zinc-200">
-          去 AI 互动 →
+          去 AI内网 →
         </Link>
       </div>
 

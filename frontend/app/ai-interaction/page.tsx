@@ -2838,7 +2838,7 @@ export default function AiInteractionPage() {
       {/* 左侧：新对话 + 工作空间/历史会话并列导航；会话列表仅文字 */}
       <aside className="hidden md:flex w-[300px] shrink-0 flex-col bg-transparent pt-6 md:pt-8">
         <div className="shrink-0 px-6 pb-3 md:px-8">
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">AI 互动</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">AI内网</h1>
           <button
             type="button"
             onClick={() => {

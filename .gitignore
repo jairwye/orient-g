@@ -66,6 +66,7 @@ docs/assets/github-*.png
 .env
 .env.local
 .env.*.local
+.env.hermes
 .DS_Store
 Thumbs.db
 # 发布时本地用的提交信息草稿，不提交

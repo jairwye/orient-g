@@ -13,7 +13,7 @@
         "backend.mcp.orientg_server"
       ],
       "env": {
-        "ORIENTG_USER_TOKEN": "由 Hermes 按会话注入；若版本不支持，见 docs/hermes.md §3"
+        "ORIENTG_USER_TOKEN": "仅 CLI 单人调试；生产多用户勿依赖此 env，见 docs/hermes.md §4"
       }
     }
   }

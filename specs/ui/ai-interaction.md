@@ -1,4 +1,4 @@
-# AI 互动页 UI 规制
+# AI内网页 UI 规制（路由 `/ai-interaction`）
 
 | 字段 | 值 |
 |------|-----|
@@ -25,7 +25,7 @@
 
 | 区块 | 行为 |
 |------|------|
-| 标题 | `AI 互动`，`text-2xl`，`pt-6 md:pt-8` |
+| 标题 | `AI内网`，`text-2xl`，`pt-6 md:pt-8` |
 | 新对话 | 左对齐按钮，`Plus` 图标 + 文案 |
 | 工作空间 | 可点击，`Folder` 图标；激活时 `bg-zinc-800/60` |
 | 智能体 | 可点击，`Bot` 图标；激活时图标色 `AGENT_CHART_ACCENT_CLASS.icon`（见 §5.1）；展示文案见 `frontend/app/lib/ui_labels.ts` |
@@ -67,7 +67,7 @@ chatContentInnerClass, chatMessagesStackClass, chatScrollToBottomBtnClass
 
 ## 4. 对话区：顶对齐与截断
 
-### 4.1 与「AI 互动」标题顶对齐
+### 4.1 与「AI内网」标题顶对齐
 
 采用**固定顶区 + 下方滚动**（非在滚动区内用 `padding-top` 垫高）：
 
@@ -157,7 +157,7 @@ chatContentInnerClass, chatMessagesStackClass, chatScrollToBottomBtnClass
 ## 8. 验收清单
 
 - [ ] 圆角框上下留白仍为 `p-1 / md:p-1.5`，未无意改回 `pt-6` 或 `100vh-64px`。
-- [ ] 首条消息顶与侧栏「AI 互动」标题顶对齐；上滚时不在框顶圆弧处切字。
+- [ ] 首条消息顶与侧栏「AI内网」标题顶对齐；上滚时不在框顶圆弧处切字。
 - [ ] 滚动条在圆角框最右侧；内容列居中。
 - [ ] 历史会话激活条底色在 `pl-7` 分组内，文字左侧有 `pl-3` 空隙。
 - [ ] 用户/助手气泡色与 `BUSINESS_CHART_COLORS` 一致。

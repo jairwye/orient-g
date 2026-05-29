@@ -15,6 +15,7 @@
 
 ### Changed
 
+- 用户可见文案：「AI互动」统一为 **「AI内网」**（路由 `/ai-interaction`、API 不变）；侧栏/知识库/合同/BigPDF 等引用 `frontend/app/lib/ui_labels.ts`。
 - AI 互动页与知识库页布局/交互对齐 2026 spec；Markdown 气泡、KB 预检索与证据引用展示。
 - BigPDF 队列：持久化 `kb_tasks`、worker 重启续跑、智能轮询与 UI 状态归一。
 - `.env.example` 扩充 Hermes、Agent、Evidence Pack、上游白名单等配置项；Docling 代理改为可选（compose 不再硬编码内网 IP）。
@@ -35,6 +36,8 @@
 
 - 新增 `docs/hermes.md`；BigPDF 重构计划标注为历史设计。
 - `docs/reference/` 改为本地参考图目录（不入 Git）。
+- `docs/hermes.md` §4：澄清 Hermes 上游 MCP 仅 connect-time env；生产多用户统一 `hermes_session_key` + token bridge（非静态 `ORIENTG_USER_TOKEN`）。
+- 新增根目录 `待更新计划.md`：§1 记录「Hermes 页面互动书写 Skill 并全站配置」（待规划，未实现）。
 
 ---
 

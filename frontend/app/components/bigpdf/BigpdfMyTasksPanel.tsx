@@ -72,7 +72,7 @@ export function BigpdfMyTasksPanel({ currentTaskId, className = "" }: BigpdfMyTa
       {summaries.some((s) => s.status === "completed") && (
         <div className={`mt-3 flex items-center gap-1 text-xs ${CHART_POSITIVE_CLASS.bannerText}`}>
           <CheckCircle className="h-3 w-3" />
-          最近已有任务完成，可在 AI 互动 → 大 PDF 文档包中查看
+          最近已有任务完成，可在 AI内网 → 大 PDF 文档包中查看
         </div>
       )}
       {summaries.some((s) => s.status === "failed") && (
