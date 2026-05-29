@@ -143,11 +143,14 @@ export function MarkdownBubble({ text }: { text: string }) {
             </div>
           );
         }
-        return (
-          <p key={idx} className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            {renderInline(b.text)}
-          </p>
-        );
+        if (b.kind === "para") {
+          return (
+            <p key={idx} className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+              {renderInline(b.text)}
+            </p>
+          );
+        }
+        return null;
       })}
     </div>
   );

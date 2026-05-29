@@ -97,7 +97,7 @@ export function buildAgentHref(scope?: Partial<KbScopeCapsule>): string {
   const q = new URLSearchParams();
   q.set("view", "agent");
   if (scope?.folder_ids?.length === 1) q.set("folder_id", scope.folder_ids[0]);
-  else if ((scope?.folder_ids?.length || 0) > 1) q.set("folders", (scope.folder_ids || []).join(","));
+  else if ((scope?.folder_ids?.length || 0) > 1) q.set("folders", (scope?.folder_ids ?? []).join(","));
   if (scope?.collection_ids?.length) q.set("collections", (scope.collection_ids || []).join(","));
   if (scope?.table_ids?.length) q.set("tables", (scope.table_ids || []).join(","));
   return `/ai-interaction?${q.toString()}`;

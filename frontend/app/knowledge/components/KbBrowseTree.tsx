@@ -26,6 +26,10 @@ export type KbTreeSelection =
   | { kind: "kb"; kb_kind: string }
   | { kind: "folder"; kb_kind: string; folder_id: string };
 
+type PrivateKbRootEntry =
+  | { type: "unfiled"; count: number }
+  | { type: "folder"; folder: KbTreeFolder };
+
 type KbBrowseTreeProps = {
   kinds: string[];
   allFolders: KbTreeFolder[];
@@ -215,7 +219,8 @@ export function KbBrowseTree(props: KbBrowseTreeProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
 
   const scopedFolders = useMemo(
-    () => filterFoldersForTreeSearch(allFolders, kbGlobalSearch),
+    (): KbTreeFolder[] =>
+      filterFoldersForTreeSearch(allFolders, kbGlobalSearch) as KbTreeFolder[],
     [allFolders, kbGlobalSearch],
   );
 
@@ -301,9 +306,11 @@ export function KbBrowseTree(props: KbBrowseTreeProps) {
                 <div className={UNDER_KB_INDENT_CLASS}>
                 {kid === KB_KIND_PRIVATE ? (
                   <ul className="m-0 list-none space-y-0.5 p-0" role="group">
-                    {privateKbRootEntries(
-                      scopedFolders.filter((f) => folderKbKind(f) === KB_KIND_PRIVATE),
-                      privateUnfiledCount,
+                    {(
+                      privateKbRootEntries(
+                        scopedFolders.filter((f) => folderKbKind(f) === KB_KIND_PRIVATE),
+                        privateUnfiledCount,
+                      ) as PrivateKbRootEntry[]
                     ).map((entry) => {
                       if (entry.type === "unfiled") {
                         if (searchQ && !"未归档".includes(searchQ) && entry.count === 0) return null;

@@ -129,7 +129,10 @@ export type KnowledgePageProps = {
   initialFolderId?: string | null;
 };
 
-export default function KnowledgePage() {
+export default function KnowledgePage({
+  mode: pageMode = "page",
+  initialFolderId,
+}: KnowledgePageProps = {}) {
   const sp = useSearchParams();
   const router = useRouter();
   const [myDocs, setMyDocs] = useState<MyDoc[]>([]);
@@ -339,7 +342,7 @@ export default function KnowledgePage() {
     () =>
       pickPrivateRootDocs(myDocs, visibleFolderIds, {
         includeRunning: true,
-        docDedupeKey,
+        docDedupeKey: docDedupeKey as (d: object) => string,
         parseTimeMs,
       }),
     [myDocs, visibleFolderIds],
@@ -396,7 +399,7 @@ export default function KnowledgePage() {
   );
 
   const docsForActiveKb = useMemo(
-    () =>
+    (): MyDoc[] =>
       resolveDocsForActiveKb({
         selectionKind: selection.kind,
         activeKbKind: activeKbKind || KB_KIND_PRIVATE,
@@ -406,7 +409,7 @@ export default function KnowledgePage() {
         folders,
         docIsActive,
         docIsRunning,
-      }),
+      }) as MyDoc[],
     [
       selection.kind,
       activeKbKind,
@@ -652,7 +655,7 @@ export default function KnowledgePage() {
   }, [me?.username, me?.department, folders.length]);
 
   useEffect(() => {
-    const fid = (sp.get("folder_id") || "").trim();
+    const fid = (initialFolderId || sp.get("folder_id") || "").trim();
     if (!fid || !folders.length) return;
     if (userHasInteractedRef.current) return;
     if (urlFolderInitRef.current) return;
@@ -661,7 +664,7 @@ export default function KnowledgePage() {
       urlFolderInitRef.current = true;
       setSelection({ kind: "folder", kb_kind: (hit.kind || KB_KIND_PRIVATE) as string, folder_id: fid });
     }
-  }, [sp, folders]);
+  }, [sp, folders, initialFolderId]);
 
   const loadFolderDetail = useCallback(
     async (folderId: string) => {
@@ -1097,7 +1100,7 @@ export default function KnowledgePage() {
     (bulkSelection.source_folder_id || null) === (bulkContextFolderId ?? null);
 
   return (
-    <div className="p-2 md:p-3">
+    <div className="p-2 md:p-3" data-kb-page-mode={pageMode}>
       <div className="mb-3">
         {/* 顶栏：范围 chips + 搜索图标（点击展开输入框） */}
         <div className="flex flex-wrap items-center gap-2">
