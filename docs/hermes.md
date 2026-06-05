@@ -435,7 +435,7 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 | 路径 | 用途 |
 |------|------|
 | `docs/hermes.md` | **本指南（唯一操作文档）** |
-| `docs/finance-matrix-browser-testing.md` | 财务矩阵 Chrome DevTools / CDP 浏览器实测 |
+| `specs/plans/1.2.3.b-finance-matrix-browser-testing.md` | 财务矩阵 Chrome DevTools / CDP 浏览器实测规制 |
 | `docs/finance-agent-acceptance-matrix.md` | 42 条验收清单 + API Live 矩阵 |
 | `docker-compose.hermes.yml` | 生产 Hermes overlay |
 | `docker/hermes/env.hermes.example` | `.env.hermes` 模板 |

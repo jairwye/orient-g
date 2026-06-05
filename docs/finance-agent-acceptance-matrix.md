@@ -1,6 +1,6 @@
 # 财务智能体验收矩阵（页面实测）
 
-> **浏览器实测细则**（Chrome DevTools MCP、CDP runner、hook、timeout）以 **[finance-matrix-browser-testing.md](finance-matrix-browser-testing.md)** 为准；本文档为矩阵清单与 API Live 入口。
+> **浏览器实测细则**（Chrome DevTools MCP、CDP runner、hook、timeout）以 **[specs/plans/1.2.3.b-finance-matrix-browser-testing.md](../specs/plans/1.2.3.b-finance-matrix-browser-testing.md)** 为准；本文档为矩阵清单与 API Live 入口。
 
 ## 账号与环境
 
@@ -44,7 +44,7 @@
 - **路由确认**：后端日志须出现 `POST /api/agent/chat/stream`（非 `/api/ai-interaction/chat`）；KB 胶囊为 `folder_ids:['f_6f3638…']`。
 - **操作顺序**：`navigate`（`folder_id` + `view=agent`）→ 等「智能体模式」→ **nav「智能体」** 新会话 → 选档位 → 发送 → poll → extract → append。
 
-Runner 细则：[`docs/finance-matrix-browser-testing.md`](finance-matrix-browser-testing.md)  
+Runner 细则：[`specs/plans/1.2.3.b-finance-matrix-browser-testing.md`](../specs/plans/1.2.3.b-finance-matrix-browser-testing.md)  
 报告：`backend/tests/reports/finance_matrix_browser_report.json`  
 队列：`python backend/scripts/finance_matrix_browser_retry_queue.py next`
 

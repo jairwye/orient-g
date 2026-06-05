@@ -40,7 +40,8 @@
 | [features/1.2.3-agent-kb-router-design.md](features/1.2.3-agent-kb-router-design.md) | **draft** — Agent KB 三路分流（fast / hermes_lite / hermes_full） |
 | [features/2026-04-22-resource-governance-design.md](features/2026-04-22-resource-governance-design.md) | 资源治理 |
 | [plans/2026-04-22-resource-governance-plan.md](plans/2026-04-22-resource-governance-plan.md) | 对应实施计划 |
-| [plans/1.2.3-agent-kb-router-plan.md](plans/1.2.3-agent-kb-router-plan.md) | Agent KB 分流实施计划 |
+| [plans/1.2.3.b-acceptance-tests.md](plans/1.2.3.b-acceptance-tests.md) | Evidence Pack + Tier pytest / 冒烟 |
+| [plans/1.2.3.b-finance-matrix-browser-testing.md](plans/1.2.3.b-finance-matrix-browser-testing.md) | **baseline** — 财务矩阵 Chrome DevTools / CDP 浏览器实测规制 |
 
 ## API 契约
 
@@ -52,7 +53,7 @@
 
 ## 实施计划索引
 
-知识库 UI 见 [ui/1.2.0.b-知识库页UI现状.md](ui/1.2.0.b-知识库页UI现状.md)。RAG 见 [plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md](plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md)。Hermes 方案见 [plans/1.2.3-hermes-integration-plan.md](plans/1.2.3-hermes-integration-plan.md)；Agent KB 分流见 [plans/1.2.3-agent-kb-router-plan.md](plans/1.2.3-agent-kb-router-plan.md)。**联调操作**见 [../docs/hermes.md](../docs/hermes.md)。
+知识库 UI 见 [ui/1.2.0.b-知识库页UI现状.md](ui/1.2.0.b-知识库页UI现状.md)。RAG 见 [plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md](plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md)。Hermes 方案见 [plans/1.2.3-hermes-integration-plan.md](plans/1.2.3-hermes-integration-plan.md)；Agent KB 分流见 [plans/1.2.3-agent-kb-router-plan.md](plans/1.2.3-agent-kb-router-plan.md)；Evidence Pack 验收见 [plans/1.2.3.b-acceptance-tests.md](plans/1.2.3.b-acceptance-tests.md)；**财务矩阵浏览器实测**见 [plans/1.2.3.b-finance-matrix-browser-testing.md](plans/1.2.3.b-finance-matrix-browser-testing.md)。**联调操作**见 [../docs/hermes.md](../docs/hermes.md)。
 
 ---
 

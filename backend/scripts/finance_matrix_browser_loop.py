@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REPORTS = ROOT / "backend" / "tests" / "reports"
 LOCK = REPORTS / ".finance_matrix_loop_active"
 STATE = REPORTS / ".finance_matrix_loop_state.json"
-RUNNER = ROOT / "docs" / "finance-matrix-browser-testing.md"
+RUNNER = ROOT / "specs" / "plans" / "1.2.3.b-finance-matrix-browser-testing.md"
 FOLDER_ID = "f_6f3638e4513f492c9610ddb5dda77c20"
 
 _SCRIPTS = Path(__file__).resolve().parent
