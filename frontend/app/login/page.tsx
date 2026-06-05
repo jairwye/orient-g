@@ -33,9 +33,23 @@ function LoginForm() {
         router.replace(data.must_change_password ? "/change-password" : "/");
         return;
       }
-      setError(typeof data.detail === "string" ? data.detail : "登录失败，请重试");
+      if (res.status === 401) {
+        setError(
+          typeof data.detail === "string" && data.detail.trim()
+            ? data.detail
+            : "用户名或密码错误",
+        );
+      } else if (res.status === 502 || res.status === 503) {
+        setError(
+          typeof data.detail === "string" && data.detail.trim()
+            ? data.detail
+            : "后端服务不可用，请确认已启动",
+        );
+      } else {
+        setError(typeof data.detail === "string" ? data.detail : "登录失败，请重试");
+      }
     } catch {
-      setError("网络错误，请确认后端已启动");
+      setError("无法连接服务器，请检查网络或确认后端已启动");
     } finally {
       setLoading(false);
     }

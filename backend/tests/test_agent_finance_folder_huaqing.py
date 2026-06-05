@@ -38,7 +38,7 @@ def _finance_token() -> str:
 
 
 def test_agent_stream_folder_jingpin_huaqing(monkeypatch):
-    """流式 + 预检索 + 标准模式：Evidence Pack 足够时 Tier 0（fast），否则 Tier 1。"""
+    """流式 + 预检索 + 标准模式：标准固定 Tier 1（Hermes lite）；快速/auto 可 Tier 0。"""
     monkeypatch.setattr(settings, "hermes_enabled", True)
     monkeypatch.setattr(settings, "hermes_base_url", "http://127.0.0.1:8642")
     monkeypatch.setattr(settings, "hermes_dev_mock", False)
@@ -103,7 +103,7 @@ def test_agent_stream_folder_jingpin_huaqing(monkeypatch):
     assert r.status_code == 200, r.text
     body = r.text
     assert "agent_tier" in body
-    assert '"agent_tier": 0' in body or "kb_fast_path" in body
+    assert '"agent_tier": 1' in body or '"agent_tier": 0' in body or "kb_fast_path" in body
     done = {}
     for block in body.split("\n\n"):
         for line in block.split("\n"):

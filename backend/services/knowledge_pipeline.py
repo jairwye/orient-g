@@ -88,6 +88,93 @@ def _entity_terms_from_query(query: str) -> list[str]:
     return found
 
 
+def query_wants_fee_breakdown(query: str) -> bool:
+    """问句要费用科目分项（附注表），而非仅利润表一行总额。"""
+    q = (query or "").replace(" ", "")
+    if not any(x in q for x in ("销售费用", "管理费用", "研发费用", "费用明细", "期间费用")):
+        return False
+    return any(x in q for x in ("明细", "附注", "分解", "拆解", "对比", "比较", "两年", "分项"))
+
+
+_FEE_APPENDIX_HEADING = re.compile(
+    r"##\s*\d+\s*[、.\s]*(?:销售费用|管理费用|研发费用|财务费用|营业成本)"
+    r"|##\s*(?:销售费用|管理费用|研发费用|财务费用|营业成本)",
+    re.I,
+)
+_FEE_LINE_ITEM = re.compile(
+    r"职工薪酬|市场推广|广告费|差旅|业务宣传|折旧",
+    re.I,
+)
+_FEE_SUBJECT = re.compile(r"销售费用|管理费用|研发费用|期间费用|职工薪酬", re.I)
+_REASON_NARRATIVE = re.compile(
+    r"主要系|主要是由于|变动原因|是因为|系因|系由于|减少系|增加系|经营情况讨论|管理层讨论|分析说明",
+    re.I,
+)
+
+
+def is_fee_change_reason_chunk(txt: str) -> bool:
+    """附注/管理层讨论中对费用变动的文字说明（非纯数字表）。"""
+    t = (txt or "").strip()
+    if len(t) < 40:
+        return False
+    if is_fee_appendix_chunk(t):
+        return False
+    if not _FEE_SUBJECT.search(t):
+        return False
+    if not _REASON_NARRATIVE.search(t):
+        return False
+    prose_chars = len(re.sub(r"[\d,.\s|:\-—%]", "", t))
+    return prose_chars >= 20
+
+
+def is_fee_appendix_chunk(txt: str, *, query: str | None = None) -> bool:
+    """财务报表附注中的费用明细表（## N、{科目} + 分项行）。"""
+    t = txt or ""
+    if not _FEE_APPENDIX_HEADING.search(t):
+        return False
+    if query:
+        from backend.services.kb_retrieval_plan import fee_subjects_from_query
+
+        subjects = fee_subjects_from_query(query)
+        if subjects and not any(s in t for s in subjects):
+            return False
+    if not _FEE_LINE_ITEM.search(t):
+        return False
+    money_n = len(re.findall(r"\d{1,3}(?:,\d{3})+\.\d{2}", t))
+    return money_n >= 2
+
+
+def _fee_appendix_heading_for_query(query: str) -> re.Pattern[str] | None:
+    from backend.services.kb_retrieval_plan import fee_subjects_from_query
+
+    subjects = fee_subjects_from_query(query)
+    if not subjects:
+        return _FEE_APPENDIX_HEADING
+    alts = "|".join(re.escape(s) for s in subjects)
+    return re.compile(
+        rf"##\s*\d+\s*[、.\s]*(?:{alts})|##\s*(?:{alts})",
+        re.I,
+    )
+
+
+def fee_breakdown_score_delta(txt: str, query: str) -> float:
+    """费用明细问句：附注分项表应高于仅含利润表一行的 chunk。"""
+    if not query_wants_fee_breakdown(query):
+        return 0.0
+    if is_fee_appendix_chunk(txt, query=query):
+        return 320.0
+    from backend.services.kb_retrieval_plan import fee_subjects_from_query
+
+    t = txt or ""
+    for subj in fee_subjects_from_query(query):
+        if re.search(rf"##\s*\d*\s*[、.\s]*{re.escape(subj)}|##\s*{re.escape(subj)}", t):
+            if _FEE_LINE_ITEM.search(t) or re.search(r"\d{1,3}(?:,\d{3})+\.\d{2}", t):
+                return 240.0
+    if re.search(r"##\s*\d*\s*管理费用|##\s*管理费用", t) and "管理费用" in (query or ""):
+        return 200.0
+    return 0.0
+
+
 def statement_scope_score_delta(txt: str, query: str) -> float:
     """
     财报口径加权：未指定时营收/损益类问题优先「合并利润表」，明确问母公司时用母公司表。
@@ -98,6 +185,18 @@ def statement_scope_score_delta(txt: str, query: str) -> float:
     if not q or not t:
         return 0.0
     finance_q = any(x in q for x in ("营收", "收入", "营业收入", "损益", "利润", "对比", "比较"))
+    if query_wants_fee_breakdown(query):
+        if is_fee_appendix_chunk(t):
+            return 240.0
+        is_merged_pl = any(
+            k in t for k in ("合并利润表", "( 一 ) 合并利润表", "(一)合并利润表", "( 一) 合并利润表")
+        )
+        is_parent_pl = any(k in t for k in ("母公司利润表", "( 二 ) 母公司利润表", "(二) 母公司利润表"))
+        if is_merged_pl and "销售费用" not in t and "管理费用" not in t:
+            return -80.0
+        if is_parent_pl and "销售费用" in t and "职工薪酬" not in t:
+            return 40.0
+        return 0.0
     if not finance_q:
         return 0.0
     wants_parent = "母公司" in q or "单体" in q
@@ -150,11 +249,44 @@ def _expand_retrieval_terms(terms: list[str], query: str) -> list[str]:
             ]
         )
         if "销售费用" in q_join or "费用" in q_join:
-            out.extend(["## 销售费用", "## 管理费用"])
+            from backend.services.kb_retrieval_plan import fee_subjects_from_query
+
+            for subj in fee_subjects_from_query(q) or ("销售费用", "管理费用", "研发费用"):
+                out.append(f"## {subj}")
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    if query_wants_change_reasons(query):
+        out.extend(
+            [
+                "变动原因",
+                "经营情况讨论",
+                "管理层讨论",
+                "主要系",
+                "是由于",
+                "期间费用",
+                "分析说明",
+            ]
+        )
     return list(dict.fromkeys([t for t in out if t and len(t) >= 2]))
 
 
-def _score_chunk_for_retrieval(txt: str, terms: list[str], query: str) -> int:
+def entity_scope_relaxed_from_kb(*, limit_to_attached: bool = False, folder_ids: list[str] | None = None) -> bool:
+    """
+    用户已用文件夹收窄 ACL 范围时，取消「正文无公司名→低分」惩罚。
+    不缩小检索范围，仅避免误杀附注/利润表片段；多公司横比依赖文件夹来源标注。
+    """
+    if limit_to_attached:
+        return True
+    return bool(folder_ids)
+
+
+def _score_chunk_for_retrieval(
+    txt: str,
+    terms: list[str],
+    query: str,
+    *,
+    entity_scope_relaxed: bool = False,
+) -> int:
     """关键词侧 chunk 评分：财务指标优先于实体词频堆砌。"""
     txt_lower = (txt or "").lower()
     q_lower = (query or "").strip().lower()
@@ -184,6 +316,11 @@ def _score_chunk_for_retrieval(txt: str, terms: list[str], query: str) -> int:
             first_line,
         ):
             score += 100
+        if _FEE_APPENDIX_HEADING.search(txt or ""):
+            score += 120
+        heading_pat = _fee_appendix_heading_for_query(query)
+        if heading_pat and heading_pat.search(txt or ""):
+            score += 80
 
     for compound in _FINANCE_COMPOUNDS:
         if compound in txt_lower and (compound in q_lower or compound in terms):
@@ -204,11 +341,23 @@ def _score_chunk_for_retrieval(txt: str, terms: list[str], query: str) -> int:
     if entities:
         if any(ent in (txt or "") for ent in entities):
             score += 150
-        else:
+        elif not is_fee_appendix_chunk(txt or "") and not entity_scope_relaxed:
             score = min(score, 25)
 
     asks_cost_detail = any(
-        x in q_lower for x in ("成本下降", "成本", "费用明细", "明细对比", "明细", "期间费用", "销售费用")
+        x in q_lower
+        for x in (
+            "成本下降",
+            "成本",
+            "费用明细",
+            "明细对比",
+            "明细",
+            "期间费用",
+            "销售费用",
+            "管理费用",
+            "研发费用",
+            "财务费用",
+        )
     )
     if asks_cost_detail:
         if any(
@@ -229,15 +378,25 @@ def _score_chunk_for_retrieval(txt: str, terms: list[str], query: str) -> int:
             score += 40
 
     asks_pl = any(x in q_lower for x in ("损益", "对比", "比较", "利润表"))
-    if asks_pl:
+    asks_fee_breakdown = query_wants_fee_breakdown(query)
+    if asks_pl and not asks_fee_breakdown:
         if any(k in txt_lower for k in ("利润表", "合并利润表", "营业收入", "净利润")):
             score += 80
         if re.search(r"\d{3,}", txt or ""):
             score += 40
         if len((txt or "").strip()) < 80:
             score = min(score, 20)
+    elif asks_fee_breakdown:
+        score += int(fee_breakdown_score_delta(txt or "", query))
+        if is_fee_appendix_chunk(txt or ""):
+            score += 80
 
     score += int(statement_scope_score_delta(txt or "", query))
+
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    if query_wants_change_reasons(query) and is_fee_change_reason_chunk(txt or ""):
+        score += 200
 
     return score
 
@@ -307,6 +466,7 @@ def _hybrid_retrieve(
     candidate_doc_ids: set[str],
     *,
     k: int = 20,
+    entity_scope_relaxed: bool = False,
 ) -> list[dict[str, Any]]:
     """
     混合检索：向量语义搜索 + 关键词精确匹配 → 加权综合评分 + 上下文 re-rank。
@@ -328,7 +488,13 @@ def _hybrid_retrieve(
             pass
 
     # 2) 关键词检索（已增强：jieba 分词 + 词频加权）
-    kw_hits = _retrieve_uploaded_doc_chunks(tenant_id, doc_ids=candidate_doc_ids, query=query, limit=k * 2)
+    kw_hits = _retrieve_uploaded_doc_chunks(
+        tenant_id,
+        doc_ids=candidate_doc_ids,
+        query=query,
+        limit=k * 2,
+        entity_scope_relaxed=entity_scope_relaxed,
+    )
 
     # 3) 合并去重：key = (doc_id, chunk_id)
     combined: dict[tuple[str, str], dict[str, Any]] = {}
@@ -394,6 +560,7 @@ def _retrieve_uploaded_doc_chunks(
     doc_ids: set[str],
     query: str,
     limit: int = 20,
+    entity_scope_relaxed: bool = False,
 ) -> list[dict[str, Any]]:
     """
     增强关键词检索：先用 jieba 分词提取检索词条，再用 PG ILIKE 做多词 OR 匹配，
@@ -435,7 +602,7 @@ def _retrieve_uploaded_doc_chunks(
         chid = str(r[1])
         seq = int(r[2] or 0)
         txt = str(r[3] or "")
-        score = _score_chunk_for_retrieval(txt, terms, q)
+        score = _score_chunk_for_retrieval(txt, terms, q, entity_scope_relaxed=entity_scope_relaxed)
         if score > 0:
             scored.append((score, did, chid, seq))
 
@@ -626,9 +793,11 @@ def ask_knowledge(
     fixtures: Optional[dict[str, Any]] = None,
     attached_doc_ids: Optional[list[str]] = None,
     limit_to_attached: bool = False,
+    entity_scope_relaxed: bool | None = None,
 ) -> dict[str, Any]:
     fixtures = fixtures or load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
+    relax_entity = bool(entity_scope_relaxed) if entity_scope_relaxed is not None else bool(limit_to_attached)
     q = _normalize_query(query)
     if not q:
         return {"denied": True, "deny_reason": "empty query", "citations": []}
@@ -726,7 +895,13 @@ def ask_knowledge(
             pass
 
         # 混合检索：向量（语义）+ 关键词（精确）→ 加权综合 + 上下文 re-rank
-        hybrid_hits = _hybrid_retrieve(tenant_id, query=q, candidate_doc_ids=cand_doc_ids, k=20)
+        hybrid_hits = _hybrid_retrieve(
+            tenant_id,
+            query=q,
+            candidate_doc_ids=cand_doc_ids,
+            k=20,
+            entity_scope_relaxed=relax_entity,
+        )
         if hybrid_hits:
             used_vector = any(h.get("hybrid_score", 0) > 0 and h.get("vec_sim", 0) > 0 for h in hybrid_hits)
             used_keyword = any(h.get("hybrid_score", 0) > 0 and h.get("kw_pos", 0) > 0 for h in hybrid_hits)

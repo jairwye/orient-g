@@ -25,6 +25,17 @@ from backend.config import settings
 logger = logging.getLogger(__name__)
 
 
+def hermes_idle_stall_seconds(*, orientg_route: str | None, read_timeout: float) -> float:
+    """MCP 工具回合可能长时间无 SSE；标准档须与页面矩阵 1200s 等待相容。"""
+    route_key = (orientg_route or "").strip().lower()
+    rt = float(read_timeout)
+    if route_key == "hermes_full":
+        return min(600.0, rt * 0.5)
+    if route_key == "hermes_lite":
+        return min(480.0, rt * 0.8)
+    return min(120.0, rt * 0.2)
+
+
 class HermesDisabledError(Exception):
     """HERMES_ENABLED=false 或未配置 base_url。"""
 
@@ -66,6 +77,7 @@ def _build_messages(
     orientg_hermes_session_key: str | None = None,
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
+    evidence_pack: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """在 system 中注入 Orient-G 上下文（Hermes 侧 MCP 仍须在 ~/.hermes 配置 orientg）。"""
     ctx = {
@@ -86,12 +98,44 @@ def _build_messages(
     if orientg_route in ("hermes_lite", "hermes_full"):
         ctx["orientg_tool_policy"] = (
             "知识库类任务：仅通过 orientg_kb_* MCP 获取与引用证据；"
-            "禁止用 terminal/shell 读取本地路径或编造文件内容充当 KB 答案。"
+            "禁止用 terminal/shell/curl 探测 API 或读取本地路径；禁止编造文件内容充当 KB 答案。"
         )
-    if orientg_route == "hermes_lite":
-        ctx["orientg_forbidden_tools"] = ["terminal", "skill_view"]
+    if orientg_route in ("hermes_lite", "hermes_full"):
+        from backend.services.hermes_orientg_policy import KB_FORBIDDEN_TOOL_NAMES
+
+        ctx["orientg_forbidden_tools"] = list(KB_FORBIDDEN_TOOL_NAMES)
+        ctx["orientg_allowed_kb_tools"] = ["orientg_kb_ask", "orientg_kb_list", "orientg_kb_import_artifact"]
+        if not allow_kb_write:
+            ctx["orientg_kb_write"] = False
+            ctx["orientg_allowed_kb_tools"] = ["orientg_kb_ask", "orientg_kb_list"]
     if orientg_kb_ask_budget is not None:
         ctx["orientg_kb_ask_budget"] = orientg_kb_ask_budget
+    user_q = ""
+    for m in reversed(messages or []):
+        if m.get("role") == "user":
+            user_q = str(m.get("content") or "").strip()
+            break
+    if user_q and orientg_route in ("hermes_lite", "hermes_full"):
+        from backend.services.agent_hermes_tier_policy import (
+            hermes_answer_requirements,
+            hermes_orientg_context_extras,
+            prefetch_tier_from_route,
+        )
+
+        tier = prefetch_tier_from_route(orientg_route)
+        req = hermes_answer_requirements(tier=tier, user_query=user_q)
+        if req:
+            ctx["orientg_answer_requirements"] = req
+        ctx.update(
+            hermes_orientg_context_extras(
+                tier=tier,
+                evidence_pack=evidence_pack,
+                user_query=user_q,
+            )
+        )
+        ctx["orientg_stream_reasoning"] = bool(settings.hermes_stream_reasoning)
+        if tier == "full":
+            ctx["orientg_deep_orchestration"] = True
     system = {
         "role": "system",
         "content": "Orient-G 网关上下文（JSON）：\n" + json.dumps(ctx, ensure_ascii=False),
@@ -109,17 +153,102 @@ def _register_session(
     user_token: str,
     hermes_session_id: str | None,
     *,
+    username: str | None = None,
+    orientg_chat_session_id: str | None = None,
     orientg_kb_ask_budget: int | None = None,
+    allow_kb_write: bool = False,
+    kb_scope: dict[str, Any] | None = None,
+    orientg_route: str | None = None,
 ) -> str:
-    from backend.services.hermes_token_bridge import normalize_session_key, register as register_hermes_token
+    from backend.services.hermes_session_resolve import resolve_hermes_session_key
+    from backend.services.hermes_session_context import register as register_session_context
+    from backend.services.hermes_token_bridge import register as register_hermes_token
     from backend.services.kb_ask_budget import register_session_kb_budget
 
-    session_key = normalize_session_key(hermes_session_id or "")
-    if not session_key:
-        session_key = normalize_session_key(str(uuid.uuid4()))
+    session_key = resolve_hermes_session_key(
+        username=username or "",
+        hermes_session_id=hermes_session_id,
+        orientg_chat_session_id=orientg_chat_session_id,
+    )
     register_hermes_token(session_key, user_token)
     register_session_kb_budget(session_key, orientg_kb_ask_budget)
+    register_session_context(
+        session_key,
+        allow_kb_write=allow_kb_write,
+        kb_scope=kb_scope,
+        orientg_route=orientg_route,
+    )
     return session_key
+
+
+def _apply_stream_content_policy(mapped: dict[str, Any], *, accumulated: list[str]) -> dict[str, Any] | None:
+    """将 Hermes 误写入 content 的推理/脚本分流为 thinking，并维护仅用户可见的 accumulated。"""
+    from backend.services.hermes_stream_sanitize import classify_hermes_stream_chunk
+
+    if mapped.get("type") != "delta" or not mapped.get("content"):
+        return mapped
+    content = str(mapped["content"])
+    kind = classify_hermes_stream_chunk(content)
+    if kind == "skip":
+        return None
+    if kind == "thinking":
+        return {"type": "thinking", "content": content}
+    accumulated.append(content)
+    return mapped
+
+
+def _track_hermes_stream_chunk(
+    mapped: dict[str, Any],
+    remapped: dict[str, Any] | None,
+    *,
+    raw_parts: list[str],
+    thinking_parts: list[str],
+) -> None:
+    """记录 SSE 原文，供终稿 sanitize 为空时从过程稿/原始 delta 恢复。"""
+    if mapped.get("type") == "delta" and mapped.get("content"):
+        raw_parts.append(str(mapped["content"]))
+    elif mapped.get("type") == "thinking" and mapped.get("content"):
+        thinking_parts.append(str(mapped["content"]))
+    if (
+        remapped
+        and mapped.get("type") == "delta"
+        and remapped.get("type") == "thinking"
+        and remapped.get("content")
+    ):
+        thinking_parts.append(str(remapped["content"]))
+
+
+def _finalize_hermes_chat_reply(
+    *,
+    accumulated_parts: list[str],
+    raw_parts: list[str],
+    thinking_parts: list[str],
+    user_query: str,
+) -> str:
+    """Hermes chat/completions 终稿：优先 accumulated，其次 raw/thinking 中提取用户可见报告。"""
+    from backend.services.hermes_stream_sanitize import (
+        extract_user_facing_reply,
+        sanitize_hermes_accumulated_reply,
+        strip_hermes_orchestration_preamble,
+    )
+
+    candidates = (
+        "".join(accumulated_parts),
+        extract_user_facing_reply("".join(raw_parts)),
+        extract_user_facing_reply("".join(thinking_parts)),
+        strip_hermes_orchestration_preamble("".join(raw_parts)),
+        strip_hermes_orchestration_preamble("".join(thinking_parts)),
+    )
+    seen: set[str] = set()
+    for raw in candidates:
+        blob = (raw or "").strip()
+        if not blob or blob in seen:
+            continue
+        seen.add(blob)
+        reply = sanitize_hermes_accumulated_reply(blob, user_query=user_query).strip()
+        if reply:
+            return reply
+    return ""
 
 
 def _request_headers(session_key: str) -> dict[str, str]:
@@ -145,6 +274,7 @@ def _build_payload(
     stream: bool,
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
+    evidence_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "model": (settings.hermes_model or "hermes-agent").strip() or "hermes-agent",
@@ -158,6 +288,7 @@ def _build_payload(
             orientg_hermes_session_key=session_key,
             orientg_route=orientg_route,
             orientg_kb_ask_budget=orientg_kb_ask_budget,
+            evidence_pack=evidence_pack,
         ),
         "stream": stream,
         # Hermes Gateway：显式开启 hermes.tool.progress SSE（见官方 API Server 文档）
@@ -165,7 +296,21 @@ def _build_payload(
     }
 
 
-def parse_openai_chat_response(data: dict[str, Any], *, session_key: str) -> dict[str, Any]:
+def _last_user_query_from_messages(messages: list[dict[str, str]] | None) -> str:
+    for m in reversed(messages or []):
+        if str(m.get("role") or "") == "user":
+            return str(m.get("content") or "").strip()
+    return ""
+
+
+def parse_openai_chat_response(
+    data: dict[str, Any],
+    *,
+    session_key: str,
+    user_query: str = "",
+) -> dict[str, Any]:
+    from backend.services.hermes_stream_sanitize import sanitize_hermes_accumulated_reply
+
     reply = ""
     tool_calls: list[Any] = []
     choices = data.get("choices")
@@ -178,7 +323,10 @@ def parse_openai_chat_response(data: dict[str, Any], *, session_key: str) -> dic
             tool_calls = tc
 
     return {
-        "reply": reply or data.get("reply") or data.get("content") or "",
+        "reply": sanitize_hermes_accumulated_reply(
+            reply or data.get("reply") or data.get("content") or "",
+            user_query=user_query,
+        ),
         "tool_calls": tool_calls or data.get("tool_calls") or [],
         "hermes_session_id": data.get("hermes_session_id") or data.get("session_id") or session_key,
         "orientg_hermes_session_key": session_key,
@@ -306,6 +454,40 @@ def enrich_tool_progress_with_labels(
     return out
 
 
+def guard_kb_forbidden_tool_sse(
+    mapped: dict[str, Any],
+    *,
+    orientg_route: str | None,
+    on_block: Any | None = None,
+) -> dict[str, Any] | None:
+    """KB 路由执行层：拦截 terminal/shell/loopback 工具步。"""
+    from backend.services.hermes_orientg_policy import (
+        is_forbidden_kb_tool,
+        orientg_route_is_kb_task,
+        tool_progress_looks_like_shell,
+    )
+
+    if not orientg_route_is_kb_task(orientg_route):
+        return None
+    if mapped.get("type") != "tool_progress" or mapped.get("status") != "running":
+        return None
+    tool = str(mapped.get("tool") or "")
+    msg = str(mapped.get("message") or mapped.get("label") or "")
+    if not is_forbidden_kb_tool(tool) and not tool_progress_looks_like_shell(msg):
+        return None
+    if on_block:
+        try:
+            on_block()
+        except Exception:
+            logger.debug("forbidden tool on_block failed", exc_info=True)
+    return {
+        "type": "tool_progress",
+        "tool": tool or "forbidden",
+        "status": "failed",
+        "message": "KB 任务禁止 terminal/shell/loopback/execute_code；请使用 orientg_kb_* MCP 取证与写库。",
+    }
+
+
 def hermes_internal_event_to_sse(ev: dict[str, Any], *, seen_tool_ids: set[str]) -> list[dict[str, Any]]:
     """将 HermesSseParser 产出的事件转为 Orient-G Agent SSE dict。"""
     out: list[dict[str, Any]] = []
@@ -389,6 +571,63 @@ def hermes_capabilities_support_runs(caps: dict[str, Any]) -> bool:
         and caps.get("run_stop")
         and caps.get("run_submission")
     )
+
+
+def _prefer_hermes_runs_api(orientg_route: str | None) -> bool:
+    """深度 Tier 2 在 Gateway 支持时优先 Runs API（多轮工具 + 事件流）。"""
+    if settings.hermes_agent_use_runs_api:
+        return True
+    if (orientg_route or "").strip().lower() == "hermes_full":
+        caps = fetch_hermes_capabilities()
+        return hermes_capabilities_support_runs(caps)
+    return False
+
+
+def _empty_stream_stats() -> dict[str, Any]:
+    return {
+        "thinking_chars": 0,
+        "delta_chars": 0,
+        "tool_progress_events": 0,
+        "tool_call_events": 0,
+        "orientg_kb_ask_calls": 0,
+    }
+
+
+def _record_stream_tool(
+    tools: list[dict[str, Any]],
+    *,
+    name: str,
+    status: str = "ok",
+    message: str = "",
+) -> None:
+    n = (name or "").strip()
+    if not n:
+        return
+    for t in tools:
+        if str(t.get("name") or "") == n and t.get("status") == status:
+            return
+    tools.append({"name": n, "status": status, "message": message[:200] if message else ""})
+
+
+def _bump_stream_stats(stats: dict[str, Any], mapped: dict[str, Any], tools: list[dict[str, Any]]) -> None:
+    t = mapped.get("type")
+    if t == "thinking" and mapped.get("content"):
+        stats["thinking_chars"] = int(stats.get("thinking_chars") or 0) + len(str(mapped["content"]))
+    elif t == "delta" and mapped.get("content"):
+        stats["delta_chars"] = int(stats.get("delta_chars") or 0) + len(str(mapped["content"]))
+    elif t == "tool_progress":
+        stats["tool_progress_events"] = int(stats.get("tool_progress_events") or 0) + 1
+        tool = str(mapped.get("tool") or "")
+        msg = str(mapped.get("message") or "")
+        if "orientg_kb_ask" in tool or "orientg_kb_ask" in msg or "kb_ask" in tool.lower():
+            stats["orientg_kb_ask_calls"] = int(stats.get("orientg_kb_ask_calls") or 0) + 1
+        _record_stream_tool(tools, name=tool or msg[:40], status=str(mapped.get("status") or "running"), message=msg)
+    elif t == "tool_call" and mapped.get("name"):
+        stats["tool_call_events"] = int(stats.get("tool_call_events") or 0) + 1
+        name = str(mapped["name"])
+        if "orientg_kb" in name:
+            stats["orientg_kb_ask_calls"] = int(stats.get("orientg_kb_ask_calls") or 0) + 1
+        _record_stream_tool(tools, name=name, status="running", message=str(mapped.get("message") or ""))
 
 
 def fetch_hermes_capabilities(*, force: bool = False) -> dict[str, Any]:
@@ -485,6 +724,10 @@ def hermes_run_event_to_sse(
         text = str(obj.get("text") or obj.get("preview") or "")
         if text:
             out.append({"type": "thinking", "content": text})
+    elif ev == "reasoning.delta":
+        delta = str(obj.get("delta") or obj.get("text") or "")
+        if delta:
+            out.append({"type": "thinking", "content": delta})
     elif ev == "tool.started":
         tool = str(obj.get("tool") or "tool")
         key = _hermes_run_tool_key(run_id, tool)
@@ -594,15 +837,24 @@ def run_agent_chat(
     kb_scope: dict[str, Any] | None = None,
     allow_kb_write: bool = True,
     hermes_session_id: str | None = None,
+    orientg_chat_session_id: str | None = None,
     attached_doc_ids: list[str] | None = None,
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
+    evidence_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not settings.hermes_configured:
         raise HermesDisabledError("Hermes Agent 未启用（HERMES_ENABLED / HERMES_BASE_URL）")
 
     session_key = _register_session(
-        user_token, hermes_session_id, orientg_kb_ask_budget=orientg_kb_ask_budget
+        user_token,
+        hermes_session_id,
+        username=username,
+        orientg_chat_session_id=orientg_chat_session_id,
+        orientg_kb_ask_budget=orientg_kb_ask_budget,
+        allow_kb_write=allow_kb_write,
+        kb_scope=kb_scope,
+        orientg_route=orientg_route,
     )
     url = _chat_completions_url()
     headers = _request_headers(session_key)
@@ -617,6 +869,7 @@ def run_agent_chat(
         stream=False,
         orientg_route=orientg_route,
         orientg_kb_ask_budget=orientg_kb_ask_budget,
+        evidence_pack=evidence_pack,
     )
 
     timeout = max(30, int(settings.hermes_request_timeout_s or 300))
@@ -648,7 +901,7 @@ def run_agent_chat(
     if not isinstance(data, dict):
         raise HermesClientError("Hermes 响应格式无效", detail=data)
 
-    return parse_openai_chat_response(data, session_key=session_key)
+    return parse_openai_chat_response(data, session_key=session_key, user_query=_last_user_query_from_messages(messages))
 
 
 def stream_agent_chat_runs(
@@ -659,11 +912,13 @@ def stream_agent_chat_runs(
     kb_scope: dict[str, Any] | None = None,
     allow_kb_write: bool = True,
     hermes_session_id: str | None = None,
+    orientg_chat_session_id: str | None = None,
     attached_doc_ids: list[str] | None = None,
     run_id: str | None = None,
     heartbeat_s: float = 12.0,
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
+    evidence_pack: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """经 POST /v1/runs + GET .../events 流式（路线第三步）。"""
     from backend.services.agent_run_registry import bind_hermes_run, is_cancelled
@@ -675,7 +930,14 @@ def stream_agent_chat_runs(
     yield {"type": "status", "message": "正在连接 Hermes Agent（Runs API）…", "step": "connect"}
 
     session_key = _register_session(
-        user_token, hermes_session_id, orientg_kb_ask_budget=orientg_kb_ask_budget
+        user_token,
+        hermes_session_id,
+        username=username,
+        orientg_chat_session_id=orientg_chat_session_id,
+        orientg_kb_ask_budget=orientg_kb_ask_budget,
+        allow_kb_write=allow_kb_write,
+        kb_scope=kb_scope,
+        orientg_route=orientg_route,
     )
     built = _build_messages(
         messages,
@@ -687,21 +949,32 @@ def stream_agent_chat_runs(
         orientg_hermes_session_key=session_key,
         orientg_route=orientg_route,
         orientg_kb_ask_budget=orientg_kb_ask_budget,
+        evidence_pack=evidence_pack,
     )
     model = (settings.hermes_model or "hermes-agent").strip() or "hermes-agent"
     runs_body = messages_to_hermes_runs_body(built, model=model, session_id=session_key)
+    from backend.services.hermes_orientg_policy import kb_route_allowed_toolsets
+
+    allowed_toolsets = kb_route_allowed_toolsets(orientg_route)
+    if allowed_toolsets:
+        runs_body["toolsets"] = allowed_toolsets
 
     read_timeout = max(60, int(settings.hermes_request_timeout_s or 600))
     timeout = httpx.Timeout(30.0, read=float(read_timeout))
-    accumulated = ""
+    idle_stall_s = hermes_idle_stall_seconds(
+        orientg_route=orientg_route,
+        read_timeout=float(read_timeout),
+    )
+    accumulated_parts: list[str] = []
     final_output = ""
     seen_tool_keys: set[str] = set()
     tool_label_by_id: dict[str, str] = {}
+    stream_stats = _empty_stream_stats()
+    stream_tools: list[dict[str, Any]] = []
     q: queue.Queue[tuple[str, Any]] = queue.Queue()
     stop_reader = threading.Event()
     reader_done = threading.Event()
     last_data_at = time.monotonic()
-    idle_stall_s = min(120.0, float(read_timeout) * 0.2)
     connected = False
     hermes_run_id = ""
 
@@ -738,7 +1011,7 @@ def stream_agent_chat_runs(
             q.put(("end", None))
 
     def _dispatch(kind: str, payload: Any) -> list[dict[str, Any]]:
-        nonlocal accumulated, final_output, last_beat, last_data_at, connected
+        nonlocal final_output, last_beat, last_data_at, connected
         out: list[dict[str, Any]] = []
         if kind == "status":
             connected = True
@@ -757,11 +1030,21 @@ def stream_agent_chat_runs(
             mapped_batch = hermes_run_event_to_sse(obj, seen_tool_keys=seen_tool_keys)
             mapped_batch = enrich_tool_progress_with_labels(mapped_batch, tool_label_by_id)
             for mapped in mapped_batch:
-                if mapped.get("type") == "delta" and mapped.get("content"):
-                    accumulated += str(mapped["content"])
-                elif mapped.get("type") == "run_completed":
+                if mapped.get("type") == "run_completed":
                     final_output = str(mapped.get("output") or "")
-                out.append(mapped)
+                    continue
+                remapped = _apply_stream_content_policy(mapped, accumulated=accumulated_parts)
+                if remapped is None:
+                    continue
+                blocked = guard_kb_forbidden_tool_sse(
+                    remapped,
+                    orientg_route=orientg_route,
+                )
+                if blocked:
+                    out.append(blocked)
+                    continue
+                _bump_stream_stats(stream_stats, remapped, stream_tools)
+                out.append(remapped)
                 last_beat = time.monotonic()
         return out
 
@@ -822,7 +1105,17 @@ def stream_agent_chat_runs(
     finally:
         stop_reader.set()
 
-    reply = (accumulated or final_output or "").strip()
+    uq = _last_user_query_from_messages(messages)
+    from backend.services.hermes_stream_sanitize import pick_best_hermes_runs_raw
+
+    raw = pick_best_hermes_runs_raw("".join(accumulated_parts), final_output)
+    route = (orientg_route or "").strip().lower()
+    if route == "hermes_full":
+        reply = raw.strip()
+    else:
+        from backend.services.hermes_stream_sanitize import sanitize_hermes_accumulated_reply
+
+        reply = sanitize_hermes_accumulated_reply(raw, user_query=uq).strip()
     if not reply:
         yield {
             "type": "error",
@@ -837,11 +1130,12 @@ def stream_agent_chat_runs(
         "hermes_session_id": session_key,
         "orientg_hermes_session_key": session_key,
         "hermes_run_id": hermes_run_id,
-        "tool_calls": [],
+        "tool_calls": stream_tools,
         "artifacts": [],
         "hermes_used": True,
         "synthesis": "hermes_stream_runs",
         "hermes_stream_mode": "runs",
+        "hermes_stream_stats": stream_stats,
     }
 
 
@@ -853,11 +1147,13 @@ def stream_agent_chat(
     kb_scope: dict[str, Any] | None = None,
     allow_kb_write: bool = True,
     hermes_session_id: str | None = None,
+    orientg_chat_session_id: str | None = None,
     attached_doc_ids: list[str] | None = None,
     run_id: str | None = None,
     heartbeat_s: float = 12.0,
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
+    evidence_pack: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """
     产出 SSE 事件 dict：
@@ -871,9 +1167,15 @@ def stream_agent_chat(
         yield {"type": "error", "message": "Hermes Agent 未启用"}
         return
 
-    if settings.hermes_agent_use_runs_api:
+    if _prefer_hermes_runs_api(orientg_route):
         caps = fetch_hermes_capabilities()
         if hermes_capabilities_support_runs(caps):
+            if (orientg_route or "").strip().lower() == "hermes_full":
+                yield {
+                    "type": "status",
+                    "message": "深度编排：Hermes Runs API（多轮工具与事件流）…",
+                    "step": "hermes_runs_mode",
+                }
             yield from stream_agent_chat_runs(
                 messages=messages,
                 username=username,
@@ -881,18 +1183,33 @@ def stream_agent_chat(
                 kb_scope=kb_scope,
                 allow_kb_write=allow_kb_write,
                 hermes_session_id=hermes_session_id,
+                orientg_chat_session_id=orientg_chat_session_id,
                 attached_doc_ids=attached_doc_ids,
                 run_id=run_id,
                 heartbeat_s=heartbeat_s,
                 orientg_route=orientg_route,
                 orientg_kb_ask_budget=orientg_kb_ask_budget,
+                evidence_pack=evidence_pack,
             )
             return
+        if (orientg_route or "").strip().lower() == "hermes_full":
+            yield {
+                "type": "status",
+                "message": "Gateway 未启用 Runs API，回退 chat/completions（工具步可能不可见）",
+                "step": "hermes_mode_fallback",
+            }
 
     yield {"type": "status", "message": "正在连接 Hermes Agent…", "step": "connect"}
 
     session_key = _register_session(
-        user_token, hermes_session_id, orientg_kb_ask_budget=orientg_kb_ask_budget
+        user_token,
+        hermes_session_id,
+        username=username,
+        orientg_chat_session_id=orientg_chat_session_id,
+        orientg_kb_ask_budget=orientg_kb_ask_budget,
+        allow_kb_write=allow_kb_write,
+        kb_scope=kb_scope,
+        orientg_route=orientg_route,
     )
     url = _chat_completions_url()
     headers = _request_headers(session_key)
@@ -907,19 +1224,27 @@ def stream_agent_chat(
         stream=True,
         orientg_route=orientg_route,
         orientg_kb_ask_budget=orientg_kb_ask_budget,
+        evidence_pack=evidence_pack,
     )
 
     read_timeout = max(60, int(settings.hermes_request_timeout_s or 600))
     timeout = httpx.Timeout(30.0, read=float(read_timeout))
-    accumulated = ""
+    accumulated_parts: list[str] = []
+    raw_stream_parts: list[str] = []
+    thinking_stream_parts: list[str] = []
     seen_tool_ids: set[str] = set()
     tool_label_by_id: dict[str, str] = {}
+    stream_stats = _empty_stream_stats()
+    stream_tools: list[dict[str, Any]] = []
     sse_parser = HermesSseParser()
     q: queue.Queue[tuple[str, Any]] = queue.Queue()
     stop_reader = threading.Event()
     reader_done = threading.Event()
     last_data_at = time.monotonic()
-    idle_stall_s = min(120.0, float(read_timeout) * 0.2)
+    idle_stall_s = hermes_idle_stall_seconds(
+        orientg_route=orientg_route,
+        read_timeout=float(read_timeout),
+    )
     connected = False
 
     def _reader() -> None:
@@ -945,7 +1270,7 @@ def stream_agent_chat(
             q.put(("end", None))
 
     def _dispatch(kind: str, payload: Any) -> list[dict[str, Any]]:
-        nonlocal accumulated, last_beat, last_data_at, connected
+        nonlocal last_beat, last_data_at, connected
         out: list[dict[str, Any]] = []
         if kind == "status":
             connected = True
@@ -962,11 +1287,34 @@ def stream_agent_chat(
                 batch = hermes_internal_event_to_sse(ev, seen_tool_ids=seen_tool_ids)
                 batch = enrich_tool_progress_with_labels(batch, tool_label_by_id)
                 for mapped in batch:
-                    if mapped.get("type") == "delta" and mapped.get("content"):
-                        accumulated += str(mapped["content"])
-                    out.append(mapped)
+                    remapped = _apply_stream_content_policy(mapped, accumulated=accumulated_parts)
+                    _track_hermes_stream_chunk(
+                        mapped,
+                        remapped,
+                        raw_parts=raw_stream_parts,
+                        thinking_parts=thinking_stream_parts,
+                    )
+                    if remapped is None:
+                        continue
+                    blocked = guard_kb_forbidden_tool_sse(
+                        remapped,
+                        orientg_route=orientg_route,
+                    )
+                    if blocked:
+                        out.append(blocked)
+                        continue
+                    _bump_stream_stats(stream_stats, remapped, stream_tools)
+                    out.append(remapped)
                     last_beat = time.monotonic()
         return out
+
+    def _stream_reply() -> str:
+        return _finalize_hermes_chat_reply(
+            accumulated_parts=accumulated_parts,
+            raw_parts=raw_stream_parts,
+            thinking_parts=thinking_stream_parts,
+            user_query=_last_user_query_from_messages(messages),
+        )
 
     threading.Thread(target=_reader, daemon=True).start()
     last_beat = time.monotonic()
@@ -992,7 +1340,7 @@ def stream_agent_chat(
                                 yield evt
                                 return
                             yield evt
-                    if not (accumulated or "").strip():
+                    if not _stream_reply():
                         yield {
                             "type": "error",
                             "message": (
@@ -1032,7 +1380,14 @@ def stream_agent_chat(
     finally:
         stop_reader.set()
 
-    if not (accumulated or "").strip():
+    uq = _last_user_query_from_messages(messages)
+    reply = _finalize_hermes_chat_reply(
+        accumulated_parts=accumulated_parts,
+        raw_parts=raw_stream_parts,
+        thinking_parts=thinking_stream_parts,
+        user_query=uq,
+    )
+    if not reply:
         yield {
             "type": "error",
             "message": "Hermes 已完成编排，但未生成可展示的正文。",
@@ -1042,12 +1397,13 @@ def stream_agent_chat(
 
     yield {
         "type": "done",
-        "reply": accumulated,
+        "reply": reply,
         "hermes_session_id": session_key,
         "orientg_hermes_session_key": session_key,
-        "tool_calls": [],
+        "tool_calls": stream_tools,
         "artifacts": [],
         "hermes_used": True,
         "synthesis": "hermes_stream",
         "hermes_stream_mode": "chat_completions",
+        "hermes_stream_stats": stream_stats,
     }

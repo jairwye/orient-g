@@ -1,4 +1,51 @@
-import type { AgentMeta, AgentTraceStep, ChatMessage, EvidencePackSummary } from "./types";
+import type { AgentMeta, AgentTraceStep, ChatMessage, EvidencePackSummary, HermesStreamStats } from "./types";
+
+export function hydrateChatMessage(raw: unknown): ChatMessage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const mm = raw as ChatMessage;
+  if (mm.role !== "user" && mm.role !== "assistant") return null;
+  if (typeof mm.content !== "string") return null;
+  const trace = Array.isArray(mm.agentTrace)
+    ? mm.agentTrace.filter((t): t is AgentTraceStep => {
+        if (!t || typeof t !== "object") return false;
+        const o = t as AgentTraceStep;
+        return typeof o.message === "string" && typeof o.at === "number";
+      })
+    : undefined;
+  const reasoning =
+    typeof mm.agentReasoning === "string" && mm.agentReasoning.trim()
+      ? mm.agentReasoning
+      : undefined;
+  const meta =
+    mm.agentMeta && typeof mm.agentMeta === "object"
+      ? buildAgentMetaFromDone(mm.agentMeta as Record<string, unknown>)
+      : undefined;
+  return {
+    role: mm.role,
+    content: mm.content,
+    citations: Array.isArray(mm.citations) ? mm.citations : undefined,
+    deny_reason: typeof mm.deny_reason === "string" ? mm.deny_reason : undefined,
+    chart_spec: mm.chart_spec ?? null,
+    table_spec: mm.table_spec ?? null,
+    agentTrace: trace?.length ? trace : undefined,
+    agentReasoning: reasoning,
+    agentMeta: meta,
+    evidence_pack: parseEvidencePackSummary(mm.evidence_pack),
+  };
+}
+
+export function chatMessagesSnapshotEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.role !== y.role || x.content !== y.content) return false;
+    if ((x.agentReasoning || "") !== (y.agentReasoning || "")) return false;
+    if (JSON.stringify(x.agentMeta ?? null) !== JSON.stringify(y.agentMeta ?? null)) return false;
+    if (JSON.stringify(x.agentTrace ?? null) !== JSON.stringify(y.agentTrace ?? null)) return false;
+  }
+  return true;
+}
 
 export function parseEvidencePackSummary(raw: unknown): EvidencePackSummary | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -43,21 +90,92 @@ export function agentTierLabel(tier?: number): string {
   return "";
 }
 
+export function agentTraceStepsEqual(a: AgentTraceStep[], b: AgentTraceStep[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.kind !== y.kind ||
+      x.message !== y.message ||
+      (x.step || "") !== (y.step || "") ||
+      (x.toolCallId || "") !== (y.toolCallId || "") ||
+      (x.toolStatus || "") !== (y.toolStatus || "")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function mergeHermesDraftTrace(tail: string, incoming: string): string | null {
+  if (!incoming) return null;
+  if (incoming === tail) return null;
+  if (incoming.startsWith(tail)) return incoming;
+  if (tail.startsWith(incoming)) return tail;
+  const score = (s: string) => {
+    let pts = s.length;
+    if (s.includes("|") && (s.includes("---") || s.includes("变动"))) pts += 800;
+    if (/###\s[\u4e00-\u9fff]/.test(s)) pts += 400;
+    if (/[\u4e00-\u9fff]{30,}/.test(s)) pts += 200;
+    if (/###[^\s#\u4e00-\u9fff]{0,5}[\u4e00-\u9fff]/.test(s)) pts -= 300;
+    return pts;
+  };
+  const st = score(tail);
+  const si = score(incoming);
+  if (Math.abs(st - si) > 80) return si >= st ? incoming : tail;
+  return incoming.length >= tail.length ? incoming : tail;
+}
+
+function mergeThinkingTraceMessage(
+  tailMessage: string,
+  incoming: string,
+  step?: string,
+): string | null {
+  const tailRaw = tailMessage || "";
+  const msgRaw = incoming || "";
+  if (!msgRaw) return null;
+  if (msgRaw === tailRaw) return null;
+  if (msgRaw.startsWith(tailRaw)) return msgRaw;
+  if (tailRaw.startsWith(msgRaw)) return tailRaw;
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const tailN = norm(tailRaw);
+  const msgN = norm(msgRaw);
+  if (msgN && tailN) {
+    if (msgN.startsWith(tailN)) return msgRaw;
+    if (tailN.startsWith(msgN)) return tailRaw;
+    if (tailN.includes(msgN) && msgN.length <= tailN.length) return null;
+    if (msgN.includes(tailN) && tailN.length <= msgN.length) return msgRaw;
+  }
+  if (tailRaw.endsWith(msgRaw) || tailN.endsWith(msgN)) return null;
+  if (step === "hermes_draft") {
+    return mergeHermesDraftTrace(tailRaw, msgRaw);
+  }
+  return tailRaw + msgRaw;
+}
+
 export function appendAgentTraceStep(
   trace: AgentTraceStep[],
   step: Omit<AgentTraceStep, "at">,
 ): AgentTraceStep[] {
   const msg = (step.message || "").trim();
   if (!msg) return trace;
-  const next = [...trace];
-  const tail = next[next.length - 1];
+  const tail = trace[trace.length - 1];
   if (step.kind === "thinking" && tail?.kind === "thinking" && tail.message.length < 12000) {
-    next[next.length - 1] = { ...tail, message: tail.message + msg };
-    return next.slice(-80);
+    const sameStep = (tail.step || "") === (step.step || "");
+    if (sameStep) {
+      const merged = mergeThinkingTraceMessage(tail.message, msg, step.step);
+      if (merged === null) return trace;
+      const next = [...trace];
+      next[next.length - 1] = { ...tail, message: merged };
+      return next.slice(-80);
+    }
   }
   if (tail?.kind === step.kind && tail.message === msg && step.kind === "status") {
-    return next;
+    return trace;
   }
+  const next = [...trace];
   next.push({ at: Date.now(), ...step, message: msg });
   return next.slice(-80);
 }
@@ -104,11 +222,20 @@ export function upsertAgentToolTrace(
   }
   const idx = trace.findIndex((t) => t.kind === "tool" && t.toolCallId === id);
   if (idx >= 0) {
+    const prev = trace[idx];
+    const mergedMsg = mergeToolProgressMessage(prev, step);
+    if (
+      mergedMsg === prev.message &&
+      step.toolStatus === prev.toolStatus &&
+      (step.emoji ?? prev.emoji) === prev.emoji &&
+      (step.tool ?? prev.tool) === prev.tool
+    ) {
+      return trace;
+    }
     const next = [...trace];
-    const prev = next[idx];
     next[idx] = {
       ...prev,
-      message: mergeToolProgressMessage(prev, step),
+      message: mergedMsg,
       toolStatus: step.toolStatus,
       emoji: step.emoji ?? prev.emoji,
       tool: step.tool ?? prev.tool,
@@ -123,6 +250,64 @@ export function upsertAgentToolTrace(
     emoji: step.emoji,
     tool: step.tool,
   });
+}
+
+export function parseHermesStreamStats(raw: unknown): HermesStreamStats | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const n = (k: string) => {
+    const v = o[k];
+    return typeof v === "number" && !Number.isNaN(v) ? v : undefined;
+  };
+  const stats: HermesStreamStats = {
+    thinking_chars: n("thinking_chars"),
+    delta_chars: n("delta_chars"),
+    tool_progress_events: n("tool_progress_events"),
+    tool_call_events: n("tool_call_events"),
+    orientg_kb_ask_calls: n("orientg_kb_ask_calls"),
+    orientg_kb_supplemental_calls: n("orientg_kb_supplemental_calls"),
+  };
+  return Object.values(stats).some((v) => v !== undefined) ? stats : undefined;
+}
+
+export function formatHermesStreamStatsLine(
+  stats?: HermesStreamStats,
+  meta?: Pick<
+    AgentMeta,
+    "hermes_stream_mode" | "agent_tier" | "kb_supplemental" | "supplemental_adopted"
+  >,
+): string {
+  if (!stats) return "";
+  const parts: string[] = [];
+  if (meta?.hermes_stream_mode) parts.push(`通道 ${meta.hermes_stream_mode}`);
+  if (stats.thinking_chars && stats.thinking_chars > 0) {
+    parts.push(`推理流 ${stats.thinking_chars} 字`);
+  } else if (meta?.agent_tier === 2 && !meta?.kb_supplemental) {
+    parts.push("推理流 0（上游未推送 thinking）");
+  }
+  if (typeof stats.delta_chars === "number") parts.push(`正文流 ${stats.delta_chars} 字`);
+  const toolProg = stats.tool_progress_events;
+  if (typeof toolProg === "number") {
+    parts.push(
+      toolProg === 0
+        ? "Hermes 工具进度 0（本 run 未调用 MCP）"
+        : `Hermes 工具进度 ${toolProg} 次`,
+    );
+  }
+  const kb = stats.orientg_kb_ask_calls ?? 0;
+  const supp = stats.orientg_kb_supplemental_calls ?? 0;
+  if (kb > 0) {
+    parts.push(`Hermes 内 orientg_kb_ask ×${kb}`);
+  } else if (meta?.kb_supplemental) {
+    parts.push(
+      supp > 0
+        ? `Hermes 单轮未调 MCP；Orient-G 网关补检索 ×${supp}`
+        : "Hermes 单轮未调 MCP；已由 Orient-G 网关修订终稿",
+    );
+  } else if (meta?.agent_tier === 2) {
+    parts.push("Hermes 单轮 completion（深度可触发 Orient-G 网关补检索）");
+  }
+  return parts.length ? `编排观测：${parts.join(" · ")}` : "";
 }
 
 export function buildAgentMetaFromDone(evt: Record<string, unknown>): AgentMeta {
@@ -140,7 +325,19 @@ export function buildAgentMetaFromDone(evt: Record<string, unknown>): AgentMeta 
     llm_model: typeof evt.llm_model === "string" ? evt.llm_model : undefined,
     hermes_stream_mode:
       typeof evt.hermes_stream_mode === "string" ? evt.hermes_stream_mode : undefined,
+    hermes_stream_stats: parseHermesStreamStats(evt.hermes_stream_stats),
+    kb_supplemental: evt.kb_supplemental === true,
+    supplemental_adopted:
+      typeof evt.supplemental_adopted === "boolean" ? evt.supplemental_adopted : undefined,
   };
+}
+
+function supplementalDoneSuffix(meta: AgentMeta): string {
+  if (!meta.kb_supplemental) return "";
+  if (meta.supplemental_adopted === false) {
+    return " · Orient-G 补检索完成（保留 Hermes 原文）";
+  }
+  return " · Orient-G 自动补检索修订";
 }
 
 export function routeLabel(meta?: AgentMeta): string {
@@ -174,10 +371,13 @@ export function doneTraceMessage(meta: AgentMeta): string {
     return "完成：Hermes 已结束，最终答案由 Orient-G 本地 LLM 基于预检索生成";
   }
   if (meta.agent_route === "hermes_full" || meta.agent_tier === 2) {
-    return `完成：Tier 2（Hermes 深度编排）${packSuffix}`;
+    const obs = formatHermesStreamStatsLine(meta.hermes_stream_stats, meta);
+    const sup = supplementalDoneSuffix(meta);
+    return `完成：Tier 2（Hermes 深度编排）${packSuffix}${sup}${obs ? ` · ${obs}` : ""}`;
   }
   if (meta.agent_route === "hermes_lite" || meta.agent_tier === 1) {
-    return `完成：Tier 1（Hermes lite）；若本机 GPU 仍占用，可能为 Gateway 后台收尾${packSuffix}`;
+    const sup = supplementalDoneSuffix(meta);
+    return `完成：Tier 1（Hermes lite）；若本机 GPU 仍占用，可能为 Gateway 后台收尾${packSuffix}${sup}`;
   }
   if (meta.hermes_used) return `完成：Hermes 流式已结束${packSuffix}`;
   return packLine ? `完成${packSuffix}` : "完成";
@@ -212,6 +412,17 @@ export function mergeAssistantOnAgentDone(
     table_spec: opts.table_spec ?? msg.table_spec,
     streamStatus: undefined,
   };
+}
+
+export function traceStepLabel(step?: string): string {
+  if (step === "hermes_draft") return "Hermes 过程稿";
+  if (step === "hermes_reasoning") return "Hermes 推理流";
+  return "";
+}
+
+/** @deprecated use traceStepLabel */
+export function hermesDraftTraceLabel(step?: string): string {
+  return traceStepLabel(step);
 }
 
 export function traceFromLegacyStreamStatus(lines: string[]): AgentTraceStep[] {

@@ -10,10 +10,8 @@ from typing import Any, Literal
 
 from fastapi.responses import StreamingResponse
 
-from backend.services.agent_kb_fast_path import (
-    comparison_answer_addon,
-    stream_kb_fast_path_events,
-)
+from backend.services.agent_kb_fast_path import comparison_answer_addon, fast_path_answer_addon, stream_kb_fast_path_events
+from backend.services.agent_hermes_tier_policy import patch_prefetch_system_message
 from backend.services.agent_kb_router import (
     AgentRoute,
     kb_ask_budget_for_route,
@@ -50,6 +48,15 @@ from backend.services.knowledge_acl import load_fixtures
 
 router = APIRouter()
 _logger = logging.getLogger("agent")
+
+
+def _skill_addon_for_route(user_query: str, route: AgentRoute) -> str:
+    """Hermes 失败回退本地综合时，按路由套用对应 tier 规制。"""
+    if route == AgentRoute.fast:
+        return fast_path_answer_addon(user_query)
+    if route == AgentRoute.hermes_full:
+        return comparison_answer_addon(user_query, tier="full")
+    return comparison_answer_addon(user_query, tier="lite")
 ALGORITHM = "HS256"
 
 
@@ -97,8 +104,12 @@ class AgentChatBody(BaseModel):
     messages: list[ChatMessage]
     kb_scope: KbScope | None = None
     attached_doc_ids: list[str] | None = None
-    allow_kb_write: bool = True
+    allow_kb_write: bool = False
     hermes_session_id: str | None = None
+    orientg_chat_session_id: str | None = Field(
+        default=None,
+        description="Orient-G 智能体侧栏会话 id；用于稳定绑定 Hermes session（按用户隔离）",
+    )
     enabled_skills: list[str] | None = None
     model: str | None = None
     agent_mode: Literal["auto", "fast", "standard", "deep"] | None = "standard"
@@ -115,6 +126,27 @@ def _normalized_agent_mode(body: AgentChatBody) -> str:
     return mode
 
 
+def _effective_allow_kb_write(body: AgentChatBody) -> bool:
+    """写库仅深度模式且用户显式开启 allow_kb_write。"""
+    if not body.allow_kb_write:
+        return False
+    return _normalized_agent_mode(body) == "deep"
+
+
+def _assert_agent_stream_client(request: Request, *, has_kb_scope: bool) -> None:
+    if not has_kb_scope or not getattr(settings, "agent_require_run_id", False):
+        return
+    run_id = (request.headers.get("X-Agent-Run-Id") or "").strip()
+    if not run_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "agent_run_id_required",
+                "message": "带知识库范围的 Agent 流式请求须携带 X-Agent-Run-Id",
+            },
+        )
+
+
 def _resolve_route_for_body(
     *,
     body: AgentChatBody,
@@ -127,7 +159,7 @@ def _resolve_route_for_body(
     route = resolve_agent_route(
         user_query=last_user_query(messages),
         agent_mode=_normalized_agent_mode(body),
-        allow_kb_write=bool(body.allow_kb_write),
+        allow_kb_write=_effective_allow_kb_write(body),
         has_kb_scope=has_kb,
         prefetch_result=prefetch_result,
         hermes_configured=settings.hermes_configured,
@@ -279,6 +311,7 @@ def agent_chat(request: Request, body: AgentChatBody):
             messages,
             kb_scope_payload,
             attached_doc_ids=attached,
+            agent_mode=(body.agent_mode or "standard"),
         )
         if prefetch_result and prefetch_result.get("denied"):
             raise HTTPException(
@@ -286,50 +319,46 @@ def agent_chat(request: Request, body: AgentChatBody):
                 detail=prefetch_result.get("reason") or prefetch_result.get("deny_reason") or "denied",
             )
 
-        user_query = last_user_query(messages)
-        route, _budget = _resolve_route_for_body(
-            body=body,
-            messages=messages,
-            kb_scope_payload=kb_scope_payload,
-            attached=attached,
-            prefetch_result=prefetch_result,
-        )
-        if route == AgentRoute.fast:
-            synth = synthesize_kb_reply(
-                tenant_id=tenant_id,
-                user_query=user_query,
-                prefetch_result=prefetch_result,
-                fixtures=fixtures,
-                enabled_skills=body.enabled_skills,
-                model=body.model,
-                skill_addon_extra=comparison_answer_addon(user_query) or None,
-            )
-            return {
-                "ok": True,
-                "tenant_id": tenant_id,
-                "reply": synth.get("reply") or "",
-                "citations": synth.get("citations") or [],
-                "tool_calls": prefetch_tool_calls,
-                "hermes_session_id": body.hermes_session_id,
-                "artifacts": [],
-                "kb_prefetch": True,
-                "kb_fast_path": True,
-                "hermes_used": False,
-                "synthesis": synth.get("synthesis"),
-                "llm_model": synth.get("llm_model"),
-                **_route_response_meta(route, prefetch_result),
-            }
-
-    agent_route = AgentRoute.hermes_full
-    kb_ask_budget: int | None = None
+    agent_route, kb_ask_budget = _resolve_route_for_body(
+        body=body,
+        messages=messages,
+        kb_scope_payload=kb_scope_payload,
+        attached=attached,
+        prefetch_result=prefetch_result,
+    )
     if has_kb_scope and prefetch_result is not None:
-        agent_route, kb_ask_budget = _resolve_route_for_body(
-            body=body,
-            messages=messages,
-            kb_scope_payload=kb_scope_payload,
-            attached=attached,
-            prefetch_result=prefetch_result,
+        hermes_messages = patch_prefetch_system_message(
+            hermes_messages,
+            orientg_route=agent_route.value,
+            evidence_pack=(prefetch_result or {}).get("evidence_pack"),
+            agent_mode=(body.agent_mode or "standard"),
         )
+    user_query = last_user_query(messages)
+    if agent_route == AgentRoute.fast and prefetch_result:
+        synth = synthesize_kb_reply(
+            tenant_id=tenant_id,
+            user_query=user_query,
+            prefetch_result=prefetch_result,
+            fixtures=fixtures,
+            enabled_skills=body.enabled_skills,
+            model=body.model,
+            skill_addon_extra=fast_path_answer_addon(user_query) or None,
+        )
+        return {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "reply": synth.get("reply") or "",
+            "citations": synth.get("citations") or [],
+            "tool_calls": prefetch_tool_calls,
+            "hermes_session_id": body.hermes_session_id,
+            "artifacts": [],
+            "kb_prefetch": True,
+            "kb_fast_path": True,
+            "hermes_used": False,
+            "synthesis": synth.get("synthesis"),
+            "llm_model": synth.get("llm_model"),
+            **_route_response_meta(agent_route, prefetch_result),
+        }
 
     if has_kb_scope and not settings.hermes_configured and agent_route != AgentRoute.fast:
         raise HTTPException(
@@ -381,8 +410,9 @@ def agent_chat(request: Request, body: AgentChatBody):
             username=uname,
             user_token=token,
             kb_scope=kb_scope_payload,
-            allow_kb_write=bool(body.allow_kb_write),
+            allow_kb_write=_effective_allow_kb_write(body),
             hermes_session_id=body.hermes_session_id,
+            orientg_chat_session_id=body.orientg_chat_session_id,
             attached_doc_ids=attached,
             orientg_route=agent_route.value,
             orientg_kb_ask_budget=kb_ask_budget,
@@ -399,13 +429,15 @@ def agent_chat(request: Request, body: AgentChatBody):
     except HermesClientError as e:
         _logger.warning("hermes chat failed: %s", e, exc_info=True)
         if prefetch_result and prefetch_result.get("ok"):
+            uq = last_user_query(messages)
             synth = synthesize_kb_reply(
                 tenant_id=tenant_id,
-                user_query=last_user_query(messages),
+                user_query=uq,
                 prefetch_result=prefetch_result,
                 fixtures=fixtures,
                 enabled_skills=body.enabled_skills,
                 model=body.model,
+                skill_addon_extra=_skill_addon_for_route(uq, agent_route) or None,
             )
             reply = (synth.get("reply") or "").strip()
             if reply:
@@ -430,16 +462,77 @@ def agent_chat(request: Request, body: AgentChatBody):
         ) from e
 
     merged_tools = [*prefetch_tool_calls, *(result.get("tool_calls") or [])]
+    reply = result.get("reply") or ""
+    citations = result.get("citations")
+    synthesis = "hermes"
+    kb_supplemental = False
+    from backend.services.agent_kb_supplemental import (
+        apply_supplemental_to_done,
+        hermes_orientg_kb_ask_count,
+        iter_supplemental_revision_events,
+        needs_hermes_supplemental,
+    )
+
+    uq = last_user_query(messages)
+    if needs_hermes_supplemental(
+        agent_route=agent_route,
+        prefetch_result=prefetch_result,
+        hermes_kb_ask_count=hermes_orientg_kb_ask_count(hermes_payload=result),
+        hermes_reply=reply,
+        user_query=uq,
+    ):
+        sup_meta: dict[str, Any] | None = None
+        for sup_evt in iter_supplemental_revision_events(
+            user_token=token,
+            tenant_id=tenant_id,
+            user_query=uq,
+            prefetch_result=prefetch_result or {},
+            prefetch_tool_calls=prefetch_tool_calls,
+            kb_scope=kb_scope_payload,
+            attached_doc_ids=attached,
+            fixtures=fixtures,
+            agent_route=agent_route,
+            enabled_skills=body.enabled_skills,
+            model=body.model,
+            hermes_reply=reply,
+        ):
+            if sup_evt.get("type") == "supplemental_meta":
+                sup_meta = sup_evt
+        if sup_meta:
+            done_like = apply_supplemental_to_done(
+                {"reply": reply, "tool_calls": merged_tools, "citations": citations},
+                supplemental_meta=sup_meta,
+                prefetch_tool_calls=prefetch_tool_calls,
+            )
+            reply = done_like.get("reply") or reply
+            merged_tools = done_like.get("tool_calls") or merged_tools
+            citations = done_like.get("citations")
+            synthesis = sup_meta.get("synthesis") or "hermes_supplemental_revise"
+            kb_supplemental = True
+            if sup_meta.get("supplemental_adopted") is False:
+                synthesis = "hermes_kept_after_supplemental"
+            prefetch_result = sup_meta.get("prefetch_result") or prefetch_result
+
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    reply = finalize_agent_reply(
+        reply,
+        user_query=uq,
+        tier2_native=(agent_route == AgentRoute.hermes_full),
+    )
+
     return {
         "ok": True,
         "tenant_id": tenant_id,
-        "reply": result.get("reply") or "",
+        "reply": reply,
+        "citations": citations,
         "tool_calls": merged_tools,
         "hermes_session_id": result.get("hermes_session_id"),
         "artifacts": result.get("artifacts") or [],
         "kb_prefetch": bool(prefetch_tool_calls),
+        "kb_supplemental": kb_supplemental,
         "hermes_used": True,
-        "synthesis": "hermes",
+        "synthesis": synthesis,
         **_route_response_meta(agent_route, prefetch_result),
     }
 
@@ -471,46 +564,162 @@ def _agent_chat_stream_events(
             name = str(tc.get("name") or "orientg_kb")
             yield f"data: {json.dumps({'type': 'tool_call', 'name': name, 'status': tc.get('status') or 'ok', 'message': f'预检索：{name}'}, ensure_ascii=False)}\n\n"
 
+    from backend.services.agent_kb_supplemental import (
+        needs_hermes_supplemental,
+        prefetch_defers_hermes_draft_to_process,
+    )
+
+    defer_hermes_draft = prefetch_defers_hermes_draft_to_process(
+        agent_route=agent_route,
+        prefetch_result=prefetch_result,
+    )
+    if defer_hermes_draft:
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Hermes 编排过程稿将写入执行过程（非最终答案）…', 'step': 'hermes_draft_begin'}, ensure_ascii=False)}\n\n"
+
+    from backend.services.hermes_stream_sanitize import HermesDraftTraceAccumulator
+
+    hermes_draft_acc = HermesDraftTraceAccumulator() if defer_hermes_draft else None
+
     try:
         for evt in stream_agent_chat(
             messages=messages,
             username=uname,
             user_token=token,
             kb_scope=kb_scope_payload,
-            allow_kb_write=bool(body.allow_kb_write),
+            allow_kb_write=_effective_allow_kb_write(body),
             hermes_session_id=body.hermes_session_id,
+            orientg_chat_session_id=body.orientg_chat_session_id,
             attached_doc_ids=attached,
             run_id=run_id,
             orientg_route=agent_route.value,
             orientg_kb_ask_budget=kb_ask_budget,
+            evidence_pack=(prefetch_result or {}).get("evidence_pack"),
         ):
             if evt.get("type") == "error" and evt.get("code") == "cancelled":
                 yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
             if evt.get("type") == "error" and prefetch_result and prefetch_result.get("ok"):
+                if agent_route == AgentRoute.hermes_full:
+                    err_payload = {
+                        "type": "error",
+                        "message": str(evt.get("message") or "Hermes 深度编排失败"),
+                        "code": evt.get("code") or "hermes_error",
+                        "hermes_fallback": False,
+                    }
+                    yield f"data: {json.dumps(err_payload, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Hermes 异常结束，Orient-G 改用本地 LLM 基于预检索证据综合…', 'step': 'hermes_fallback'}, ensure_ascii=False)}\n\n"
+                uq = last_user_query(messages)
                 synth = synthesize_kb_reply(
                     tenant_id=tenant_id,
-                    user_query=last_user_query(messages),
+                    user_query=uq,
                     prefetch_result=prefetch_result,
                     fixtures=fixtures,
                     enabled_skills=body.enabled_skills,
                     model=body.model,
+                    skill_addon_extra=_skill_addon_for_route(uq, agent_route) or None,
                 )
-                reply = (synth.get("reply") or "").strip()
+                from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+                reply = finalize_agent_reply(
+                    str(synth.get("reply") or "").strip(),
+                    user_query=uq,
+                    tier2_native=False,
+                )
                 if reply:
-                    reply += "\n\n（Hermes 流式超时或失败，已由本地 LLM 基于预检索证据作答）"
+                    yield f"data: {json.dumps({'type': 'status', 'message': '（Hermes 流式超时或失败，已由本地 LLM 基于预检索证据作答）', 'step': 'hermes_fallback_note'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'delta', 'content': reply}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'ok': True, 'reply': reply, 'tenant_id': tenant_id, 'kb_prefetch': True, 'hermes_fallback': True, 'synthesis': synth.get('synthesis'), 'citations': synth.get('citations') or [], 'tool_calls': prefetch_tool_calls, **_route_response_meta(agent_route, prefetch_result)}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
+            if defer_hermes_draft and evt.get("type") == "delta" and evt.get("content"):
+                draft = hermes_draft_acc.push(str(evt["content"])) if hermes_draft_acc else None
+                if draft:
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': draft, 'step': 'hermes_draft'}, ensure_ascii=False)}\n\n"
+                continue
+            if defer_hermes_draft and evt.get("type") == "thinking" and evt.get("content"):
+                yield f"data: {json.dumps({'type': 'thinking', 'content': str(evt['content']), 'step': 'hermes_reasoning'}, ensure_ascii=False)}\n\n"
+                continue
             if evt.get("type") == "done":
+                if hermes_draft_acc:
+                    final_draft = hermes_draft_acc.flush()
+                    if final_draft:
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': final_draft, 'step': 'hermes_draft'}, ensure_ascii=False)}\n\n"
+                uq = last_user_query(messages)
+                hermes_raw_reply = str(evt.get("reply") or "")
+                from backend.services.agent_kb_supplemental import (
+                    apply_supplemental_to_done,
+                    hermes_orientg_kb_ask_count,
+                    iter_supplemental_revision_events,
+                    needs_hermes_supplemental,
+                )
+
+                hermes_kb_ask_n = hermes_orientg_kb_ask_count(hermes_payload=evt)
+                supplemental_ran = needs_hermes_supplemental(
+                    agent_route=agent_route,
+                    prefetch_result=prefetch_result,
+                    hermes_kb_ask_count=hermes_kb_ask_n,
+                    hermes_reply=hermes_raw_reply,
+                    user_query=uq,
+                )
+                if supplemental_ran:
+                    sup_meta: dict[str, Any] | None = None
+                    for sup_evt in iter_supplemental_revision_events(
+                        user_token=token,
+                        tenant_id=tenant_id,
+                        user_query=uq,
+                        prefetch_result=prefetch_result or {},
+                        prefetch_tool_calls=prefetch_tool_calls,
+                        kb_scope=kb_scope_payload,
+                        attached_doc_ids=attached,
+                        fixtures=fixtures,
+                        agent_route=agent_route,
+                        enabled_skills=body.enabled_skills,
+                        model=body.model,
+                        hermes_reply=hermes_raw_reply,
+                        run_id=run_id,
+                    ):
+                        if sup_evt.get("type") == "supplemental_meta":
+                            sup_meta = sup_evt
+                            continue
+                        if sup_evt.get("type") == "error" and sup_evt.get("code") == "cancelled":
+                            yield f"data: {json.dumps(sup_evt, ensure_ascii=False)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        yield f"data: {json.dumps(sup_evt, ensure_ascii=False)}\n\n"
+                    if sup_meta:
+                        evt = apply_supplemental_to_done(
+                            evt,
+                            supplemental_meta=sup_meta,
+                            prefetch_tool_calls=prefetch_tool_calls,
+                        )
+                        if prefetch_result is not None and sup_meta.get("prefetch_result"):
+                            prefetch_result = sup_meta["prefetch_result"]
+
+                from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+                if evt.get("reply"):
+                    evt = {
+                        **evt,
+                        "reply": finalize_agent_reply(
+                            str(evt.get("reply") or ""),
+                            user_query=uq,
+                            tier2_native=(agent_route == AgentRoute.hermes_full),
+                        ),
+                    }
+
+                final_body = str(evt.get("reply") or "").strip()
+                if final_body and (defer_hermes_draft or supplemental_ran):
+                    yield f"data: {json.dumps({'type': 'replace_reply', 'content': final_body}, ensure_ascii=False)}\n\n"
+
                 evt = {
                     **evt,
                     "ok": True,
                     "tenant_id": tenant_id,
                     "kb_prefetch": bool(prefetch_tool_calls),
+                    "kb_supplemental": supplemental_ran or bool(evt.get("kb_supplemental")),
                     "agent_route": agent_route.value,
                     "agent_tier": route_to_agent_tier(agent_route),
                     "evidence_pack": pack_summary_for_sse((prefetch_result or {}).get("evidence_pack")),
@@ -585,21 +794,32 @@ def agent_chat_stream(request: Request, body: AgentChatBody):
     hermes_messages = messages
     user_query = last_user_query(messages)
     has_kb_scope = should_prefetch_kb(kb_scope_payload, attached_doc_ids=attached)
-    agent_route = AgentRoute.hermes_full
-    kb_ask_budget: int | None = None
+    _assert_agent_stream_client(request, has_kb_scope=has_kb_scope)
 
     if settings.hermes_agent_kb_prefetch and has_kb_scope:
         hermes_messages, prefetch_result, prefetch_tool_calls = prefetch_kb_context(
-            token, messages, kb_scope_payload, attached_doc_ids=attached
+            token,
+            messages,
+            kb_scope_payload,
+            attached_doc_ids=attached,
+            agent_mode=(body.agent_mode or "standard"),
         )
         if prefetch_result and prefetch_result.get("denied"):
             raise HTTPException(status_code=403, detail=prefetch_result.get("reason") or "denied")
-        agent_route, kb_ask_budget = _resolve_route_for_body(
-            body=body,
-            messages=messages,
-            kb_scope_payload=kb_scope_payload,
-            attached=attached,
-            prefetch_result=prefetch_result,
+
+    agent_route, kb_ask_budget = _resolve_route_for_body(
+        body=body,
+        messages=messages,
+        kb_scope_payload=kb_scope_payload,
+        attached=attached,
+        prefetch_result=prefetch_result,
+    )
+    if has_kb_scope and prefetch_result is not None:
+        hermes_messages = patch_prefetch_system_message(
+            hermes_messages,
+            orientg_route=agent_route.value,
+            evidence_pack=(prefetch_result or {}).get("evidence_pack"),
+            agent_mode=(body.agent_mode or "standard"),
         )
 
     run_id = (request.headers.get("X-Agent-Run-Id") or "").strip() or None

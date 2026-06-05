@@ -17,4 +17,22 @@ def test_hermes_lite_forbids_terminal_in_context():
     system = msgs[0]["content"]
     assert "orientg_forbidden_tools" in system
     assert "terminal" in system
+    assert "orientg-debugging" in system
     assert "orientg_tool_policy" in system
+    assert "orientg_allowed_kb_tools" in system
+
+
+def test_hermes_lite_stream_reasoning_default_off():
+    import json
+
+    msgs = _build_messages(
+        [{"role": "user", "content": "查营收"}],
+        username="u1",
+        kb_scope={"selected_folder_ids": ["f1"]},
+        allow_kb_write=False,
+        attached_doc_ids=None,
+        hermes_session_id="hs1",
+        orientg_route="hermes_lite",
+    )
+    payload = json.loads(msgs[0]["content"].split("\n", 1)[1])
+    assert payload.get("orientg_stream_reasoning") is False

@@ -7,6 +7,7 @@ import json
 from backend.services.hermes_client import (
     HermesSseParser,
     _build_payload,
+    _finalize_hermes_chat_reply,
     iter_openai_stream_deltas,
     iter_openai_stream_events,
     parse_sse_data_line,
@@ -91,6 +92,23 @@ def test_sse_events_from_hermes_line_maps_tool_progress_to_sse():
     assert "🔧" in out[0]["message"]
 
 
+def test_hermes_sse_parser_reasoning_content_goes_to_thinking():
+    line = 'data: {"choices":[{"delta":{"reasoning_content":"分析销售费用"}}]}'
+    events = list(iter_openai_stream_events(line))
+    assert any(e.get("kind") == "thinking" and "分析" in e.get("content", "") for e in events)
+
+
+def test_apply_stream_content_policy_routes_planning_to_thinking():
+    from backend.services.hermes_client import _apply_stream_content_policy
+
+    acc: list[str] = []
+    mapped = {"type": "delta", "content": "用户要求出具报告。步骤：检索。"}
+    out = _apply_stream_content_policy(mapped, accumulated=acc)
+    assert out is not None
+    assert out["type"] == "thinking"
+    assert acc == []
+
+
 def test_build_payload_stream_tool_progress():
     payload = _build_payload(
         messages=[{"role": "user", "content": "hi"}],
@@ -104,3 +122,21 @@ def test_build_payload_stream_tool_progress():
     )
     assert payload["stream"] is True
     assert payload.get("stream_tool_progress") is True
+
+
+def test_finalize_hermes_chat_reply_recovers_from_raw_when_accumulated_empty():
+    """Hermes 全文被 classify 为 thinking 时，仍应从 raw delta 恢复终稿。"""
+    raw = (
+        "用户要求对比营业收入。步骤：检索。\n\n"
+        "## 结论\n2025年营业收入为100,148,026.24元，较2024年下降27.71%。\n\n"
+        "| 指标 | 2025年 | 2024年 |\n| --- | --- | --- |\n"
+        "| 营业收入 | 100,148,026.24元 | 138,539,446.45元 |\n"
+    )
+    reply = _finalize_hermes_chat_reply(
+        accumulated_parts=[],
+        raw_parts=[raw],
+        thinking_parts=[],
+        user_query="华清2025年与2024年营业收入对比",
+    )
+    assert "100,148,026.24" in reply
+    assert "27.71" in reply

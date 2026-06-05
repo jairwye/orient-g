@@ -257,6 +257,18 @@ def compute_acl_scope(
                 all_chunk_ids.extend(_kbd.list_chunk_ids_for_doc(ctx.tenant_id, did))
         except Exception:
             pass
+        # 管理角色也合并「已分享文件夹」内文档（与部门用户一致，避免仅 fixture 列表漏 DB 文档）
+        try:
+            from backend.services.kb_folders import collect_doc_ids_in_visible_folders
+
+            folder_doc_ids = collect_doc_ids_in_visible_folders(
+                ctx.tenant_id,
+                username=ctx.username,
+                allowed_collection_ids=set(all_collection_ids),
+            )
+            all_doc_ids = sorted(set(all_doc_ids).union(folder_doc_ids))
+        except Exception:
+            pass
         return {
             "allowed_collection_ids": [x for x in all_collection_ids if x],
             "allowed_doc_ids": [x for x in all_doc_ids if x],

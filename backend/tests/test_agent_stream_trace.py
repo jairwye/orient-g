@@ -26,7 +26,7 @@ def test_fast_path_stream_includes_trace_status_and_meta(monkeypatch):
         )
     )
     steps = [e.get("step") for e in events if e.get("type") == "status"]
-    assert "kb_fast_path" in steps
+    assert "prefetch_done" in steps
     assert "local_llm_synth" in steps
     assert "local_llm_done" in steps
     done = [e for e in events if e.get("type") == "done"][-1]

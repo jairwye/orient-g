@@ -11,6 +11,8 @@ import {
   parseKbScopeFromSearchParams,
   readKbScopeCapsule,
   writeKbScopeCapsule,
+  buildKbScopeRequestPayload,
+  normalizeKbScopeCapsule,
 } from "../lib/kb_scope_capsule";
 import {
   ArrowDown,
@@ -29,6 +31,7 @@ import {
   Sparkles,
   Table,
   Trash2,
+  Square,
   Upload,
   Wrench,
   Workflow,
@@ -42,10 +45,14 @@ import {
 import AiInlineChart from "./AiInlineChart";
 import AiInlineTable from "./AiInlineTable";
 import AiAvatar from "./AiAvatar";
+import AgentReasoningPanel from "./AgentReasoningPanel";
 import AgentTracePanel from "./AgentTracePanel";
 import {
+  agentTraceStepsEqual,
   appendAgentTraceStep,
   buildAgentMetaFromDone,
+  chatMessagesSnapshotEqual,
+  hydrateChatMessage,
   mergeAssistantOnAgentDone,
   traceFromLegacyStreamStatus,
   upsertAgentToolTrace,
@@ -121,12 +128,9 @@ function compareSessionsForList(a: ChatSession, b: ChatSession): number {
   return sessionCreatedAt(b) - sessionCreatedAt(a);
 }
 
+/** @deprecated use chatMessagesSnapshotEqual from agentTraceUtils */
 function chatMessagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].role !== b[i].role || a[i].content !== b[i].content) return false;
-  }
-  return true;
+  return chatMessagesSnapshotEqual(a, b);
 }
 
 async function estimatePdfPages(file: File): Promise<number | null> {
@@ -229,11 +233,25 @@ export default function AiInteractionPage() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const [agentLoading, setAgentLoading] = useState(false);
   const agentRunIdRef = useRef<string | null>(null);
   const agentAbortRef = useRef<AbortController | null>(null);
+  const agentDeferDraftRef = useRef(false);
+  const agentReplacedReplyRef = useRef("");
   const [hermesSessionId, setHermesSessionId] = useState<string | null>(null);
+  const hermesSessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    hermesSessionIdRef.current = hermesSessionId;
+  }, [hermesSessionId]);
   const [agentMode, setAgentMode] = useState<import("./types").AgentMode>("standard");
+  const [allowKbWrite, setAllowKbWrite] = useState(false);
+  useEffect(() => {
+    if (agentMode !== "deep") setAllowKbWrite(false);
+  }, [agentMode]);
   const lastChatSessionIdRef = useRef<string | null>(null);
   const lastAgentSessionIdRef = useRef<string | null>(null);
   const pendingAgentFromUrlRef = useRef(false);
@@ -409,14 +427,22 @@ export default function AiInteractionPage() {
   const panelMessages = messages;
   const panelLoading = isAgentView ? agentLoading : chatLoading;
 
+  const showScrollToBottomRef = useRef(false);
   const updateScrollToBottomFab = useCallback(() => {
     const el = chatContainerRef.current;
     if (!el || panelMessages.length === 0) {
-      setShowScrollToBottom(false);
+      if (showScrollToBottomRef.current) {
+        showScrollToBottomRef.current = false;
+        setShowScrollToBottom(false);
+      }
       return;
     }
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setShowScrollToBottom(dist > 80);
+    const next = dist > 80;
+    if (next !== showScrollToBottomRef.current) {
+      showScrollToBottomRef.current = next;
+      setShowScrollToBottom(next);
+    }
   }, [panelMessages.length]);
 
   const scrollChatToBottom = useCallback(
@@ -437,24 +463,53 @@ export default function AiInteractionPage() {
     [updateScrollToBottomFab],
   );
 
-  // 新消息 / 回复 / 图表渲染后滚到底部，保证最新一条完整可见
+  const lastAssistantContentLen =
+    panelMessages.length > 0 && panelMessages[panelMessages.length - 1]?.role === "assistant"
+      ? (panelMessages[panelMessages.length - 1].content || "").length
+      : 0;
+
+  /** 流式贴底：正文 + agentTrace 长度（深度档过程稿在 trace 里，仅跟 content 会漏滚） */
+  const lastMessageScrollSig = useMemo(() => {
+    const last = panelMessages[panelMessages.length - 1];
+    if (!last || last.role !== "assistant") return 0;
+    const trace = last.agentTrace || [];
+    const traceChars = trace.reduce((n, t) => n + (t.message?.length || 0), 0);
+    return (last.content || "").length + traceChars + trace.length * 48;
+  }, [panelMessages]);
+
+  const stickScrollToBottomIfNear = useCallback(() => {
+    const el = chatContainerRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (dist > 160) return;
+    scrollChatToBottom("auto");
+  }, [scrollChatToBottom]);
+
+  // 新消息条数变化时滚到底部；流式正文增长由下方 effect 在「贴底」时跟进，避免 setState 循环
   useEffect(() => {
     if (!isConversationView || panelMessages.length === 0) return;
-    const run = () => scrollChatToBottom("smooth");
-    const id = requestAnimationFrame(() => requestAnimationFrame(run));
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => scrollChatToBottom("smooth"));
+    });
     return () => cancelAnimationFrame(id);
-  }, [isConversationView, panelMessages, panelLoading, scrollChatToBottom]);
+  }, [isConversationView, panelMessages.length, panelLoading, scrollChatToBottom]);
+
+  useEffect(() => {
+    if (!isConversationView || !panelLoading) return;
+    const id = requestAnimationFrame(() => stickScrollToBottomIfNear());
+    return () => cancelAnimationFrame(id);
+  }, [isConversationView, panelLoading, lastMessageScrollSig, stickScrollToBottomIfNear]);
 
   useEffect(() => {
     const root = chatContainerRef.current;
     if (!root || !isConversationView || panelMessages.length === 0) return;
     const ro = new ResizeObserver(() => {
-      scrollChatToBottom("auto");
       updateScrollToBottomFab();
+      if (panelLoading) stickScrollToBottomIfNear();
     });
     ro.observe(root);
     return () => ro.disconnect();
-  }, [isConversationView, panelMessages.length, scrollChatToBottom, updateScrollToBottomFab]);
+  }, [isConversationView, panelMessages.length, panelLoading, updateScrollToBottomFab, stickScrollToBottomIfNear]);
 
   useEffect(() => {
     const el = chatContainerRef.current;
@@ -597,11 +652,13 @@ export default function AiInteractionPage() {
   // 用户调整范围后写回胶囊（hydrate 之后）
   useEffect(() => {
     if (!scopeHydratedRef.current || loading) return;
-    writeKbScopeCapsule({
-      folder_ids: selectedFolderIds,
-      collection_ids: selectedCollectionIds,
-      table_ids: selectedTableIds,
-    });
+    writeKbScopeCapsule(
+      normalizeKbScopeCapsule({
+        folder_ids: selectedFolderIds,
+        collection_ids: selectedCollectionIds,
+        table_ids: selectedTableIds,
+      }),
+    );
   }, [selectedFolderIds, selectedCollectionIds, selectedTableIds, loading]);
 
   useEffect(() => {
@@ -631,22 +688,8 @@ export default function AiInteractionPage() {
                   };
                   const rawMessages = (obj.messages as unknown[] | undefined) || [];
                   const messages = rawMessages
-                    .filter((m): m is ChatMessage => {
-                      if (!m || typeof m !== "object") return false;
-                      const mm = m as { role?: unknown; content?: unknown; citations?: unknown; deny_reason?: unknown };
-                      return (mm.role === "user" || mm.role === "assistant") && typeof mm.content === "string";
-                    })
-                    .map((m) => {
-                      const mm = m as ChatMessage;
-                      return {
-                        role: mm.role,
-                        content: mm.content,
-                        citations: mm.citations,
-                        deny_reason: mm.deny_reason,
-                        chart_spec: mm.chart_spec ?? null,
-                        table_spec: mm.table_spec ?? null,
-                      };
-                    });
+                    .map((m) => hydrateChatMessage(m))
+                    .filter((m): m is ChatMessage => m !== null);
                   const attachmentsRaw = Array.isArray(obj.attachments) ? (obj.attachments as unknown[]) : [];
                   const attachments = attachmentsRaw
                     .filter((a): a is ComposerAttachment => {
@@ -873,7 +916,14 @@ export default function AiInteractionPage() {
   }, []);
 
   const toggleFolder = (id: string) => {
-    setSelectedFolderIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    setSelectedFolderIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      if (!prev.includes(id) && next.length) {
+        setSelectedCollectionIds([]);
+        setSelectedTableIds([]);
+      }
+      return next;
+    });
   };
 
   const toggleCollection = (id: string) => {
@@ -1144,11 +1194,11 @@ export default function AiInteractionPage() {
         credentials: "include",
         body: JSON.stringify({
           messages: nextMessages,
-          kb_scope: {
-            selected_collection_ids: selectedCollectionIds.length ? selectedCollectionIds : undefined,
-            selected_table_ids: selectedTableIds.length ? selectedTableIds : undefined,
-            selected_folder_ids: selectedFolderIds.length ? selectedFolderIds : undefined,
-          },
+          kb_scope: buildKbScopeRequestPayload({
+            folder_ids: selectedFolderIds,
+            collection_ids: selectedCollectionIds,
+            table_ids: selectedTableIds,
+          }),
           enabled_skills: enabledSkills.length ? enabledSkills : undefined,
           enabled_tools: enabledTools.length ? enabledTools : undefined,
           attached_doc_ids: attachedIds.length ? attachedIds : undefined,
@@ -1174,12 +1224,27 @@ export default function AiInteractionPage() {
 
   const appendAgentTrace = useCallback((step: Omit<AgentTraceStep, "at">) => {
     setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role !== "assistant") return prev;
+      const nextTrace = appendAgentTraceStep(last.agentTrace || [], step);
+      if (nextTrace === (last.agentTrace || []) || agentTraceStepsEqual(nextTrace, last.agentTrace || [])) {
+        return prev;
+      }
+      const copy = [...prev];
+      copy[copy.length - 1] = { ...last, agentTrace: nextTrace };
+      return copy;
+    });
+  }, []);
+
+  const appendAgentReasoning = useCallback((chunk: string) => {
+    if (!chunk) return;
+    setMessages((prev) => {
       const copy = [...prev];
       const last = copy[copy.length - 1];
       if (last?.role !== "assistant") return prev;
       copy[copy.length - 1] = {
         ...last,
-        agentTrace: appendAgentTraceStep(last.agentTrace || [], step),
+        agentReasoning: (last.agentReasoning || "") + chunk,
       };
       return copy;
     });
@@ -1197,9 +1262,11 @@ export default function AiInteractionPage() {
         const copy = [...prev];
         const last = copy[copy.length - 1];
         if (last?.role !== "assistant") return prev;
+        const nextTrace = upsertAgentToolTrace(last.agentTrace || [], step);
+        if (agentTraceStepsEqual(nextTrace, last.agentTrace || [])) return prev;
         copy[copy.length - 1] = {
           ...last,
-          agentTrace: upsertAgentToolTrace(last.agentTrace || [], step),
+          agentTrace: nextTrace,
         };
         return copy;
       });
@@ -1231,6 +1298,7 @@ export default function AiInteractionPage() {
       }
     }
     agentRunIdRef.current = null;
+    agentDeferDraftRef.current = false;
     setAgentLoading(false);
     appendAgentStreamStatus("已请求停止（Hermes 侧可能仍需数十秒才会完全结束）");
     setMessages((prev) => {
@@ -1243,15 +1311,9 @@ export default function AiInteractionPage() {
     });
   }, [appendAgentStreamStatus]);
 
+  // 深度轮 Hermes 可跑 2–3 分钟：仅用户点「停止」或离开页面时取消，切到其他浏览器 Tab 不中断。
   useEffect(() => {
-    const onHide = () => {
-      if (document.visibilityState === "hidden" && agentRunIdRef.current) {
-        void handleAgentStop();
-      }
-    };
-    document.addEventListener("visibilitychange", onHide);
     return () => {
-      document.removeEventListener("visibilitychange", onHide);
       const rid = agentRunIdRef.current;
       if (!rid) return;
       agentAbortRef.current?.abort();
@@ -1262,7 +1324,7 @@ export default function AiInteractionPage() {
         body: JSON.stringify({ run_id: rid }),
       }).catch(() => undefined);
     };
-  }, [handleAgentStop]);
+  }, []);
 
   const handleAgentAsk = async () => {
     const q = chatInput.trim();
@@ -1274,9 +1336,11 @@ export default function AiInteractionPage() {
         ? crypto.randomUUID()
         : `run_${Date.now()}`;
     agentRunIdRef.current = runId;
+    agentDeferDraftRef.current = false;
+    agentReplacedReplyRef.current = "";
     const abortCtrl = new AbortController();
     agentAbortRef.current = abortCtrl;
-    const { isNew: newAgentSession } = ensureActiveSession("agent");
+    const { isNew: newAgentSession, id: agentChatSessionId } = ensureActiveSession("agent");
     const agentBase = newAgentSession ? [] : messages;
     const nextMessages: ChatMessage[] = [...agentBase, { role: "user", content: q }];
     setMessages([
@@ -1292,23 +1356,19 @@ export default function AiInteractionPage() {
         .filter((a) => a.kind === "kb_doc" && a.docId)
         .map((a) => String(a.docId!).trim())
         .filter(Boolean);
-      const hasKbScope =
-        selectedCollectionIds.length > 0 ||
-        selectedTableIds.length > 0 ||
-        selectedFolderIds.length > 0 ||
-        attachedIds.length > 0;
+      const kbScopePayload = buildKbScopeRequestPayload({
+        folder_ids: selectedFolderIds,
+        collection_ids: selectedCollectionIds,
+        table_ids: selectedTableIds,
+      });
+      const hasKbScope = Boolean(kbScopePayload) || attachedIds.length > 0;
       const payload = {
         messages: nextMessages,
-        kb_scope: hasKbScope
-          ? {
-              selected_collection_ids: selectedCollectionIds.length ? selectedCollectionIds : undefined,
-              selected_table_ids: selectedTableIds.length ? selectedTableIds : undefined,
-              selected_folder_ids: selectedFolderIds.length ? selectedFolderIds : undefined,
-            }
-          : undefined,
+        kb_scope: hasKbScope ? kbScopePayload : undefined,
         attached_doc_ids: attachedIds.length ? attachedIds : undefined,
-        allow_kb_write: true,
+        allow_kb_write: agentMode === "deep" && allowKbWrite,
         hermes_session_id: hermesSessionId,
+        orientg_chat_session_id: agentChatSessionId,
         enabled_skills: enabledSkills.length ? enabledSkills : undefined,
         agent_mode: agentMode,
       };
@@ -1326,7 +1386,25 @@ export default function AiInteractionPage() {
           signal: abortCtrl.signal,
         });
         const ct = res.headers.get("content-type") || "";
-        if (!res.ok || !ct.includes("text/event-stream") || !res.body) return false;
+        if (!res.ok || !ct.includes("text/event-stream") || !res.body) {
+          if (!res.ok) {
+            const errBody = (await res.json().catch(() => ({}))) as { detail?: string };
+            const msg =
+              typeof errBody.detail === "string"
+                ? errBody.detail
+                : `Agent 流式请求失败（HTTP ${res.status}）`;
+            appendAgentStreamStatus(msg.slice(0, 500));
+            setMessages((prev) => {
+              const copy = [...prev];
+              const last = copy[copy.length - 1];
+              if (last?.role === "assistant" && !last.content?.trim()) {
+                copy[copy.length - 1] = { ...last, content: msg.slice(0, 800) };
+              }
+              return copy;
+            });
+          }
+          return false;
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -1341,15 +1419,63 @@ export default function AiInteractionPage() {
         let gotDone = false;
         let gotDelta = false;
         let lastDoneEvt: Record<string, unknown> | null = null;
+        let batchedTrace: AgentTraceStep[] | null = null;
+        let streamTrace: AgentTraceStep[] | null = null;
+        let flushTraceRaf: number | null = null;
+
+        const traceBase = (): AgentTraceStep[] => {
+          if (batchedTrace) return batchedTrace;
+          if (streamTrace) return streamTrace;
+          const prev = messagesRef.current;
+          const last = prev[prev.length - 1];
+          return last?.role === "assistant" ? last.agentTrace || [] : [];
+        };
+
+        const batchTraceStep = (step: Omit<AgentTraceStep, "at">) => {
+          const base = traceBase();
+          const next = appendAgentTraceStep(base, step);
+          if (next === base || agentTraceStepsEqual(next, base)) return;
+          batchedTrace = next;
+          streamTrace = next;
+          scheduleFlushBatchedTrace();
+        };
+
+        const flushBatchedTrace = () => {
+          if (flushTraceRaf !== null) {
+            cancelAnimationFrame(flushTraceRaf);
+            flushTraceRaf = null;
+          }
+          if (!batchedTrace) return;
+          const next = batchedTrace;
+          batchedTrace = null;
+          streamTrace = next;
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role !== "assistant") return prev;
+            if (agentTraceStepsEqual(last.agentTrace || [], next)) return prev;
+            const copy = [...prev];
+            copy[copy.length - 1] = { ...last, agentTrace: next };
+            return copy;
+          });
+        };
+
+        const scheduleFlushBatchedTrace = () => {
+          if (flushTraceRaf !== null) return;
+          flushTraceRaf = requestAnimationFrame(() => {
+            flushTraceRaf = null;
+            flushBatchedTrace();
+          });
+        };
 
         const appendDelta = (text: string) => {
           if (!text) return;
           setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role !== "assistant") return prev;
+            const nextContent = (last.content || "") + text;
+            if (nextContent === (last.content || "")) return prev;
             const copy = [...prev];
-            const last = copy[copy.length - 1];
-            if (last?.role === "assistant") {
-              copy[copy.length - 1] = { ...last, content: (last.content || "") + text };
-            }
+            copy[copy.length - 1] = { ...last, content: nextContent };
             return copy;
           });
         };
@@ -1385,55 +1511,89 @@ export default function AiInteractionPage() {
                 continue;
               }
               if (evt.type === "status" && evt.message) {
-                appendAgentTrace({
+                const step = typeof evt.step === "string" ? evt.step : undefined;
+                if (step === "hermes_draft_begin") {
+                  agentDeferDraftRef.current = true;
+                }
+                if (step === "supplemental_kb" || step === "supplemental_synth") {
+                  flushBatchedTrace();
+                  setMessages((prev) => {
+                    const copy = [...prev];
+                    const last = copy[copy.length - 1];
+                    if (last?.role !== "assistant") return prev;
+                    const interim = (last.content || "").trim();
+                    if (!interim) return prev;
+                    const nextTrace = appendAgentTraceStep(last.agentTrace || [], {
+                      kind: "thinking",
+                      message: interim,
+                      step: "hermes_draft",
+                    });
+                    if (agentTraceStepsEqual(nextTrace, last.agentTrace || [])) return prev;
+                    copy[copy.length - 1] = {
+                      ...last,
+                      content: "",
+                      agentTrace: nextTrace,
+                    };
+                    batchedTrace = nextTrace;
+                    streamTrace = nextTrace;
+                    return copy;
+                  });
+                }
+                batchTraceStep({
                   kind: "status",
                   message: String(evt.message),
-                  step: typeof evt.step === "string" ? evt.step : undefined,
+                  step,
                 });
                 continue;
               }
               if (evt.type === "tool_progress") {
                 const step = mapToolProgressToTraceStep(evt as Record<string, unknown>);
                 if (step.toolCallId) {
-                  upsertAgentTool({
+                  const base = traceBase();
+                  const next = upsertAgentToolTrace(base, {
                     toolCallId: step.toolCallId,
                     message: step.message,
                     toolStatus: step.toolStatus || "running",
                     emoji: step.emoji,
                     tool: step.tool,
                   });
+                  if (!agentTraceStepsEqual(next, base)) {
+                    batchedTrace = next;
+                    streamTrace = next;
+                    scheduleFlushBatchedTrace();
+                  }
                 } else {
-                  appendAgentTrace(step);
+                  batchTraceStep(step);
                 }
                 continue;
               }
               if (evt.type === "tool_call") {
-                setMessages((prev) => {
-                  const copy = [...prev];
-                  const last = copy[copy.length - 1];
-                  if (last?.role !== "assistant") return prev;
-                  const trace = last.agentTrace || [];
-                  if (
-                    shouldSkipRedundantToolCall(trace, {
-                      name: String(evt.name || ""),
-                    })
-                  ) {
-                    return prev;
-                  }
-                  copy[copy.length - 1] = {
-                    ...last,
-                    agentTrace: appendAgentTraceStep(trace, {
-                      kind: "tool",
-                      message: String(evt.message || `工具：${evt.name || "unknown"}`),
-                      step: "tool",
-                    }),
-                  };
-                  return copy;
+                const trace = traceBase();
+                if (
+                  shouldSkipRedundantToolCall(trace, {
+                    name: String(evt.name || ""),
+                  })
+                ) {
+                  continue;
+                }
+                const next = appendAgentTraceStep(trace, {
+                  kind: "tool",
+                  message: String(evt.message || `工具：${evt.name || "unknown"}`),
+                  step: "tool",
                 });
+                if (!agentTraceStepsEqual(next, trace)) {
+                  batchedTrace = next;
+                  streamTrace = next;
+                  scheduleFlushBatchedTrace();
+                }
                 continue;
               }
               if (evt.type === "thinking" && evt.content) {
-                appendAgentTrace({ kind: "thinking", message: String(evt.content) });
+                batchTraceStep({
+                  kind: "thinking",
+                  message: String(evt.content),
+                  step: typeof evt.step === "string" ? evt.step : undefined,
+                });
                 continue;
               }
               if (evt.type === "error") {
@@ -1445,7 +1605,29 @@ export default function AiInteractionPage() {
                 appendAgentStreamStatus(errMsg);
                 throw new Error(errMsg);
               }
+              if (evt.type === "replace_reply" && evt.content) {
+                gotDelta = true;
+                const text = String(evt.content);
+                agentReplacedReplyRef.current = text;
+                setMessages((prev) => {
+                  const copy = [...prev];
+                  const last = copy[copy.length - 1];
+                  if (last?.role === "assistant") {
+                    copy[copy.length - 1] = { ...last, content: text };
+                  }
+                  return copy;
+                });
+                continue;
+              }
               if (evt.type === "delta" && evt.content) {
+                if (agentDeferDraftRef.current) {
+                  batchTraceStep({
+                    kind: "thinking",
+                    message: String(evt.content),
+                    step: "hermes_draft",
+                  });
+                  continue;
+                }
                 gotDelta = true;
                 appendDelta(evt.content);
               }
@@ -1463,13 +1645,22 @@ export default function AiInteractionPage() {
                   agentMeta,
                 };
                 if (!gotDelta && typeof evt.reply === "string" && evt.reply.trim()) {
-                  appendDelta(evt.reply);
-                  gotDelta = true;
+                  if (!agentDeferDraftRef.current) {
+                    appendDelta(evt.reply);
+                    gotDelta = true;
+                  } else if (agentReplacedReplyRef.current) {
+                    gotDelta = true;
+                  }
                 }
               }
             }
           }
         }
+        if (flushTraceRaf !== null) {
+          cancelAnimationFrame(flushTraceRaf);
+          flushTraceRaf = null;
+        }
+        flushBatchedTrace();
         const agentMeta =
           doneMeta.agentMeta || (lastDoneEvt ? buildAgentMetaFromDone(lastDoneEvt) : undefined);
         if (!gotDone) {
@@ -1478,13 +1669,25 @@ export default function AiInteractionPage() {
         if (doneMeta.hermes_session_id) setHermesSessionId(doneMeta.hermes_session_id);
         const emptyReplyHint =
           "未返回正文。请展开「执行过程」查看路径；若 Gateway/LLM 已停，请检查后重试。";
+        const doneReply =
+          typeof lastDoneEvt?.reply === "string" ? lastDoneEvt.reply.trim() : "";
+        const replacedReply = agentReplacedReplyRef.current.trim();
+        const kbSupplemental = Boolean(lastDoneEvt?.kb_supplemental);
         setMessages((prev) => {
           const copy = [...prev];
           const last = copy[copy.length - 1];
           if (last?.role === "assistant") {
-            const trimmed = (last.content || "").trim();
+            const streamed = (last.content || "").trim();
+            let finalContent =
+              doneReply || replacedReply || (agentDeferDraftRef.current ? "" : streamed) || emptyReplyHint;
+            if (kbSupplemental && replacedReply && doneReply) {
+              finalContent =
+                replacedReply.length >= doneReply.length ? replacedReply : doneReply;
+            } else if (kbSupplemental && replacedReply && !doneReply) {
+              finalContent = replacedReply;
+            }
             copy[copy.length - 1] = mergeAssistantOnAgentDone(last, {
-              content: trimmed || emptyReplyHint,
+              content: finalContent,
               agentMeta,
               citations: (doneMeta.citations ?? last.citations) as Citation[] | undefined,
               chart_spec: doneMeta.chart_spec ?? last.chart_spec ?? null,
@@ -1532,6 +1735,8 @@ export default function AiInteractionPage() {
     } finally {
       agentAbortRef.current = null;
       agentRunIdRef.current = null;
+      agentDeferDraftRef.current = false;
+      agentReplacedReplyRef.current = "";
       setAgentLoading(false);
     }
   };
@@ -1721,6 +1926,19 @@ export default function AiInteractionPage() {
               return firstUser ? firstUser.slice(0, 20) : defaultTitle;
             })();
       const messagesChanged = !chatMessagesEqual(current.messages, messages);
+      if (
+        !messagesChanged &&
+        JSON.stringify(current.attachments ?? []) === JSON.stringify(stable) &&
+        current.hermes_session_id === (sessionModeOf(current) === "agent" ? hermesSessionId : current.hermes_session_id) &&
+        current.data_parse_session_id === dataParseSessionId &&
+        current.active_workflow_id === activeWorkflowId &&
+        JSON.stringify(current.enabled_skills ?? []) === JSON.stringify(enabledSkills) &&
+        JSON.stringify(current.enabled_tools ?? []) === JSON.stringify(enabledTools) &&
+        JSON.stringify(current.enabled_prompt_ids ?? []) === JSON.stringify(enabledPromptIds) &&
+        current.start_area_hint === startAreaHint
+      ) {
+        return prev;
+      }
       const next: ChatSession = {
         ...current,
         session_mode: sessionModeOf(current),
@@ -1811,26 +2029,67 @@ export default function AiInteractionPage() {
     setSessions((prev) => [s, ...prev]);
   };
 
+  /** 侧栏「智能体」：始终开新智能体会话，不复用历史。 */
+  const openNewAgentConversation = useCallback(() => {
+    startNewAgentSession();
+    setActiveLeftView("agent");
+    setChatInput("");
+    setUploadHint(null);
+  }, []);
+
   const openSession = useCallback((id: string) => {
-    const s = sessions.find((x) => x.id === id);
-    if (!s) return;
+    if (id === activeSessionId) return;
+    const target = sessions.find((x) => x.id === id);
+    if (!target) return;
+
+    const leavingId = activeSessionId;
+    const snapshotMessages = messagesRef.current;
+    const snapshotHermes = hermesSessionIdRef.current;
+
+    if (leavingId) {
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== leavingId) return s;
+          const defaultTitle = sessionModeOf(s) === "agent" ? UI_AGENT.newSessionTitle : "新对话";
+          const title =
+            s.title && s.title !== defaultTitle
+              ? s.title
+              : (() => {
+                  const firstUser = snapshotMessages.find((m) => m.role === "user")?.content?.trim();
+                  return firstUser ? firstUser.slice(0, 20) : defaultTitle;
+                })();
+          return {
+            ...s,
+            title,
+            messages: snapshotMessages,
+            updated_at: Date.now(),
+            hermes_session_id:
+              sessionModeOf(s) === "agent" ? snapshotHermes : s.hermes_session_id,
+          };
+        }),
+      );
+    }
+
     setActiveSessionId(id);
-    if (sessionModeOf(s) === "agent") lastAgentSessionIdRef.current = id;
+    if (sessionModeOf(target) === "agent") lastAgentSessionIdRef.current = id;
     else lastChatSessionIdRef.current = id;
-    setMessages(s.messages || []);
-    setHermesSessionId(s.hermes_session_id ?? null);
-    const att = (s.attachments as ComposerAttachment[] | undefined) ?? [];
+    setMessages(target.messages || []);
+    setHermesSessionId(target.hermes_session_id ?? null);
+    const att = (target.attachments as ComposerAttachment[] | undefined) ?? [];
     setComposerAttachments(att);
     setUploadHint(null);
-    setDataParseSessionId(activeExcelParseSessionId(att) ?? s.data_parse_session_id ?? null);
-    excelParseSidRef.current = activeExcelParseSessionId(att) ?? (typeof s.data_parse_session_id === "string" ? s.data_parse_session_id : null) ?? null;
-    setActiveWorkflowId(s.active_workflow_id ?? null);
-    setEnabledSkills(Array.isArray(s.enabled_skills) ? [...s.enabled_skills] : []);
-    setEnabledTools(Array.isArray(s.enabled_tools) ? [...s.enabled_tools] : []);
-    setEnabledPromptIds(Array.isArray(s.enabled_prompt_ids) ? [...s.enabled_prompt_ids] : []);
-    setStartAreaHint(s.start_area_hint ?? null);
-    setActiveLeftView(sessionModeOf(s) === "agent" ? "agent" : "chat");
-  }, [sessions]);
+    setDataParseSessionId(activeExcelParseSessionId(att) ?? target.data_parse_session_id ?? null);
+    excelParseSidRef.current =
+      activeExcelParseSessionId(att) ??
+      (typeof target.data_parse_session_id === "string" ? target.data_parse_session_id : null) ??
+      null;
+    setActiveWorkflowId(target.active_workflow_id ?? null);
+    setEnabledSkills(Array.isArray(target.enabled_skills) ? [...target.enabled_skills] : []);
+    setEnabledTools(Array.isArray(target.enabled_tools) ? [...target.enabled_tools] : []);
+    setEnabledPromptIds(Array.isArray(target.enabled_prompt_ids) ? [...target.enabled_prompt_ids] : []);
+    setStartAreaHint(target.start_area_hint ?? null);
+    setActiveLeftView(sessionModeOf(target) === "agent" ? "agent" : "chat");
+  }, [activeSessionId, sessions]);
 
   const activateView = useCallback(
     (view: "chat" | "agent") => {
@@ -2696,11 +2955,11 @@ export default function AiInteractionPage() {
                 <button
                   type="button"
                   onClick={() => void handleAgentStop()}
-                  className="inline-flex h-10 shrink-0 items-center justify-center rounded-full border border-red-500/60 bg-red-950/40 px-4 text-sm font-medium text-red-200 hover:bg-red-900/50"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-600 bg-zinc-800/90 text-zinc-200 shadow-sm hover:border-zinc-500 hover:bg-zinc-700/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
                   title={UI_AGENT.stopTaskTitle}
-                  aria-label="停止"
+                  aria-label={UI_AGENT.stopTaskTitle}
                 >
-                  停止
+                  <Square className="h-4 w-4 fill-current" strokeWidth={0} aria-hidden />
                 </button>
               ) : (
                 <button
@@ -2842,13 +3101,6 @@ export default function AiInteractionPage() {
           <button
             type="button"
             onClick={() => {
-              if (activeLeftView === "agent") {
-                startNewAgentSession();
-                setActiveLeftView("agent");
-                setChatInput("");
-                setUploadHint(null);
-                return;
-              }
               startNewChat();
               setActiveLeftView("chat");
             }}
@@ -2885,9 +3137,9 @@ export default function AiInteractionPage() {
                   suppressNextSessionClickRef.current = false;
                 }, 0);
               }}
-              onClick={() => activateView("agent")}
+              onClick={() => openNewAgentConversation()}
               className={sidebarRowClass(activeLeftView === "agent")}
-              title={UI_AGENT.label}
+              title={`新建${UI_AGENT.label}对话`}
             >
               <Bot
                 className={[sidebarIconClass, activeLeftView === "agent" ? agentAccent.icon : ""].join(" ")}
@@ -3277,6 +3529,24 @@ export default function AiInteractionPage() {
                           {label}
                         </button>
                       ))}
+                      {agentMode === "deep" ? (
+                        <label
+                          className={`ml-2 flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs ${
+                            allowKbWrite ? agentAccent.modeActive : "text-zinc-500"
+                          }`}
+                          title="开启后允许 Agent 通过 MCP 将报告/摘要写入当前知识库文件夹（默认只读检索，防止误改库）"
+                        >
+                          <input
+                            type="checkbox"
+                            className="rounded border-zinc-600 bg-zinc-900"
+                            checked={allowKbWrite}
+                            disabled={agentLoading}
+                            onChange={(e) => setAllowKbWrite(e.target.checked)}
+                          />
+                          写库
+                          <span className="sr-only">允许写入知识库</span>
+                        </label>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -3327,11 +3597,19 @@ export default function AiInteractionPage() {
                               chatBubbleAssistantClass,
                             ].join(" ")}
                           >
+                            {isAgentView && (m.agentReasoning || "").trim() ? (
+                              <AgentReasoningPanel
+                                text={m.agentReasoning}
+                                streaming={awaitingReply || (panelLoading && isLastMsg)}
+                              />
+                            ) : null}
                             {isAgentView && (trace?.length || m.agentMeta) ? (
                               <AgentTracePanel
                                 trace={trace}
                                 meta={m.agentMeta}
                                 defaultOpen={awaitingReply}
+                                forceOpen={awaitingReply || (panelLoading && isLastMsg)}
+                                streaming={awaitingReply || (panelLoading && isLastMsg)}
                               />
                             ) : null}
                             {awaitingReply ? (

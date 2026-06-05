@@ -93,6 +93,44 @@ export function resolveKbScopeFromUrlAndCapsule(sp: URLSearchParams): KbScopeCap
   };
 }
 
+export function normalizeKbScopeCapsule(c: KbScopeCapsule): KbScopeCapsule {
+  const folder_ids = uniq(c.folder_ids || []);
+  if (folder_ids.length) {
+    return { folder_ids, collection_ids: [], table_ids: [], updated_at: c.updated_at };
+  }
+  return {
+    folder_ids: [],
+    collection_ids: uniq(c.collection_ids || []),
+    table_ids: uniq(c.table_ids || []),
+    updated_at: c.updated_at,
+  };
+}
+
+/** 发往后端：选了文件夹则只传 folder_ids，避免与 collection 混用触发 ACL 403。 */
+export function buildKbScopeRequestPayload(scope: {
+  folder_ids?: string[];
+  collection_ids?: string[];
+  table_ids?: string[];
+}):
+  | { selected_folder_ids: string[] }
+  | { selected_collection_ids: string[]; selected_table_ids?: string[] }
+  | { selected_table_ids: string[] }
+  | undefined {
+  const normalized = normalizeKbScopeCapsule({
+    folder_ids: scope.folder_ids || [],
+    collection_ids: scope.collection_ids || [],
+    table_ids: scope.table_ids || [],
+  });
+  if (normalized.folder_ids.length) {
+    return { selected_folder_ids: normalized.folder_ids };
+  }
+  const out: { selected_collection_ids?: string[]; selected_table_ids?: string[] } = {};
+  if (normalized.collection_ids.length) out.selected_collection_ids = normalized.collection_ids;
+  if (normalized.table_ids.length) out.selected_table_ids = normalized.table_ids;
+  if (!out.selected_collection_ids && !out.selected_table_ids) return undefined;
+  return out as { selected_collection_ids: string[]; selected_table_ids?: string[] };
+}
+
 export function buildAgentHref(scope?: Partial<KbScopeCapsule>): string {
   const q = new URLSearchParams();
   q.set("view", "agent");

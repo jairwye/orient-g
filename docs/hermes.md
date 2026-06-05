@@ -171,7 +171,7 @@ HERMES_REQUEST_TIMEOUT_S=300
 | 1 | `hermes_lite` | 注入 pack；Hermes 编排；`orientg_kb_ask` 补检索预算默认 ≤2；**勿用 terminal 编造证据** |
 | 2 | `hermes_full` | 深度 / 写库 / 无 KB；完整工具环 |
 
-`HERMES_AGENT_KB_PREFETCH=true` + `HERMES_AGENT_KB_MULTI_QUERY=true`（默认）时网关执行检索计划（1–4 子 query）并合并 citation。`HERMES_AGENT_STANDARD_TIER0=true`（默认）时 **标准模式在 pack 覆盖率足够时走 Tier 0**，不再默认全量 Hermes。前端三档：`agent_mode=fast|standard|deep`。SSE `done` 含 `agent_tier`、`evidence_pack` 摘要。`GET /api/agent/status` 含 `hermes_agent_kb_multi_query`、`hermes_agent_standard_tier0`。
+`HERMES_AGENT_KB_PREFETCH=true` + `HERMES_AGENT_KB_MULTI_QUERY=true`（默认）时网关执行检索计划（1–4 子 query）并合并 citation。`HERMES_AGENT_STANDARD_TIER0=true`（默认）时 **仅 auto 模式**在 pack 覆盖率足够且无需多轮编排时走 Tier 0；**标准模式固定 Tier 1 Hermes lite**。前端三档：`agent_mode=fast|standard|deep`。SSE `done` 含 `agent_tier`、`evidence_pack` 摘要。`GET /api/agent/status` 含 `hermes_agent_kb_multi_query`、`hermes_agent_standard_tier0`。
 
 **MCP 硬约束：** `hermes_client` 按 `HERMES_AGENT_KB_ASK_BUDGET_LITE` 为每个 `hermes_session_key` 登记预算；超额时 `orientg_kb_ask` 返回 `denied`（网关预检索不计入该预算）。**AI 互动**对话 RAG 与 Agent 同源（`retrieve_kb_for_chat`），响应含 `evidence_pack`。
 
@@ -340,7 +340,11 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 
 **单测：** `backend/tests/test_hermes_stream.py`（`HermesSseParser`）；前端 `agentTraceUtils.test.ts`（`upsertAgentToolTrace`）。
 
-**路线第三步（可选）：** 设 `HERMES_AGENT_USE_RUNS_API=true` 且 Gateway `run_events_sse=true` 时，改用 `POST /v1/runs` + `GET /v1/runs/{id}/events`；`POST /api/agent/cancel` 会联动 `POST /v1/runs/{id}/stop`。`done` 事件含 `hermes_stream_mode: runs`。
+**深度模式（Tier 2 / `hermes_full`）默认 Runs API：** 当 Gateway `GET /v1/capabilities` 报告 `run_events_sse` + `run_submission` + `run_stop` 时，Orient-G **无需**再设 `HERMES_AGENT_USE_RUNS_API=true`，`stream_agent_chat` 会自动走 `POST /v1/runs` + 事件流（多轮 MCP 工具事件更易透传）。若 capabilities 不满足，会回退 `chat/completions` 并在执行过程提示「工具步可能不可见」。
+
+**编排观测（`done.hermes_stream_stats`）：** 流式结束时浏览器 `done` 含 `hermes_stream_mode`（`runs` | `chat_completions`）与统计：`thinking_chars`、`delta_chars`、`tool_progress_events`、`orientg_kb_ask_calls`。AI 互动页「执行过程」完成行会附带「编排观测：…」；**Tier 2 且 `orientg_kb_ask_calls=0`** 时提示「可能单轮 completion 或未开 Runs API」，便于区分 **reasoning budget 截断**（推理流有字、无工具）与 **多轮 MCP 未触发**（无工具事件）。
+
+**仍可用 env 强制：** `HERMES_AGENT_USE_RUNS_API=true` 时，标准/深度在 capabilities 满足时均走 Runs；`POST /api/agent/cancel` 会联动 `POST /v1/runs/{id}/stop`。`done` 事件含 `hermes_stream_mode: runs`。
 
 **路线第四步：** `GET /v1/capabilities` 由 backend 缓存 120s，并在 `GET /api/agent/status` 返回 `hermes_capabilities`、`hermes_runs_api_ready`。
 
@@ -348,7 +352,11 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 
 **执行过程里的 `terminal`：** 表示 Hermes 在**本机/容器沙箱**里执行了 shell 命令（如 `cat`、`grep` 某路径）。Orient-G **不会**把终端 stdout 全文写入知识库或气泡；仅透传 Gateway 的 **命令预览**（`hermes.tool.progress` 的 `label`）。若完成态只显示「terminal（完成）」而无命令，属 completed 事件未带 label——已由 `enrich_tool_progress_with_labels` / 前端 `mergeToolProgressMessage` 修复。终端输出**不会**自动入库，除非 Hermes 再调 `orientg_kb_import_artifact` 等写库工具。
 
-**Tier 1 禁 terminal（产品约定）：** Gateway 在 `orientg_route=hermes_lite` 时于 system JSON 注入 `orientg_forbidden_tools: ["terminal", "skill_view"]` 与 `orientg_tool_policy`（仅 `orientg_kb_*` 取证）。Hermes 侧仍建议在 `~/.hermes/config.yaml` 的 agent 说明中复述「KB 任务禁止 terminal」（可粘贴 [docker/hermes/orientg-kb-agent-policy.md](../docker/hermes/orientg-kb-agent-policy.md)）。标准/快速模式 pack 足够时走 **Tier 0**，根本不启 Hermes，无 terminal 风险。
+**Tier 1/2 禁 terminal（产品约定）：** Gateway 在 `orientg_route=hermes_lite|hermes_full` 时于 system JSON 注入 `orientg_forbidden_tools: ["terminal", "skill_view", "orientg-debugging"]` 与 `orientg_tool_policy`（仅 `orientg_kb_*` 取证，禁止 curl/openapi 探测）。Hermes 仍可能通过 Gateway 执行 terminal——若 Trace 出现 `curl`/`import urllib`，属 Hermes 侧未拦截；Orient-G 网关会将此类文本**分流到「推理过程」**，不写入主气泡正文。
+
+**推理 vs 正文（Orient-G 网关）：** 若模型把计划/脚本写在 `content` 而非 `reasoning_content`，`hermes_stream_sanitize` 会将其映射为 SSE `thinking`；用户可见报告（`###`、表格等）才进入 `delta`/`done.reply`。补检索在 Hermes `done` **之后**执行，可能 `replace_reply`；若本地重综合更差则保留 Hermes 原文（Trace：`保留 Hermes 原文`）。
+
+**智能体 ↔ Hermes 会话：** 请求体传 `orientg_chat_session_id`（侧栏会话 `s_…`）+ 可选 `hermes_session_id`（首轮 done 后持久化）。backend 解析为 `orientg-{username}--{chat_id}`，**同用户续聊同会话、换用户隔离、新建智能体对话=new chat id**。
 
 **v1 已知限制（多实例）：** `hermes_token_bridge` 与 `kb_ask_budget` 为进程内内存；`uvicorn --workers N` 或多副本部署时 MCP 会话 JWT / Tier 1 补检索预算不跨 worker 共享。单机单 worker 为当前推荐；多实例需后续 Redis 会话桥（见 code review I2）。
 
@@ -391,7 +399,9 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 | 1 | Hermes 连内网 LLM，完成一轮对话 | ☐ | ☐ |
 | 2 | MCP `orientg_kb_ask` 检索并带 doc_id 引用 | ☐ | ☐ |
 | 3 | MCP `orientg_kb_import_artifact` 写入私人库（写 ACL） | ☐ | ☐ |
-| 4 | `/agent` 经 backend HTTP 续聊（`hermes_session_id`） | ☐ | ☐ |
+| 4 | `/agent` 续聊：`orientg_chat_session_id` 或 `hermes_session_id` 稳定绑定 | ☐ | ☐ |
+| 推理/脚本出现在主气泡？ | 升级 backend 后应只在「推理过程」；检查 `test_hermes_stream_sanitize.py` |
+| 答案先出后又变？ | Hermes 流式结束后 Orient-G **补检索**可能 `replace_reply`；更差时保留 Hermes（见上） |
 
 ---
 
@@ -407,6 +417,13 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 | mock 通过但 Hermes 失败 | mock 不是产品链路；按 §2 / §3 同一架构验收 |
 | 开发/生产两套方案？ | 只有 §0 一条链路；§6 是单元测试加速器 |
 | 页面看不到 Hermes 调工具？ | 确认 Gateway 版本支持 `hermes.tool.progress`；跑 `test_hermes_stream.py`；标准/深度模式非 fast |
+| 深度答案出现「估算」分项？ | 多为 **chat/completions 单轮** 在预检索摘要上幻觉；深度应走 Runs + 多轮 `orientg_kb_ask`；Tier 2 system 已禁止估算分项 |
+| 标准模式却走 Tier 0？ | 旧版在 pack 够时降级本地；现已改为 **标准=固定 Tier 1**；仅 **快速** 或 **auto+覆盖够** 走 Tier 0 |
+| 深度出现 `terminal: curl`？ | Hermes 未遵守 forbidden_tools；已对 Tier 2 同步禁 terminal；升级 Gateway 并检查 `orientg-kb-agent-policy.md` |
+| 推理流 0、正文一次性出？ | 当前模型（如 qwen）可能无 `reasoning_content`；Runs 的 `message.delta` 也可能在 run 末批量推送，属上游行为 |
+| Hermes 阶段 `orientg_kb_ask_calls=0`？ | Tier 1/2 会**自动补检索**；若本地重综合不如 Hermes（如全「缺少证据」），**保留 Hermes 原文**不 `replace_reply` |
+| 深度模式 GPU 飙高 / 掉线？ | 深度链路过长：**预检索** + **Hermes Runs（多轮 MCP + 推理）** + 可能 **Orient-G 补检索 + 本地重综合**（同一张卡连续占满）。点 **停止** 会 cancel run 并跳过补检索；仍占用时请等 Gateway 收尾或重启 `hermes gateway` |
+| 推理有字但无工具、很快结束？ | 查 Gateway/LLM 日志 `reasoning-budget` 是否耗尽；或模型未调用 MCP；`thinking_chars>0` 且 `tool_progress_events=0` 多为 budget/策略问题 |
 | Windows 仍走 mock | 设 `HERMES_DEV_MOCK=false` 且 `HERMES_ENABLED=true` |
 
 本机探活远程生产 API：`.\scripts\check_agent_remote.ps1 -BaseUrl "http://<内网>/api"`。
@@ -418,6 +435,8 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 | 路径 | 用途 |
 |------|------|
 | `docs/hermes.md` | **本指南（唯一操作文档）** |
+| `docs/finance-matrix-browser-testing.md` | 财务矩阵 Chrome DevTools / CDP 浏览器实测 |
+| `docs/finance-agent-acceptance-matrix.md` | 42 条验收清单 + API Live 矩阵 |
 | `docker-compose.hermes.yml` | 生产 Hermes overlay |
 | `docker/hermes/env.hermes.example` | `.env.hermes` 模板 |
 | `docker/hermes/mcp-orientg.snippet.json` | 生产 MCP（docker exec） |

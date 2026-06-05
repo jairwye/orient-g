@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     # 多 query 预检索 + Evidence Pack（标准模式 Tier 0 前置）；env: KB_MULTI_QUERY 或 HERMES_AGENT_KB_MULTI_QUERY
     kb_multi_query: bool | None = None
     hermes_agent_kb_multi_query: bool = True
-    # 标准/auto：pack 覆盖率足够时走 Tier 0 本地综合（非默认 Hermes lite）
+    # auto：pack 足够且无需多轮编排时走 Tier 0；「标准」模式固定 Tier 1（见 agent_kb_router）
     hermes_agent_standard_tier0: bool = True
     hermes_agent_kb_ask_budget_lite: int = 2
     hermes_agent_simple_query_fast: bool = True
@@ -155,8 +155,12 @@ class Settings(BaseSettings):
     hermes_agent_stream: bool = True
     # True：在 Gateway 支持时改用 POST /v1/runs + GET .../events（可 POST .../stop 中断）
     hermes_agent_use_runs_api: bool = False
+    # False：Hermes 上下文 orientg_stream_reasoning=false，与 LLM 侧关闭 think/reasoning 一致
+    hermes_stream_reasoning: bool = False
     # 证据综合时单 chunk 最大字符（与 kb_documents.max_section_chars 对齐；超长才截断）
     kb_evidence_chunk_max_chars: int = 15000
+    # True：带 kb_scope 的 /api/agent/chat/stream 须带 X-Agent-Run-Id（防 Hermes loopback 重放）
+    agent_require_run_id: bool = False
 
     @property
     def effective_kb_multi_query(self) -> bool:

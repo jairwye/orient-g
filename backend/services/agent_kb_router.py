@@ -56,10 +56,17 @@ def resolve_agent_route(
     needs_orch = query_needs_hermes_orchestration(user_query, pack) if pack else False
 
     if not has_kb_scope:
-        return AgentRoute.hermes_full
+        if mode == "deep" and hermes_configured:
+            return AgentRoute.hermes_full
+        if mode == "fast":
+            return AgentRoute.fast
+        if hermes_configured and mode in ("standard", "auto"):
+            return AgentRoute.hermes_lite
+        return AgentRoute.fast
     if allow_kb_write and query_implies_kb_write(user_query):
         return AgentRoute.hermes_full
     if mode == "deep":
+        # 深度：始终 Hermes 全编排；预检索仅作起点，不降级 Tier 0
         return AgentRoute.hermes_full
     # 快速模式：规制强制 Tier 0；证据不足由本地综合 + pack.gaps 提示缩 scope，不升 Hermes
     if mode == "fast":
@@ -70,8 +77,14 @@ def resolve_agent_route(
     if not simple_fast and getattr(settings, "hermes_agent_kb_fast_path", False):
         simple_fast = True
 
-    if mode in ("standard", "auto"):
-        if mode == "auto" and simple_fast and _is_simple_kb_query(user_query) and sufficient:
+    if mode == "standard":
+        # 用户显式选「标准」= Tier 1 Hermes lite，不因 pack 覆盖率够而降级本地
+        if hermes_configured and has_kb_scope:
+            return AgentRoute.hermes_lite
+        return AgentRoute.fast
+
+    if mode == "auto":
+        if simple_fast and _is_simple_kb_query(user_query) and sufficient:
             return AgentRoute.fast
         if tier0_standard and sufficient and not needs_orch:
             return AgentRoute.fast
@@ -89,6 +102,10 @@ def kb_ask_budget_for_route(route: AgentRoute) -> int | None:
 
     if route == AgentRoute.hermes_lite:
         return int(getattr(settings, "hermes_agent_kb_ask_budget_lite", 2) or 2)
+    if route == AgentRoute.hermes_full:
+        # Tier 2：不限制 orientg_kb_ask 次数（由 Hermes 多轮编排）
+        cap = int(getattr(settings, "hermes_agent_kb_ask_budget_full", 0) or 0)
+        return cap if cap > 0 else None
     return None
 
 

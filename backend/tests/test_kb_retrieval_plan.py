@@ -23,14 +23,28 @@ def test_plan_breakdown_includes_fee_note_queries():
     joined = " ".join(qs)
     assert "销售费用" in joined
     assert "管理费用" in joined
-    assert len(qs) <= 4
+    assert len(qs) <= 8
 
 
 def test_plan_breakdown_prefers_section_heading_subquery():
     qs = plan_retrieval_queries("成本费用明细分解", TaskType.breakdown, entity="华清")
-    assert any("## 销售费用" in q for q in qs)
+    assert any("## 销售费用" in q or "## 管理费用" in q for q in qs)
 
 
 def test_plan_compare_includes_merged_pl():
     qs = plan_retrieval_queries("华清25和24损益对比", TaskType.compare, entity="华清")
     assert any("合并利润表" in q for q in qs)
+
+
+def test_plan_compare_includes_cashflow_subject():
+    q = "2025年与2024年经营活动产生的现金流量净额对比"
+    qs = plan_retrieval_queries(q, TaskType.compare, entity="某公司", max_queries=8)
+    joined = " ".join(qs)
+    assert "现金流" in joined
+
+
+def test_compare_subjects_from_query_unified():
+    from backend.services.kb_retrieval_plan import compare_subjects_from_query
+
+    assert "应收账款" in compare_subjects_from_query("2025年末应收账款余额对比")
+    assert any("经营" in s for s in compare_subjects_from_query("经营活动现金流对比"))

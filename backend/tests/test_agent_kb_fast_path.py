@@ -30,7 +30,7 @@ def test_should_use_kb_fast_path_when_citations(monkeypatch):
 
 
 def test_comparison_addon_for_huaqing_query():
-    addon = comparison_answer_addon("出具华清25、24两年损益的对比分析表")
+    addon = comparison_answer_addon("出具华清25、24两年损益的对比分析表", tier="local")
     assert addon and "Markdown" in addon
 
 

@@ -38,6 +38,9 @@ def _facet_label_from_text(txt: str) -> str:
     m = re.search(r"^##\s*([^\n]+)", t)
     if m:
         return m.group(1).strip()[:80]
+    m2 = re.search(r"##\s*\d+\s*[、.\s]*销售费用|##\s*销售费用", t)
+    if m2:
+        return m2.group(0).replace("#", "").strip()[:80]
     for kw in ("合并利润表", "母公司利润表", "销售费用", "管理费用", "营业收入"):
         if kw in t:
             return kw
@@ -60,6 +63,8 @@ def build_evidence_pack(
     chunk_texts: dict[str, str] | None = None,
     excerpt_cap: int = 2000,
     max_facets: int = 8,
+    doc_folder_labels: dict[str, str] | None = None,
+    multi_company_scope: bool = False,
 ) -> dict[str, Any]:
     """chunk_texts: 可选预加载 \"doc_id:chunk_id\" -> text。"""
     from backend.services.agent_kb_prefetch import _top_citations_for_llm
@@ -67,14 +72,18 @@ def build_evidence_pack(
 
     tt = task_type or TaskType.general.value
     texts = dict(chunk_texts or {})
+    labels = doc_folder_labels or {}
     max_per_doc = 2 if tt == TaskType.breakdown.value else 1
+    facet_limit = max(max_facets, 12) if multi_company_scope else max_facets
     top = _top_citations_for_llm(
         list(citations or []),
         user_query,
-        limit=max_facets,
+        limit=facet_limit,
         tenant_id=tenant_id,
         fixtures=fixtures,
         max_chunks_per_doc=max_per_doc,
+        doc_folder_labels=labels,
+        multi_company_scope=multi_company_scope,
     )
     facets: list[dict[str, Any]] = []
     all_hits: set[str] = set()
@@ -111,9 +120,14 @@ def build_evidence_pack(
         kws = _keywords_in_text(txt)
         all_hits.update(kws)
         excerpt = (txt or "")[:excerpt_cap]
+        label = _facet_label_from_text(txt)
+        src = labels.get(did, "").strip()
+        if src:
+            label = f"{src} · {label}"[:80]
+            excerpt = f"[来源: {src}]\n{excerpt}"
         facets.append(
             {
-                "label": _facet_label_from_text(txt),
+                "label": label,
                 "doc_id": did,
                 "chunk_id": cid,
                 "excerpt": excerpt,
@@ -121,7 +135,8 @@ def build_evidence_pack(
             }
         )
 
-    gaps = _compute_gaps(tt, user_query, all_hits, len(citations or []))
+    evidence_text = "\n".join(str(f.get("excerpt") or "") for f in facets)
+    gaps = _compute_gaps(tt, user_query, all_hits, len(citations or []), evidence_text=evidence_text)
     score = _coverage_score(tt, len(citations or []), len(facets), all_hits, gaps)
 
     return {
@@ -137,7 +152,34 @@ def build_evidence_pack(
     }
 
 
-def _compute_gaps(task_type: str, user_query: str, hits: set[str], cite_count: int) -> list[str]:
+_REASON_GAP_KWS = (
+    "主要系",
+    "主要是由于",
+    "是由于",
+    "变动原因",
+    "经营情况讨论",
+    "管理层讨论",
+    "项目重大变动原因",
+    "职工薪酬减少",
+    "人员减少",
+)
+
+
+def _has_change_reason_evidence(hits: set[str], evidence_text: str) -> bool:
+    blob = (evidence_text or "").replace(" ", "")
+    if any(k.replace(" ", "") in blob for k in _REASON_GAP_KWS):
+        return True
+    return any(k in hits for k in _REASON_GAP_KWS)
+
+
+def _compute_gaps(
+    task_type: str,
+    user_query: str,
+    hits: set[str],
+    cite_count: int,
+    *,
+    evidence_text: str = "",
+) -> list[str]:
     gaps: list[str] = []
     qj = (user_query or "").replace(" ", "")
     if cite_count == 0:
@@ -151,7 +193,14 @@ def _compute_gaps(task_type: str, user_query: str, hits: set[str], cite_count: i
                 gaps.append("未命中营业成本相关片段")
     if task_type == TaskType.compare.value:
         if "营业收入" not in hits and not any(k in hits for k in ("利润表", "合并利润表")):
-            gaps.append("未命中合并利润表或营业收入字段")
+            blob = (evidence_text or "").replace(" ", "")
+            if "营业收入" not in blob and "合并利润表" not in blob:
+                gaps.append("未命中合并利润表或营业收入字段")
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    if query_wants_change_reasons(user_query):
+        if not _has_change_reason_evidence(hits, evidence_text):
+            gaps.append("未命中费用变动的文字性原因说明（若仅有金额表，答复中须说明）")
     return gaps
 
 
@@ -221,6 +270,11 @@ def query_needs_hermes_orchestration(user_query: str, pack: dict[str, Any] | Non
     tt = str(pack.get("task_type") or "")
     gaps = pack.get("gaps") or []
     if gaps and tt in (TaskType.compare.value, TaskType.breakdown.value):
+        return True
+    if tt in (TaskType.compare.value, TaskType.breakdown.value) and re.search(
+        r"明细|分项|构成|附注|对比|比较|两年|报告",
+        q,
+    ):
         return True
     if float(pack.get("coverage_score") or 0) < 0.4:
         return True

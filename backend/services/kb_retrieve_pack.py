@@ -17,7 +17,8 @@ from backend.services.kb_retrieval_plan import (
 )
 from backend.services.kb_scope_resolve import resolve_kb_scope_for_ask
 from backend.services.knowledge_acl import load_fixtures
-from backend.services.knowledge_pipeline import ask_knowledge
+from backend.services.kb_scope_context import build_scope_folder_context
+from backend.services.knowledge_pipeline import ask_knowledge, entity_scope_relaxed_from_kb
 
 
 def retrieve_kb_evidence_pack(
@@ -30,6 +31,7 @@ def retrieve_kb_evidence_pack(
     limit_to_attached: bool | None = None,
     multi_query: bool | None = None,
     resolved_scope: dict[str, Any] | None = None,
+    prefetch_tier: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     返回 (prefetch 兼容结果, tool_calls)。
@@ -51,6 +53,16 @@ def retrieve_kb_evidence_pack(
     tables = list(resolved_scope.get("table_ids") or [])
     attached = list(resolved_scope.get("attached_doc_ids") or [])
     lim = resolved_scope.get("limit_to_attached") if limit_to_attached is None else limit_to_attached
+    relax_entity = entity_scope_relaxed_from_kb(
+        limit_to_attached=bool(lim),
+        folder_ids=list(resolved_scope.get("folder_ids") or []),
+    )
+    scope_ctx = build_scope_folder_context(
+        tenant_id,
+        selected_folder_ids=list(resolved_scope.get("folder_ids") or []),
+    )
+    doc_labels = scope_ctx.get("doc_folder_labels") if isinstance(scope_ctx.get("doc_folder_labels"), dict) else {}
+    multi_co = bool(scope_ctx.get("multi_company_scope"))
 
     use_multi = bool(multi_query) if multi_query is not None else bool(
         settings.effective_kb_multi_query
@@ -58,7 +70,7 @@ def retrieve_kb_evidence_pack(
     task_type = infer_task_type(q)
     entity = detect_entity(q)
     queries = (
-        plan_retrieval_queries(q, task_type, entity=entity)
+        plan_retrieval_queries(q, task_type, entity=entity, prefetch_tier=prefetch_tier)
         if use_multi
         else [q]
     )
@@ -77,6 +89,7 @@ def retrieve_kb_evidence_pack(
             fixtures=fixtures,
             attached_doc_ids=attached or None,
             limit_to_attached=bool(lim),
+            entity_scope_relaxed=relax_entity,
         )
         if res.get("denied"):
             reason = str(res.get("deny_reason") or res.get("reason") or "denied")
@@ -141,7 +154,18 @@ def retrieve_kb_evidence_pack(
         reply_parts=reply_parts,
         tenant_id=tenant_id,
         fixtures=fixtures,
+        doc_folder_labels=doc_labels,
+        multi_company_scope=multi_co,
     )
+    if relax_entity:
+        pack = {**pack, "entity_scope_relaxed": True}
+    if scope_ctx.get("doc_folder_labels"):
+        pack = {
+            **pack,
+            "doc_folder_labels": scope_ctx.get("doc_folder_labels"),
+            "scope_folders": scope_ctx.get("scope_folders") or [],
+            "multi_company_scope": bool(scope_ctx.get("multi_company_scope")),
+        }
 
     if deny_reasons:
         extra_gaps = list(pack.get("gaps") or [])

@@ -101,6 +101,84 @@ def _doc_writable(scope: dict[str, Any], doc_id: str) -> bool:
     return did in set(scope.get("writable_doc_ids") or [])
 
 
+def _folder_collection_ids(tenant_id: str, folder_id: str) -> list[str]:
+    fid = (folder_id or "").strip()
+    if not fid:
+        return []
+    from backend.services.kb_folders import list_folders
+
+    for f in list_folders(tenant_id):
+        if str(f.get("folder_id") or "").strip() == fid:
+            return [str(x).strip() for x in (f.get("collection_ids") or []) if str(x).strip()]
+    return []
+
+
+def _folder_in_session_scope(tenant_id: str, folder_id: str, root_folder_ids: list[str]) -> bool:
+    fid = (folder_id or "").strip()
+    if not fid or not root_folder_ids:
+        return False
+    from backend.services.kb_scope_context import _subtree_folder_ids
+
+    allowed = set(_subtree_folder_ids(tenant_id, root_folder_ids))
+    return fid in allowed
+
+
+def _folder_writable(scope: dict[str, Any], tenant_id: str, folder_id: str, *, username: str | None) -> bool:
+    fid = (folder_id or "").strip()
+    if not fid:
+        return False
+    writable_cols = set(scope.get("writable_collection_ids") or [])
+    fcols = set(_folder_collection_ids(tenant_id, fid))
+    if fcols and fcols.intersection(writable_cols):
+        return True
+    from backend.services.kb_folders import list_folders
+
+    for f in list_folders(tenant_id):
+        if str(f.get("folder_id") or "").strip() != fid:
+            continue
+        owner = str(f.get("owner_username") or "").strip()
+        if username and owner and owner == username and writable_cols:
+            return True
+        break
+    return False
+
+
+def _check_mcp_write_gate(
+    *,
+    tool: str,
+    tenant_id: str,
+    username: str | None,
+    scope: dict[str, Any],
+    hermes_session_key: str | None,
+    folder_id: str | None,
+    require_folder: bool = False,
+) -> dict[str, Any] | None:
+    """
+    Hermes 会话写库门禁：须 allow_kb_write + folder 在用户 kb_scope 子树且可写。
+    无 hermes_session_key 时（CLI/单测直调 token）仍校验 folder 可写性（若提供 folder_id）。
+    """
+    fid = (folder_id or "").strip()
+    if hermes_session_key:
+        from backend.services.hermes_session_context import resolve as resolve_ctx
+
+        ctx = resolve_ctx(hermes_session_key)
+        if not ctx:
+            return _deny(tool, "session_context_missing", tenant_id=tenant_id, username=username)
+        if not ctx.allow_kb_write:
+            return _deny(tool, "kb_write_not_allowed", tenant_id=tenant_id, username=username)
+        roots = list(ctx.kb_scope.get("selected_folder_ids") or [])
+        if require_folder or fid:
+            if not fid:
+                return _deny(tool, "folder_id_required", tenant_id=tenant_id, username=username)
+            if roots and not _folder_in_session_scope(tenant_id, fid, roots):
+                return _deny(tool, "folder_not_in_kb_scope", tenant_id=tenant_id, username=username)
+        elif roots:
+            return _deny(tool, "folder_id_required", tenant_id=tenant_id, username=username)
+    if fid and not _folder_writable(scope, tenant_id, fid, username=username):
+        return _deny(tool, "folder_not_writable", tenant_id=tenant_id, username=username)
+    return None
+
+
 def orientg_kb_ask(
     user_token: str,
     query: str,
@@ -226,6 +304,19 @@ def orientg_kb_upload(
     if private_cid not in writable_cols and not writable_cols:
         return _deny("orientg_kb_upload", "no_writable_collection", tenant_id=tenant_id, username=username)
 
+    fid = (folder_id or "").strip()
+    gate = _check_mcp_write_gate(
+        tool="orientg_kb_upload",
+        tenant_id=tenant_id,
+        username=username,
+        scope=scope,
+        hermes_session_key=hermes_session_key,
+        folder_id=fid or None,
+        require_folder=bool(hermes_session_key),
+    )
+    if gate:
+        return gate
+
     try:
         raw = base64.b64decode(content_base64 or "", validate=True)
     except Exception:
@@ -244,7 +335,6 @@ def orientg_kb_upload(
         kb_docs.mark_document_failed(tenant_id, did, "队列已满")
         return _deny("orientg_kb_upload", "queue_full", tenant_id=tenant_id, username=username)
 
-    fid = (folder_id or "").strip()
     if fid:
         bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=did)
 
@@ -274,6 +364,19 @@ def orientg_kb_assign(
     if not _doc_writable(scope, did):
         return _deny("orientg_kb_assign", "doc_not_writable", tenant_id=tenant_id, username=username)
 
+    fid = (folder_id or "").strip()
+    gate = _check_mcp_write_gate(
+        tool="orientg_kb_assign",
+        tenant_id=tenant_id,
+        username=username,
+        scope=scope,
+        hermes_session_key=hermes_session_key,
+        folder_id=fid or None,
+        require_folder=False,
+    )
+    if gate:
+        return gate
+
     cids = [str(x).strip() for x in (collection_ids or []) if str(x).strip()]
     writable_cols = set(scope.get("writable_collection_ids") or [])
     if cids and not set(cids).issubset(writable_cols):
@@ -281,7 +384,6 @@ def orientg_kb_assign(
 
     if cids:
         set_resource_assignments(tenant_id, resource_type="doc", resource_id=did, collection_ids=cids)
-    fid = (folder_id or "").strip()
     if fid:
         bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=did)
 
@@ -303,7 +405,7 @@ def orientg_kb_import_artifact(
     folder_id: str | None = None,
     hermes_session_key: str | None = None,
 ) -> dict[str, Any]:
-    """Agent 产物落库（md/xlsx/csv 等），语义同 upload。"""
+    """Agent 产物落库（md/xlsx/csv 等），语义同 upload；Hermes 路径须 folder_id 且在 kb_scope 内。"""
     name = (filename or "artifact.md").strip()
     if title:
         stem = name.rsplit(".", 1)[0] if "." in name else name
@@ -311,6 +413,16 @@ def orientg_kb_import_artifact(
         safe_title = "".join(c for c in title if c not in '\\/:*?"<>|')[:80]
         if safe_title:
             name = f"{safe_title}.{ext}" if ext else safe_title
+    if hermes_session_key and not (folder_id or "").strip():
+        fixtures = load_fixtures()
+        tenant_id = fixtures.get("tenant_id") or "tenant1"
+        username = _username_from_token(resolve_user_token(user_token, hermes_session_key))
+        return _deny(
+            "orientg_kb_import_artifact",
+            "folder_id_required",
+            tenant_id=tenant_id,
+            username=username,
+        )
     return orientg_kb_upload(
         user_token,
         filename=name,

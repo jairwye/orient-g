@@ -25,6 +25,16 @@ export type EvidencePackSummary = {
   retrieval_queries?: string[];
 };
 
+export type HermesStreamStats = {
+  thinking_chars?: number;
+  delta_chars?: number;
+  tool_progress_events?: number;
+  tool_call_events?: number;
+  orientg_kb_ask_calls?: number;
+  /** Orient-G 网关在 Hermes 完成后执行的补检索次数 */
+  orientg_kb_supplemental_calls?: number;
+};
+
 export type AgentMeta = {
   agent_route?: string;
   /** 0=Tier0 本地综合 | 1=hermes_lite | 2=hermes_full */
@@ -37,6 +47,9 @@ export type AgentMeta = {
   llm_model?: string;
   /** Hermes 流式通道：chat_completions | runs */
   hermes_stream_mode?: string;
+  hermes_stream_stats?: HermesStreamStats;
+  kb_supplemental?: boolean;
+  supplemental_adopted?: boolean;
 };
 
 export type ChatMessage = {
@@ -46,6 +59,8 @@ export type ChatMessage = {
   streamStatus?: string[];
   /** Agent 执行过程（流式追加，完成后保留于历史） */
   agentTrace?: AgentTraceStep[];
+  /** Hermes / 模型 reasoning 流（同步展示在气泡内） */
+  agentReasoning?: string;
   agentMeta?: AgentMeta;
   /** 对话页 RAG：检索摘要（与 Agent pack 同结构） */
   evidence_pack?: EvidencePackSummary;

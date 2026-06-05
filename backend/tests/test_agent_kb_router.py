@@ -34,11 +34,11 @@ PREFETCH_GAPS = {
     "query,mode,allow_write,has_kb,expected",
     [
         ("华清25年营收是多少", "fast", False, True, AgentRoute.fast),
-        ("做华清25和24年损益对比表", "standard", False, True, AgentRoute.fast),
-        ("做华清25和24年损益对比表", "auto", False, True, AgentRoute.fast),
+        ("做华清25和24年损益对比表", "standard", False, True, AgentRoute.hermes_lite),
+        ("做华清25和24年损益对比表", "auto", False, True, AgentRoute.hermes_lite),
         ("上传文档到公共库", "standard", True, True, AgentRoute.hermes_full),
         ("核实并再查一遍营收", "standard", False, True, AgentRoute.hermes_lite),
-        ("你好", "standard", False, False, AgentRoute.hermes_full),
+        ("你好", "standard", False, False, AgentRoute.hermes_lite),
     ],
 )
 def test_resolve_route_query_and_mode(query, mode, allow_write, has_kb, expected):
@@ -67,6 +67,19 @@ def test_fast_mode_with_gaps_stays_tier0():
         hermes_configured=True,
     )
     assert got == AgentRoute.fast
+
+
+def test_auto_breakdown_detail_query_routes_hermes_lite():
+    """auto + 明细/对比类问句：即使 pack 覆盖率够也升 Hermes lite。"""
+    got = resolve_agent_route(
+        user_query="出一份华清25、24两年销售费用明细的对比分析报告",
+        agent_mode="auto",
+        allow_kb_write=False,
+        has_kb_scope=True,
+        prefetch_result=PREFETCH_OK,
+        hermes_configured=True,
+    )
+    assert got == AgentRoute.hermes_lite
 
 
 def test_standard_with_gaps_routes_hermes_lite():

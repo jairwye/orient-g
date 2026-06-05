@@ -2,8 +2,11 @@ import {
   appendAgentTraceStep,
   agentTierLabel,
   buildAgentMetaFromDone,
+  chatMessagesSnapshotEqual,
   doneTraceMessage,
   formatEvidencePackStatusLine,
+  formatHermesStreamStatsLine,
+  hydrateChatMessage,
   mergeAssistantOnAgentDone,
   parseEvidencePackSummary,
   routeLabel,
@@ -23,13 +26,44 @@ describe("appendAgentTraceStep", () => {
     const a = appendAgentTraceStep([], { kind: "status", message: "心跳" });
     const b = appendAgentTraceStep(a, { kind: "status", message: "心跳" });
     expect(b).toHaveLength(1);
+    expect(b).toBe(a);
   });
 
-  it("merges thinking chunks", () => {
-    const a = appendAgentTraceStep([], { kind: "thinking", message: "分析" });
-    const b = appendAgentTraceStep(a, { kind: "thinking", message: "成本" });
+  it("merges cumulative thinking chunks", () => {
+    const a = appendAgentTraceStep([], { kind: "thinking", message: "2025年销售" });
+    const b = appendAgentTraceStep(a, { kind: "thinking", message: "2025年销售费用" });
     expect(b).toHaveLength(1);
-    expect(b[0].message).toBe("分析成本");
+    expect(b[0].message).toBe("2025年销售费用");
+  });
+
+  it("merges hermes_draft disjoint chunks by structure not concat", () => {
+    const a = appendAgentTraceStep([], {
+      kind: "thinking",
+      message: "乱码###清52销售1",
+      step: "hermes_draft",
+    });
+    const b = appendAgentTraceStep(a, {
+      kind: "thinking",
+      message: "### 华清对比\n| 项目 | 2025 |\n| 销售费用 | 13,722,360.23 |",
+      step: "hermes_draft",
+    });
+    expect(b).toHaveLength(1);
+    expect(b[0].message).toContain("### 华清对比");
+    expect(b[0].message).not.toContain("乱码###");
+  });
+
+  it("does not merge thinking chunks with different step", () => {
+    const a = appendAgentTraceStep([], {
+      kind: "thinking",
+      message: "Hermes 过程稿 A",
+      step: "hermes_draft",
+    });
+    const b = appendAgentTraceStep(a, {
+      kind: "thinking",
+      message: "其他推理",
+      step: "hermes_reasoning",
+    });
+    expect(b).toHaveLength(2);
   });
 });
 
@@ -68,6 +102,98 @@ describe("buildAgentMetaFromDone / routeLabel", () => {
   it("labels hermes lite", () => {
     const meta = buildAgentMetaFromDone({ agent_route: "hermes_lite", hermes_used: true });
     expect(routeLabel(meta)).toContain("Hermes lite");
+  });
+
+  it("tier2 with supplemental shows gateway kb line not warning", () => {
+    const meta = buildAgentMetaFromDone({
+      agent_route: "hermes_full",
+      agent_tier: 2,
+      kb_supplemental: true,
+      supplemental_adopted: true,
+      hermes_stream_mode: "runs",
+      hermes_stream_stats: {
+        thinking_chars: 500,
+        delta_chars: 994,
+        tool_progress_events: 0,
+        orientg_kb_ask_calls: 0,
+        orientg_kb_supplemental_calls: 4,
+      },
+    });
+    const obs = formatHermesStreamStatsLine(meta.hermes_stream_stats, meta);
+    expect(obs).toContain("Orient-G 网关补检索 ×4");
+    expect(obs).not.toContain("⚠");
+    expect(obs).toContain("Hermes 工具进度 0");
+  });
+
+  it("tier2 done warns when Hermes kb_ask not observed and no supplemental", () => {
+    const meta = buildAgentMetaFromDone({
+      agent_route: "hermes_full",
+      agent_tier: 2,
+      hermes_stream_mode: "chat_completions",
+      hermes_stream_stats: {
+        thinking_chars: 0,
+        delta_chars: 1200,
+        tool_progress_events: 0,
+        orientg_kb_ask_calls: 0,
+      },
+    });
+    const line = doneTraceMessage(meta);
+    expect(line).toContain("Tier 2");
+    expect(formatHermesStreamStatsLine(meta.hermes_stream_stats, meta)).toContain(
+      "Hermes 单轮 completion",
+    );
+  });
+
+  it("tier2 done shows Hermes kb_ask count when present", () => {
+    const meta = buildAgentMetaFromDone({
+      agent_route: "hermes_full",
+      agent_tier: 2,
+      hermes_stream_mode: "runs",
+      hermes_stream_stats: {
+        thinking_chars: 400,
+        delta_chars: 800,
+        tool_progress_events: 3,
+        orientg_kb_ask_calls: 2,
+      },
+    });
+    const line = doneTraceMessage(meta);
+    expect(line).toContain("orientg_kb_ask ×2");
+    expect(line).toContain("推理流 400");
+  });
+
+  it("tier1 supplemental kept hermes shows distinct done line", () => {
+    const meta = buildAgentMetaFromDone({
+      agent_route: "hermes_lite",
+      agent_tier: 1,
+      kb_supplemental: true,
+      supplemental_adopted: false,
+    });
+    const line = doneTraceMessage(meta);
+    expect(line).toContain("保留 Hermes 原文");
+    expect(line).not.toContain("自动补检索修订");
+  });
+});
+
+describe("hydrateChatMessage", () => {
+  it("restores agent trace and reasoning from storage", () => {
+    const m = hydrateChatMessage({
+      role: "assistant",
+      content: "答案",
+      agentTrace: [{ at: 1, kind: "status", message: "预检索" }],
+      agentReasoning: "思考片段",
+      agentMeta: { agent_route: "hermes_full", agent_tier: 2, hermes_used: true },
+    });
+    expect(m?.agentTrace).toHaveLength(1);
+    expect(m?.agentReasoning).toBe("思考片段");
+    expect(m?.agentMeta?.agent_tier).toBe(2);
+  });
+});
+
+describe("chatMessagesSnapshotEqual", () => {
+  it("detects agentTrace changes", () => {
+    const a: ChatMessage[] = [{ role: "assistant", content: "x", agentTrace: [{ at: 1, kind: "status", message: "a" }] }];
+    const b: ChatMessage[] = [{ role: "assistant", content: "x" }];
+    expect(chatMessagesSnapshotEqual(a, b)).toBe(false);
   });
 });
 

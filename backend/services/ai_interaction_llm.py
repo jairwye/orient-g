@@ -208,6 +208,7 @@ def generate_answer_with_evidence(
     citations: list[dict[str, Any]],
     fixtures: dict[str, Any],
     skill_addon: str | None = None,
+    extra_evidence_blocks: list[str] | None = None,
 ) -> str:
     """
     用“证据片段 + 强约束提示词”生成答案。
@@ -220,11 +221,22 @@ def generate_answer_with_evidence(
         return "问题为空。"
 
     compare_focus = _query_wants_financial_compare(q)
-    cite_limit = 4 if compare_focus else 6
+    q_join = q.replace(" ", "")
+    fee_focus = any(x in q_join for x in ("销售费用", "管理费用", "费用明细", "明细对比"))
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    reason_focus = query_wants_change_reasons(q)
+    cite_limit = 8 if (compare_focus or fee_focus) else 6
+    if reason_focus:
+        cite_limit = min(10, cite_limit + 2)
 
     evidence_blocks: list[str] = []
+    if extra_evidence_blocks:
+        evidence_blocks.extend([b for b in extra_evidence_blocks if (b or "").strip()])
     for c in citations[:cite_limit]:
         et = str(c.get("evidence_type") or "")
+        if not et and c.get("doc_id"):
+            et = "doc_chunk"
         if et == "doc_chunk":
             doc_id = str(c.get("doc_id") or "")
             chunk_id = c.get("chunk_id")
@@ -267,6 +279,12 @@ def generate_answer_with_evidence(
         "回答结构：先一句话结论，再表格或要点列表，最后单独一段「说明」与「引用证据」（doc_id）。",
         "使用 Markdown 表格时，表格前须空一行，表头下须有 |---|---| 分隔行；不要把长说明与表格写在同一行。",
     ]
+    if reason_focus:
+        parts.append(
+            "若用户要求分析报告/变动原因：在「说明」中增加「变动原因」小节。"
+            "仅当证据原文含对费用变动的文字解释（如「主要系」「是由于」）时才归纳原因；"
+            "否则写「证据未提供变动原因说明，仅列示金额与分项对比」。禁止编造原因或引用过程稿中未出现在证据里的表述。"
+        )
     sa = (skill_addon or "").strip()
     if sa:
         parts.append(
@@ -284,7 +302,7 @@ def generate_answer_with_evidence(
             messages=ev_msgs,
             tools=None,
             model=use_model,
-            timeout_s=240.0,
+            timeout_s=300.0,
             kind="ai_interaction.evidence_chat",
         )
     else:
@@ -295,7 +313,7 @@ def generate_answer_with_evidence(
         }
         base = _ollama_base()
         url = f"{base}/api/chat"
-        out = post_json_with_guard(url=url, payload=payload, timeout_s=240.0, kind="ai_interaction.evidence_chat")
+        out = post_json_with_guard(url=url, payload=payload, timeout_s=300.0, kind="ai_interaction.evidence_chat")
     msg = out.get("message") or {}
     return (msg.get("content") or "").strip() or "未能生成回答。"
 

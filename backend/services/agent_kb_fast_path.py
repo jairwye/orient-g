@@ -68,19 +68,94 @@ def prefetch_system_lead(*, via_hermes: bool, evidence_pack: dict | None = None)
     )
 
 
-def comparison_answer_addon(user_query: str) -> str:
+def comparison_answer_addon(user_query: str, *, tier: str = "local") -> str:
+    """对比/明细类作答规制：local=快速(Tier0)，lite=标准(Tier1)，full=深度(Tier2)。"""
     q = (user_query or "").strip()
     if not q:
         return ""
-    if re.search(r"对比|比较|两年|损益|营收|利润", q):
-        return (
-            "若用户要求对比分析表：\n"
-            "1) 默认使用「合并利润表」口径；若证据仅为母公司表，须在表前用一句话标明口径。\n"
-            "2) 表格前空一行，使用标准 Markdown 表格（表头行 + |---|---| 分隔行），列：项目、2025年、2024年、差额或同比。\n"
-            "3) 表后单独一段「说明」与「引用证据」（doc_id 列表），不要把说明插在表格行中间。\n"
-            "4) 数值必须来自证据；缺项写「缺少证据」。"
+    if not re.search(r"对比|比较|两年|损益|营收|利润|明细|费用", q):
+        return ""
+    t = (tier or "local").strip().lower()
+    if t == "full":
+        return _comparison_addon_full(q)
+    if t == "lite":
+        return _comparison_addon_lite(q)
+    return _comparison_addon_local(q)
+
+
+def fast_path_answer_addon(user_query: str) -> str:
+    """Tier 0 快速：严证据 + 短表结构（原标准约束下沉）。"""
+    from backend.services.agent_kb_supplemental import evidence_constraint_addon
+
+    parts = [evidence_constraint_addon(tier="local"), comparison_answer_addon(user_query, tier="local")]
+    return "\n\n".join(x for x in parts if x)
+
+
+def _comparison_addon_local(q: str) -> str:
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    wants_reason = query_wants_change_reasons(q)
+    base = (
+        "【快速·对比表】\n"
+        "1) 先写一行「结论：…」（缺明细时明确写缺项，禁止编造分项金额）。\n"
+        "2) 默认合并利润表口径；仅母公司证据时须标明「母公司利润表口径」。\n"
+        "3) 表格前空一行，使用标准 Markdown 表（表头 + |---|---| 分隔行），"
+        "列：项目、2025年、2024年、差额或同比；表后空一行再写「说明」编号列表。\n"
+        "4) 数值必须来自证据原文：优先保留**元**单位与千分位；禁止四舍五入改数或「约 xxx 万」。"
+        "分项无片段则写「缺少证据」。"
+    )
+    if wants_reason:
+        base += (
+            "\n5) 「说明」须含「变动原因」：仅可引用证据原文（如「主要系…」）；"
+            "无原因文字时写「证据未提供变动原因说明」。"
+            "禁止无 doc_id 的业务推断。"
         )
-    return ""
+    base += (
+        "\n6) 若证据含营业收入与销售费用合计，须增加「销售费用率」一行。"
+        "\n7) 禁止复述 Evidence Pack；默认合并口径直接输出。"
+    )
+    return base
+
+
+def _comparison_addon_lite(q: str) -> str:
+    """标准 Tier 1：原深度合规 5 段结构 + 立即成稿约束。"""
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    wants_reason = query_wants_change_reasons(q)
+    base = (
+        "【标准·合规对比报告】\n"
+        "1) 终稿以 `#` 标题或「结论：」开头；禁止复述 Evidence Pack 或要求用户确认口径。\n"
+        "2) Evidence Pack 无缺项且 facets 已含分项金额时须**立即成稿**（禁止先写缺口说明）。\n"
+        "3) 建议结构：①结论；②核心指标表（销售费用、营业收入、销售费用率）；"
+        "③附注分项明细表；④变动原因（引用年报原文）；⑤口径说明。\n"
+        "4) 数值须来自 citations/MCP 原文（元+千分位）；禁止「估算」「约 xxx 万」「推断」。"
+        "分项缺失写「缺少证据」，不得编造。"
+    )
+    if wants_reason:
+        base += (
+            "\n5) 变动原因仅可归纳证据原文（如「主要系人员减少…」），句末可标注 doc_id；"
+            "无原因文字时写「证据未提供变动原因说明，仅列示金额与分项对比」。"
+            "禁止未引用表述。"
+        )
+    base += "\n6) 禁止 orientg_kb_import_artifact；正文直接输出 Markdown 报告。"
+    return base
+
+
+def _comparison_addon_full(q: str) -> str:
+    """深度 Tier 2：分析师级 A~E 结构 + 有引用可解读。"""
+    return (
+        "【深度·分析师报告】\n"
+        "1) 你是唯一作者：终稿须一次性写全（禁止依赖 Orient-G 事后追加）。\n"
+        "2) 成稿前若缺经营叙事/产品背景，须 1–2 次 orientg_kb_ask 补检索"
+        "（如「经营情况讨论 主营业务」「市场及推广费用 变动原因」），再写终稿。\n"
+        "3) 建议完整结构：①结论；②核心指标表；③分项明细表；④分项驱动分析"
+        "（逐项解释变动，可联系产品/推广/人员策略，**每段须标注 doc_id**）；"
+        "⑤变动原因（年报原文）；⑥盈利能力/费比影响；⑦风险提示（仅基于证据）；"
+        "⑧总结与后续关注；⑨口径说明。\n"
+        "4) 金额须来自证据；**允许**在 citations 支撑下写解读性段落（须标注 doc_id）；"
+        "无证据的业务故事不得写。\n"
+        "5) 禁止 terminal/自编脚本；禁止 orientg_kb_import_artifact。"
+    )
 
 
 def chunk_text_for_stream(text: str, *, size: int = 96) -> list[str]:
@@ -107,23 +182,18 @@ def stream_kb_fast_path_events(
     run_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     from backend.services.agent_kb_prefetch import synthesize_kb_reply
-    from backend.services.agent_kb_router import AgentRoute, hermes_prefetch_status_message, route_to_agent_tier
+    from backend.services.agent_kb_router import AgentRoute, route_to_agent_tier
     from backend.services.agent_run_registry import is_cancelled
     from backend.services.evidence_pack import pack_summary_for_sse
 
     pack = (prefetch_result or {}).get("evidence_pack")
     yield {
         "type": "status",
-        "message": hermes_prefetch_status_message(AgentRoute.fast),
+        "message": fast_path_status_message(),
         "step": "prefetch_done",
         "agent_route": AgentRoute.fast.value,
         "agent_tier": route_to_agent_tier(AgentRoute.fast),
         "evidence_pack": pack_summary_for_sse(pack if isinstance(pack, dict) else None),
-    }
-    yield {
-        "type": "status",
-        "message": fast_path_status_message(),
-        "step": "kb_fast_path",
     }
     yield {
         "type": "status",
@@ -133,7 +203,7 @@ def stream_kb_fast_path_events(
     if is_cancelled(run_id):
         yield {"type": "error", "message": "已停止", "code": "cancelled"}
         return
-    addon = comparison_answer_addon(user_query)
+    addon = fast_path_answer_addon(user_query)
     skill_extra = addon
     if addon and enabled_skills is not None:
         enabled_skills = list(enabled_skills)

@@ -101,6 +101,19 @@ def get_ollama_guard_state() -> dict[str, Any]:
         return out
 
 
+def reset_llm_circuits_for_tests() -> None:
+    """单测/live 矩阵前复位进程内熔断，避免前序失败拖死后序用例。"""
+    with _circuit_lock:
+        for c in (_circuit_ollama, _circuit_llm):
+            c.consecutive_failures = 0
+            c.open_until_ts = 0.0
+            c.last_error = None
+
+
+def llm_circuit_is_open() -> bool:
+    return _circuit_is_open("llm")
+
+
 def post_json_with_guard(
     *,
     url: str,

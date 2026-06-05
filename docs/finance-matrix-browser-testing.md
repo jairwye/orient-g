@@ -1,0 +1,203 @@
+# 财务矩阵 · Chrome DevTools 浏览器实测指南
+
+> 面向 **Agent / 开发者** 的页面验收操作手册。API 串行 Live 矩阵见 [`finance-agent-acceptance-matrix.md`](finance-agent-acceptance-matrix.md)；本文件只覆盖 **Chrome DevTools MCP / CDP** 实测。
+
+---
+
+## 1. 环境与账号
+
+| 项 | 值 |
+| --- | --- |
+| 账号 | `finance_test` / `FinanceTest!2026` |
+| 知识库文件夹 | **竞品财报25**（`folder_id=f_6f3638e4513f492c9610ddb5dda77c20`） |
+| 前端 | http://localhost:3000 |
+| 后端 | http://localhost:8000 |
+| Hermes | http://127.0.0.1:8642（标准 / 深度需已连接） |
+
+**矩阵规模**：14 subject × 3 档位（快速 / 标准 / 深度）= **42 条**。  
+**验收报告**：`backend/tests/reports/finance_matrix_browser_report.json`（每 subject+mode 保留最新一行）。
+
+---
+
+## 2. 四条硬性原则
+
+1. **仅用 Chrome DevTools**（MCP `user-chrome-devtools` 或 CDP `--remote-debugging-port=9222`）；**禁止** Playwright / Puppeteer / 多 tab 并行抢同一页面。
+2. **串行**：上一条 LLM **流式完全结束**（poll → extract → append 成功）后，才允许下一条。
+3. **Timeout 必须有上限、可较长**（见 §4）；禁止无限等待；超时须记录失败并进入「修代码 → 重测同条」。
+4. **每条实测后审核终稿**：Tier、正文结构、金额、console；`ok:false` **不得** next；须查根因 → 改代码/配置 → **重测同条**。
+
+---
+
+## 3. 工具链索引
+
+| 脚本 | 用途 |
+|------|------|
+| `backend/scripts/finance_matrix_cases.py` | 42 条用例定义、`TIER_EXPECT` |
+| `backend/scripts/finance_matrix_browser_validate.py` | `validate_row`、timeout 常量、console depth 检测 |
+| `backend/scripts/finance_matrix_browser_poll_state.js` | 单次 poll：`streamDone`、loading、citations |
+| `backend/scripts/finance_matrix_browser_extract_row.js` | 采样 tier_line、正文、checks 字段 |
+| `backend/scripts/finance_matrix_browser_send_case.js` | 选档位 + 发送（问句须字面量嵌入，勿 MCP args 传长串） |
+| `backend/scripts/finance_matrix_browser_setup_page.js` | 等「智能体模式」、胶囊校验 |
+| `backend/scripts/finance_matrix_browser_write_row.py` | 组装 row + validate |
+| `backend/scripts/finance_matrix_browser_append.py` | 写入报告 JSON |
+| `backend/scripts/finance_matrix_browser_retry_queue.py` | `count` / `next`：失败或未测条目 |
+| `backend/scripts/finance_matrix_browser_reconcile.py` | 重评历史行 |
+| `backend/scripts/finance_matrix_browser_cdp_runner.py` | **无人值守 CDP 串行 runner**（推荐全量重跑） |
+| `backend/scripts/finance_matrix_browser_loop.py` | Cursor **stop hook** 半自动续跑 |
+| `backend/scripts/finance_matrix_unattended.ps1` | 一键启动 CDP runner |
+| `backend/scripts/finance_matrix_browser_mcp_batch.py` | 从 jsonl 批量 append（MCP 手工采样时用） |
+
+---
+
+## 4. Timeout 与流式完毕判定
+
+| 档位 | 单条最大等待 | 轮询间隔 | 稳定判定 | 用例间冷却 |
+|------|-------------|----------|----------|------------|
+| 快速 | **360s** | 15s | 连续 **2** 次正文 len 不变且无 loading | 5s |
+| 标准 / 深度 | **1200s** | 15–60s | 同左 | 5s |
+
+> MCP `evaluate_script` **不可**内嵌 15min 循环（协议 timeout）；由 Agent / CDP runner **外层** sleep + 多次 poll。
+
+**`streamDone` 为 true 当（`poll_state.js`）：**
+
+- `citations（N）` 且 N>0，且无 loading/thinking；或
+- 诚实「缺少证据」+ 正文 len 达标 + 对应 Tier 完成行；或
+- Tier2 深度：无 Hermes 仍在执行 + 正文 len≥600 + 完成行含 Tier 2。
+
+**poll 注意**：只看**最后一条助手消息**尾部；trace 行（`›`/`◈`）已从正文 strip，避免历史「连接流式通道」误判 loading。
+
+---
+
+## 5. MCP 手工单条流程（Agent 闭环）
+
+```
+count → while retry_pending>0:
+  next = retry_queue.py next
+  navigate(folder_id+view=agent) + initScript folder_ids[]
+  wait agentReady（智能体模式）
+  nav「智能体」→ 选 mode → 发送 query（字面量嵌入 send 脚本）
+  确认 backend 日志 POST /api/agent/chat/stream（非 /api/ai-interaction/chat）
+  poll poll_state.js 每 15–60s 直至 streamDone 或 timeout
+  extract → 审核 tier / 正文 / checks
+  write_row.py → append.py → 确认 ok:true
+  若 ok:false：查根因 → 改代码 → 重测同条（勿跳 subject）
+  list_console_messages types=["error"]（Maximum update depth → fail）
+  sleep 5s → next
+```
+
+**KB 胶囊**：initScript 写 `folder_ids:['f_6f3638e4513f492c9610ddb5dda77c20']`（**数组**；勿用单字段 `folder_id` 写错路由）。
+
+**UI 操作**：点 **nav「智能体」** 开新会话（勿点侧栏「新对话」，易切到 chat）。
+
+**档位期望**（`TIER_EXPECT`）：
+
+| UI | 完成行期望 |
+|----|------------|
+| 快速 | Tier 0（本地证据综合，未使用 Hermes） |
+| 标准 | Tier 1（Hermes lite） |
+| 深度 | Tier 2（Hermes 深度编排 / Runs API） |
+
+验收逻辑：`finance_matrix_browser_validate.py`（tier 严格匹配、无 inline `ud_`、无过程稿泄漏、`deep_substance_ok` 等）。
+
+---
+
+## 6. CDP 无人值守 runner（推荐全量）
+
+与 Chrome DevTools MCP **同源**（CDP），**禁止 Playwright**。Python 外层 poll，无 MCP 长 evaluate 超时。
+
+```powershell
+# 1) 调试 Chrome（可与 MCP 共用 user-data-dir）
+chrome.exe --remote-debugging-port=9222 --remote-allow-origins=* `
+  --user-data-dir=$env:TEMP\orientg-cdp http://localhost:3000
+
+# 2) :3000 :8000 Hermes 就绪后
+.\backend\scripts\finance_matrix_unattended.ps1
+
+# 或
+py -3.10 backend/scripts/finance_matrix_browser_cdp_runner.py --dry-run
+py -3.10 backend/scripts/finance_matrix_browser_cdp_runner.py
+# 同条 send 失败可 reload 重试：--case-retries 2（默认）
+```
+
+**fail-fast（默认）**：验收 `ok:false` → 写 `backend/tests/reports/finance_matrix_browser_blocked.json` → `exit(1)`。  
+Runner **不会**自动改代码；修完后重跑同一命令（`retry_queue` 仍指向失败条）。  
+`--continue-on-fail` 仅排障，产品验收勿用。
+
+---
+
+## 7. 两套「循环」勿混
+
+| 组件 | 行为 | 为何会「又停了」 |
+|------|------|------------------|
+| **`finance_matrix_browser_cdp_runner.py`** | 独立进程串行 pending | 默认 **fail-fast**；`ok:false` 或 blocked 后进程结束 |
+| **`finance_matrix_browser_loop.py` + Cursor hook** | 仅在 **Agent 对话 stop** 时注入下一条 MCP 指令 | Agent 会话结束 hook 不再触发；**不会**重启 CDP runner |
+
+---
+
+## 8. Cursor stop hook（半自动续跑）
+
+Hook 文件在 **本机** `.cursor/`（不入库）。配置示例：
+
+**`.cursor/hooks.json`**（片段）：
+
+```json
+{
+  "hooks": {
+    "stop": [{ "command": "py -3.10 backend/scripts/finance_matrix_browser_loop.py on_stop" }]
+  }
+}
+```
+
+**激活 / 关闭：**
+
+```powershell
+py -3.10 backend/scripts/finance_matrix_browser_loop.py activate
+py -3.10 backend/scripts/finance_matrix_browser_loop.py status
+py -3.10 backend/scripts/finance_matrix_browser_loop.py deactivate
+```
+
+`on_stop` 从 stdin 读 Cursor hook 载荷，stdout 输出 `{"followup_message":"..."}` 注入下一条 MCP 指令。全部 42/42 通过时自动 `deactivate`。
+
+状态文件（本地，已 gitignore）：`backend/tests/reports/.finance_matrix_loop_active`、` .finance_matrix_loop_state.json`。
+
+---
+
+## 9. 队列与重跑
+
+```powershell
+python backend/scripts/finance_matrix_browser_reconcile.py
+python backend/scripts/finance_matrix_browser_retry_queue.py count
+python backend/scripts/finance_matrix_browser_retry_queue.py next
+```
+
+---
+
+## 10. 通过标准摘要
+
+- 完成行 Tier 与所选档位一致；**禁止**标准/深度误走 Tier 0 或 Hermes 失败后本地回退（validate `local_fallback`）。
+- 正文：结论 + Markdown 表（非 TSV 挤一行）；金额与 KB probe 一致。
+- 无反推分项（`122568-51705` 类）、无 unsupported「约 xx 万」。
+- 标准/深度：**正文无** inline `ud_` / `[doc_chunk…]`（citations 折叠区除外）。
+- 浏览器 console 无 `Maximum update depth exceeded`。
+- 深度：正文须有足够分析 substance（`deep_substance_ok`）。
+
+---
+
+## 11. 常见问题
+
+| 现象 | 排查 |
+|------|------|
+| 走了 `/api/ai-interaction/chat` | 胶囊 `folder_ids` 未写入或未等「智能体模式」 |
+| poll 空等 20min | 旧版误读历史 trace；用最新 `poll_state.js` |
+| 标准却 Tier 0 | UI 选了「快速」或「自动」+ pack 够；**标准**须显式选标准档 |
+| Hermes 0 MCP + 补检索 ×5 | 预检索够时模型单轮成稿；网关共用补检索（见 `docs/hermes.md`） |
+| 快速档正文含 `ud_…` | **已知**：Tier 0 本地综合尚未统一 `strip_inline_source_markers`；标准/深度经 `finalize_agent_reply` 剥离；待下阶段修复 |
+| CDP runner 停在某条 | 读 `finance_matrix_browser_blocked.json` + 报告该行 `checks` |
+
+---
+
+## 12. 相关文档
+
+- [finance-agent-acceptance-matrix.md](finance-agent-acceptance-matrix.md) — 42 条清单 + API Live 矩阵
+- [hermes.md](hermes.md) — Hermes × Orient-G 联调、Tier 0–2
+- [specs/features/1.2.3.b-agent-evidence-pack-tiers.md](../specs/features/1.2.3.b-agent-evidence-pack-tiers.md) — 路由与 Evidence Pack 规制
