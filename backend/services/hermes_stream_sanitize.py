@@ -101,6 +101,8 @@ def looks_like_planning(text: str) -> bool:
         return True
     if re.match(r"^Based on (?:the )?Evidence Pack", t, re.I):
         return True
+    if re.search(r"\b(I'll start|Let me |Now let me|The subagent|Login failed|MCP tools directly)\b", t, re.I):
+        return True
     if "No additional API calls are needed" in t and len(t) < 600:
         return True
     if "orientg_kb_ask" in t and len(t) < 1200:
@@ -194,6 +196,18 @@ def extract_user_facing_reply(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return ""
+    m_cn = re.search(
+        r"(?:^|\n)(?:#{1,3}\s*)?(?:华清|[\u4e00-\u9fff]{2,8}(?:对比分析|明细对比)?报告|结论[:：]|一、|二、|\|\s*指标)",
+        t,
+    )
+    if m_cn and m_cn.start() > 80:
+        prefix = t[: m_cn.start()]
+        if _looks_like_orchestration_preamble(prefix) or re.search(
+            r"\b(I'll|Let me|MCP tools|orientg_kb|Login failed|Good, admin)\b",
+            prefix,
+            re.I,
+        ):
+            return strip_hermes_orchestration_preamble(t[m_cn.start() :].lstrip())
     best = len(t)
     for m in _REPLY_START_MARKERS:
         idx = t.find(m)
@@ -211,14 +225,31 @@ def extract_user_facing_reply(text: str) -> str:
 _FORBIDDEN_ESTIMATE = re.compile(
     r"约\s*[\d,.]+|[\d]{1,3}\s*[-~至]\s*[\d]{1,3}\s*万|减少约|增加约|变动情况：.*约"
 )
+_UNSUPPORTED_SPECULATION = re.compile(
+    r"可能系|可能为|可能由于|或许是因为|或许系|或许为|推断为|推测为|合理推测|大概系|大概为"
+)
+_EVIDENCE_REASON_OK = re.compile(
+    r"主要系|是由于|系因|证据指出|根据证据|年报|原文|载明|披露|附注"
+)
+_SPECULATION_GAP = "证据未提供变动原因说明，仅列示金额与分项对比。"
+
+
+def reply_has_unsupported_speculation(text: str) -> bool:
+    """变动原因段的无证据推断（如「可能系…」），不可作为合规终稿。"""
+    for ln in (text or "").split("\n"):
+        if _UNSUPPORTED_SPECULATION.search(ln) and not _EVIDENCE_REASON_OK.search(ln):
+            return True
+    return False
 
 
 def reply_has_unsupported_breakdown_amounts(text: str) -> bool:
-    """估算区间或反推计算的分项金额（均不可作为终稿分项）。"""
+    """估算区间、反推分项或無证据推断（均不可作为终稿分项/原因）。"""
     from backend.services.evidence_reply_align import reply_has_derived_breakdown_amounts
 
     t = text or ""
     if reply_has_unsupported_estimates(t):
+        return True
+    if reply_has_unsupported_speculation(t):
         return True
     return reply_has_derived_breakdown_amounts(t)
 
@@ -238,6 +269,31 @@ def reply_has_verifiable_breakdown_table(text: str, *, min_data_rows: int = 2) -
 
 def _is_markdown_table_line(ln: str) -> bool:
     return ln.count("|") >= 2
+
+
+def _strip_unsupported_speculation_prose(text: str) -> str:
+    """去掉变动原因中的「可能系…」等无证据推断句，保留表与证据原文句式。"""
+    out: list[str] = []
+    for ln in (text or "").split("\n"):
+        if _is_markdown_table_line(ln):
+            out.append(ln)
+            continue
+        if not _UNSUPPORTED_SPECULATION.search(ln) or _EVIDENCE_REASON_OK.search(ln):
+            out.append(ln)
+            continue
+        prefix_m = re.match(
+            r"^(\s*(?:[\*\-•]\s*)?(?:\*\*)?[^：:\n]{2,40}(?:\*\*)?[：:])\s*",
+            ln,
+        )
+        if prefix_m and re.search(r"原因|变动|分析|驱动", ln):
+            out.append(prefix_m.group(1) + _SPECULATION_GAP)
+            continue
+        if re.search(r"原因|变动|分析|驱动", ln):
+            out.append(_SPECULATION_GAP)
+            continue
+    t = "\n".join(out)
+    t = re.sub(rf"({re.escape(_SPECULATION_GAP)}\s*){{2,}}", _SPECULATION_GAP + "\n", t)
+    return t.strip()
 
 
 def _strip_unsupported_estimate_prose(text: str) -> str:
@@ -273,11 +329,19 @@ def strip_inline_source_markers(text: str) -> str:
     """去掉正文中的 [doc_chunk …] / doc_id / ud_* 等内联标记。"""
     t = text or ""
     t = _INLINE_SOURCE_MARKER.sub(" ", t)
+    t = re.sub(r"`evidence_pack[^`]*`", " ", t, flags=re.I)
+    t = re.sub(r"evidence_pack\s*\d+[^。\n]{0,40}", " ", t, flags=re.I)
     t = _INLINE_DOC_ID_PAREN.sub("", t)
     t = _INLINE_DOC_ID_BACKTICK.sub("", t)
     t = _INLINE_UD_ID.sub(" ", t)
     t = _INLINE_DOC_CHUNK_HASH.sub(" ", t)
     t = re.sub(r"\s*\[来源[^\]]*\]\s*", " ", t)
+    t = re.sub(
+        r"引用证据[：:][^\n]*(?:evidence_pack|doc_chunk|doc_id)[^\n]*",
+        "引用证据见 citations 面板。",
+        t,
+        flags=re.I,
+    )
     t = re.sub(r"证据\s*`(?:\s*[^`]*\s*)?`\s*", "证据 ", t)
     t = re.sub(r"`\s*`", "", t)
     t = re.sub(r"\(doc_id:\s*\)", "", t, flags=re.I)
@@ -323,6 +387,14 @@ class HermesDraftTraceAccumulator:
         self._parts: list[str] = []
         self._last_emitted = ""
 
+    def full_body(self) -> str:
+        """累积全文（不截断）；供终稿判定与 supplemental 合规检查。"""
+        raw = _strip_code_execution_blocks("".join(self._parts).strip())
+        if not raw:
+            return ""
+        body = extract_user_facing_reply(raw)
+        return (body or raw).strip()
+
     def push(self, chunk: str) -> str | None:
         if chunk:
             self._parts.append(chunk)
@@ -338,6 +410,47 @@ class HermesDraftTraceAccumulator:
             return None
         self._last_emitted = draft
         return draft
+
+
+def _strip_code_execution_blocks(text: str) -> str:
+    """去掉过程稿中 Hermes 误写的 Python/shell 脚本段，避免污染合规判定。"""
+    t = text or ""
+    if not t:
+        return ""
+    lines = t.split("\n")
+    out: list[str] = []
+    skipping = False
+    for ln in lines:
+        if looks_like_code_execution(ln) or re.search(
+            r"^\s*(?:import\s+\w+|print\s*\(|mgmt_expense_data\s*=|# Data from Evidence Pack)",
+            ln,
+            re.I,
+        ):
+            skipping = True
+            continue
+        if skipping:
+            if re.search(r"^#{1,3}\s*[\u4e00-\u9fff]", ln) or re.search(
+                r"^#{1,3}\s*华清", ln
+            ):
+                skipping = False
+            else:
+                continue
+        out.append(ln)
+    cleaned = "\n".join(out).strip()
+    return cleaned or t
+
+
+def resolve_hermes_effective_reply(
+    *,
+    evt_reply: str,
+    draft_acc: HermesDraftTraceAccumulator | None,
+) -> str:
+    """过程稿 defer 时 done.reply 常为空/较短，须以累积正文作为 Hermes 终稿来源。"""
+    evt = (evt_reply or "").strip()
+    draft = draft_acc.full_body() if draft_acc else ""
+    if draft and (not evt or len(draft) >= len(evt)):
+        return draft
+    return evt or draft
 
 
 def reply_has_unsupported_estimates(text: str) -> bool:
@@ -482,6 +595,8 @@ def finalize_agent_reply(
         body = (reply or "").strip()
     if tier2_native:
         body = normalize_reply_markdown(body)
+        body = strip_inline_source_markers(body)
+        body = _strip_unsupported_speculation_prose(body)
         # Tier 2 仍以 Hermes 为终稿来源，但须剔除无证据的「约 xx 万」分项幻觉（不整篇本地重写）
         if reply_has_unsupported_breakdown_amounts(body):
             body = enforce_breakdown_compare_reply(body, user_query=user_query)
@@ -534,6 +649,7 @@ def enforce_breakdown_compare_reply(reply: str, *, user_query: str = "") -> str:
     tt = infer_task_type(user_query or "")
     if tt not in (TaskType.breakdown, TaskType.compare):
         return t
+    t = _strip_unsupported_speculation_prose(t)
     if not reply_has_unsupported_breakdown_amounts(t):
         from backend.services.evidence_reply_align import reply_has_contradictory_change_reason
 
@@ -547,6 +663,7 @@ def enforce_breakdown_compare_reply(reply: str, *, user_query: str = "") -> str:
     t = _strip_derived_breakdown_sections(t)
     if reply_has_verifiable_breakdown_table(t):
         t = _strip_unsupported_estimate_prose(t)
+        t = _strip_unsupported_speculation_prose(t)
         if not reply_has_unsupported_breakdown_amounts(t):
             return normalize_reply_markdown(t)
     sec2 = re.search(r"(#{2,4}\s*2[\.\s、]|#{2,4}\s*费用变动|费用变动分析|\*注：.*\n*#{2,4}\s*2)", t)

@@ -27,7 +27,17 @@
   );
   const last = blocks[blocks.length - 1];
   const lastBlockText = (last?.innerText || "").trim();
-  const lastTail = lastBlockText.slice(-900);
+  const completionMatch =
+    lastBlockText.match(/[●•]?\s*完成：Tier\s*([012])[^·\n]*（([^）]+)）/) ||
+    body.match(/[●•]?\s*完成：Tier\s*([012])[^·\n]*（([^）]+)）/);
+  const tierFromComplete = completionMatch
+    ? `Tier ${completionMatch[1]}（${completionMatch[2] || ""}）`.trim()
+    : "";
+  const completionIdx = lastBlockText.lastIndexOf("完成：Tier");
+  const activeTail =
+    completionIdx >= 0
+      ? lastBlockText.slice(completionIdx).slice(-220)
+      : lastBlockText.slice(-220);
 
   const answerEl = last?.querySelector(".prose, .markdown") || last;
   const answerText = (answerEl?.innerText || "").trim();
@@ -38,21 +48,23 @@
       .trim(),
   );
 
-  const thinking = /思考中…|同步中…/.test(lastTail);
+  const thinking = /思考中…|同步中…/.test(activeTail);
   const hermesStillRunning = /Hermes 仍在执行|正在连接 Hermes|编排中…/.test(
-    lastTail,
+    activeTail,
   );
   const loading =
     thinking ||
     hermesStillRunning ||
-    (/连接流式通道|加载中/.test(lastTail) &&
+    (/连接流式通道|加载中/.test(activeTail) &&
       answerBody.length < 200 &&
       !/citations\s*[（(]\s*\d+/i.test(lastBlockText));
 
   const tierLine =
+    tierFromComplete ||
     (answerText.match(/执行过程\([^)]+\)/) ||
       body.match(/执行过程\([^)]+\)/) ||
-      [])[0] || "";
+      [])[0] ||
+    "";
   const citeMatch =
     lastBlockText.match(/citations\s*[（(]\s*(\d+)/i) ||
     answerText.match(/citations\s*[（(]\s*(\d+)/i);
@@ -67,7 +79,9 @@
     );
 
   let streamDone = streamFail;
-  if (citations > 0 && !loading && !thinking) streamDone = true;
+  if (completionMatch && !loading && !thinking && !hermesStillRunning) {
+    streamDone = true;
+  } else if (citations > 0 && !loading && !thinking) streamDone = true;
   else if (
     !loading &&
     !thinking &&
@@ -82,6 +96,15 @@
     honestMissing &&
     answerBody.length >= 200 &&
     /Tier 1|标准/.test(tierLine)
+  )
+    streamDone = true;
+  else if (
+    !loading &&
+    !thinking &&
+    !hermesStillRunning &&
+    honestMissing &&
+    answerBody.length >= 180 &&
+    /Tier 2|深度/.test(tierLine)
   )
     streamDone = true;
   else if (
@@ -113,12 +136,21 @@
   const processInAnswer =
     /用户要求|步骤：|让我先|我将尝试|预检索证据/i.test(answerBody);
 
+  const agentIdleNoReply =
+    !!document.querySelector('[aria-label="智能体模式"]') &&
+    answerBody.length === 0 &&
+    !loading &&
+    !thinking &&
+    !hermesStillRunning &&
+    /描述任务即可/.test(body);
+
   return {
     streamDone,
-    streamFail,
+    streamFail: streamFail || agentIdleNoReply,
     loading,
     thinking,
     hermesStillRunning,
+    agentIdleNoReply,
     tier_line: tierLine,
     citations,
     extract: {

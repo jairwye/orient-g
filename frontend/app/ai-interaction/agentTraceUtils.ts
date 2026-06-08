@@ -321,6 +321,8 @@ export function buildAgentMetaFromDone(evt: Record<string, unknown>): AgentMeta 
     hermes_used: evt.hermes_used === true,
     kb_fast_path: evt.kb_fast_path === true,
     hermes_fallback: evt.hermes_fallback === true,
+    hermes_salvaged:
+      evt.hermes_salvaged === true || evt.synthesis === "hermes_salvaged",
     synthesis: typeof evt.synthesis === "string" ? evt.synthesis : undefined,
     llm_model: typeof evt.llm_model === "string" ? evt.llm_model : undefined,
     hermes_stream_mode:
@@ -369,6 +371,9 @@ export function doneTraceMessage(meta: AgentMeta): string {
   }
   if (meta.hermes_fallback) {
     return "完成：Hermes 已结束，最终答案由 Orient-G 本地 LLM 基于预检索生成";
+  }
+  if (meta.hermes_salvaged) {
+    return `完成：Hermes 中断后已 salvage 过程稿为终稿${packSuffix}`;
   }
   if (meta.agent_route === "hermes_full" || meta.agent_tier === 2) {
     const obs = formatHermesStreamStatsLine(meta.hermes_stream_stats, meta);

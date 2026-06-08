@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { routeLabel, traceStepLabel } from "./agentTraceUtils";
 import type { AgentMeta, AgentTraceStep } from "./types";
 
@@ -33,6 +35,22 @@ export default function AgentTracePanel({
   streaming?: boolean;
 }) {
   const steps = trace || [];
+  const listRef = useRef<HTMLUListElement>(null);
+  const tailSig =
+    steps.length > 0
+      ? `${steps.length}:${(steps[steps.length - 1]?.message || "").length}`
+      : "0";
+
+  useEffect(() => {
+    if (!streaming) return;
+    const t = window.setTimeout(() => {
+      const el = listRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [streaming, tailSig]);
+
   if (steps.length === 0 && !meta) return null;
 
   const summary = routeLabel(meta) || `共 ${steps.length} 步`;
@@ -49,6 +67,7 @@ export default function AgentTracePanel({
   );
   const list = (
     <ul
+      ref={listRef}
       className={[
         "space-y-1 overflow-y-auto border-t border-zinc-800/60 px-2.5 py-2",
         streaming ? "max-h-80" : "max-h-64",

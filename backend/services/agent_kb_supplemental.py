@@ -47,6 +47,128 @@ def count_new_citation_keys(before: list[dict[str, Any]], after: list[dict[str, 
     return len(_citation_keys(after) - _citation_keys(before))
 
 
+def hermes_reply_sufficient_against_pack(
+    hermes_reply: str,
+    *,
+    prefetch_result: dict[str, Any] | None,
+    user_query: str,
+) -> bool:
+    """pack 分项充分且 Hermes 终稿金额/口径合格时，可跳过网关补检索。"""
+    from backend.services.hermes_stream_sanitize import (
+        reply_has_unsupported_estimates,
+        reply_has_unsupported_speculation,
+    )
+
+    pack = (prefetch_result or {}).get("evidence_pack") or {}
+    tt = str(pack.get("task_type") or infer_task_type(user_query).value)
+    if tt not in (TaskType.breakdown.value, TaskType.compare.value):
+        return False
+    if pack.get("gaps"):
+        return False
+    if not pack_has_tabular_breakdown(pack):
+        return False
+    if float(pack.get("coverage_score") or 0) < 0.75:
+        return False
+    h = (hermes_reply or "").strip()
+    min_len = 50 if (_money_amount_count(h) >= 2 and "|" in h) else 80
+    if len(h) < min_len:
+        return False
+    if reply_has_unsupported_estimates(h):
+        return False
+    if reply_has_unsupported_speculation(h):
+        return False
+    if reply_has_derived_breakdown_amounts(h):
+        return False
+    if reply_has_contradictory_change_reason(h):
+        return False
+    if reply_falsely_denies_kb_breakdown(h, user_query=user_query):
+        return False
+    if reply_has_gap_placeholder(h):
+        return False
+    anchors = pack_amounts_for_alignment(pack)
+    if anchors and reply_amount_coverage(h, anchors) < 0.35:
+        return False
+    return _money_amount_count(h) >= 2
+
+
+def pick_hermes_error_fallback_reply(
+    *,
+    draft_acc: Any | None,
+    synth_reply: str,
+    prefetch_result: dict[str, Any] | None,
+    user_query: str,
+) -> tuple[str, str]:
+    """Hermes 流式 error 时：优先 salvage 已累积过程稿，避免无差别本地 synth 覆盖。"""
+    from backend.services.hermes_stream_sanitize import (
+        _markdown_structure_score,
+        finalize_agent_reply,
+        looks_like_planning,
+        resolve_hermes_effective_reply,
+        sanitize_hermes_accumulated_reply,
+    )
+
+    salvaged_raw = resolve_hermes_effective_reply(evt_reply="", draft_acc=draft_acc)
+    synth = (synth_reply or "").strip()
+    if salvaged_raw:
+        cand = sanitize_hermes_accumulated_reply(salvaged_raw, user_query=user_query).strip()
+        cand = finalize_agent_reply(cand, user_query=user_query, tier2_native=False)
+        if cand and (
+            hermes_reply_sufficient_against_pack(
+                cand,
+                prefetch_result=prefetch_result,
+                user_query=user_query,
+            )
+            or (
+                _money_amount_count(cand) >= 2
+                and len(cand) >= 400
+                and _markdown_structure_score(cand) >= max(_markdown_structure_score(synth), len(synth))
+                and not looks_like_planning(cand)
+            )
+        ):
+            return cand, "hermes_salvaged"
+    if synth:
+        return (
+            finalize_agent_reply(synth, user_query=user_query, tier2_native=False),
+            "local_fallback",
+        )
+    return "", "local_fallback"
+
+
+def _hermes_tier2_sanitize_only(
+    hermes_reply: str,
+    *,
+    pack: dict[str, Any],
+    user_query: str,
+) -> bool:
+    """深度档仅含无证据推断等软问题：终稿 sanitize 即可，不必本地重综合。"""
+    from backend.services.hermes_stream_sanitize import (
+        reply_has_unsupported_estimates,
+        reply_has_unsupported_speculation,
+    )
+
+    h = hermes_reply or ""
+    if not reply_has_unsupported_speculation(h):
+        return False
+    if reply_has_unsupported_estimates(h):
+        return False
+    if reply_has_derived_breakdown_amounts(h):
+        return False
+    if reply_has_contradictory_change_reason(h):
+        return False
+    if reply_falsely_denies_kb_breakdown(h, user_query=user_query):
+        return False
+    if reply_has_gap_placeholder(h):
+        return False
+    if not pack_has_tabular_breakdown(pack):
+        return False
+    if _money_amount_count(h) < 2:
+        return False
+    anchors = pack_amounts_for_alignment(pack)
+    if anchors and reply_amount_coverage(h, anchors) < 0.35:
+        return False
+    return True
+
+
 def hermes_reply_needs_breakdown_revise(
     hermes_reply: str,
     *,
@@ -61,8 +183,11 @@ def hermes_reply_needs_breakdown_revise(
     if tt not in (TaskType.breakdown.value, TaskType.compare.value):
         return False
     h = hermes_reply or ""
+    if _hermes_tier2_sanitize_only(h, pack=pack, user_query=user_query):
+        return False
     if reply_has_unsupported_estimates(h):
         return True
+    # 深度档：无证据推断（可能系…）由 finalize tier2 sanitize 处理，不触发本地重综合以免稀释 Hermes 成稿质量
     if reply_has_derived_breakdown_amounts(h):
         return True
     if reply_has_contradictory_change_reason(h):
@@ -79,6 +204,10 @@ def hermes_reply_needs_breakdown_revise(
     from backend.services.kb_retrieval_plan import query_wants_analyst_report
 
     if query_wants_analyst_report(user_query) and len(h.strip()) < 2200:
+        if hermes_reply_sufficient_against_pack(
+            h, prefetch_result=prefetch_result, user_query=user_query
+        ):
+            return False
         return True
     return False
 
@@ -102,6 +231,8 @@ def choose_supplemental_reply(
     hermes_reply: str,
     synth_reply: str,
     prefetch_result: dict[str, Any] | None = None,
+    agent_route: AgentRoute | str | None = None,
+    user_query: str = "",
 ) -> tuple[str, bool, str]:
     """
     返回 (最终正文, 是否采用 synthesize, 说明)。
@@ -110,13 +241,18 @@ def choose_supplemental_reply(
     from backend.services.hermes_stream_sanitize import (
         enforce_breakdown_compare_reply,
         reply_has_unsupported_estimates,
+        reply_has_verifiable_breakdown_table,
     )
+
+    route = agent_route.value if isinstance(agent_route, AgentRoute) else str(agent_route or "")
+    tier2_native = route == AgentRoute.hermes_full.value
 
     pack = (prefetch_result or {}).get("evidence_pack") or {}
     anchors = pack_amounts_for_alignment(pack if isinstance(pack, dict) else None)
 
+    uq = (user_query or "").strip()
     h_raw = hermes_reply or ""
-    h = enforce_breakdown_compare_reply(h_raw, user_query="")
+    h = enforce_breakdown_compare_reply(h_raw, user_query=uq)
     s = (synth_reply or "").strip()
     if not s:
         return h, False, "synth_empty"
@@ -144,6 +280,9 @@ def choose_supplemental_reply(
         return s, True, "synth_better_pack_coverage"
     if reply_has_gap_placeholder(h) and not reply_has_gap_placeholder(s) and s_money >= 2:
         return s, True, "synth_fills_gap_placeholder"
+    if reply_has_gap_placeholder(s) and not reply_has_gap_placeholder(h_raw) and h_money >= 2:
+        if re.search(r"主要系|主要是由于|年报|项目重大变动|变动原因", h_raw):
+            return h, False, "keep_hermes_has_narrative_reason"
     if h_est and not s_est and s_money >= 2 and not _is_missing_evidence_reply(s):
         return s, True, "synth_no_estimates"
     if h_est and not s_est and _is_missing_evidence_reply(s) and h_money >= 2:
@@ -158,6 +297,16 @@ def choose_supplemental_reply(
         return s, True, "synth_same_amounts_more_detail"
     if h_money > s_money and h_cov >= s_cov:
         return h, False, "keep_hermes_more_amounts"
+    if tier2_native:
+        h_fin = enforce_breakdown_compare_reply(h_raw, user_query=uq)
+        h_fin_money = _money_amount_count(h_fin)
+        if reply_has_verifiable_breakdown_table(h_raw) and h_fin_money >= 2:
+            if len(h_fin) >= max(len(s), 1000) and h_cov >= s_cov - 0.08:
+                if not _is_missing_evidence_reply(h_fin):
+                    return h_fin, False, "tier2_keep_hermes_sanitized"
+        if len(h_raw) >= max(len(s) * 1.1, 1500) and h_money >= s_money:
+            if not _is_missing_evidence_reply(h):
+                return h, False, "tier2_keep_hermes_richer"
     return s, True, "default_synth"
 
 
@@ -256,7 +405,32 @@ def needs_hermes_supplemental(
             prefetch_result=prefetch_result,
             user_query=user_query,
         )
+    # Tier 1：pack 已含分项且 Hermes 终稿合格时，仅终稿 sanitize，不再无脑 5 次补检索
+    if hermes_reply_sufficient_against_pack(
+        hermes_reply,
+        prefetch_result=prefetch_result,
+        user_query=user_query,
+    ):
+        return False
     return True
+
+
+_NARRATIVE_SUPPLEMENTAL_KW = (
+    "经营",
+    "管理层",
+    "主营业务",
+    "产品",
+    "市场及推广",
+    "变动原因",
+    "项目重大",
+)
+
+
+def supplemental_max_queries_for_route(agent_route: AgentRoute | str) -> int:
+    route = agent_route.value if isinstance(agent_route, AgentRoute) else str(agent_route)
+    if route == AgentRoute.hermes_full.value:
+        return 2
+    return 5
 
 
 def plan_supplemental_queries(
@@ -264,6 +438,7 @@ def plan_supplemental_queries(
     *,
     evidence_pack: dict[str, Any] | None,
     max_queries: int = 5,
+    prefetch_tier: str = "lite",
 ) -> list[str]:
     """基于 task_type + 用户问句生成补检索 query（与预检索 plan 同源，跳过已用 query）。"""
     from backend.services.kb_retrieval_plan import TaskType, detect_entity, infer_task_type, plan_retrieval_queries
@@ -279,13 +454,22 @@ def plan_supplemental_queries(
         tt = infer_task_type(q)
     used = {str(x).strip() for x in (pack.get("retrieval_queries") or []) if str(x).strip()}
     ent = detect_entity(q)
+    tier = (prefetch_tier or "lite").strip().lower()
+    if tier not in ("lite", "full"):
+        tier = "lite"
     candidates = plan_retrieval_queries(
         q,
         tt,
         entity=ent,
         max_queries=max(max_queries + len(used), 8),
-        prefetch_tier="lite",
+        prefetch_tier=tier,
     )
+    if tier == "full":
+        candidates = [
+            c
+            for c in candidates
+            if any(kw in c for kw in _NARRATIVE_SUPPLEMENTAL_KW)
+        ]
     out: list[str] = []
     for cand in candidates:
         c = (cand or "").strip()
@@ -306,10 +490,16 @@ def run_supplemental_kb_asks(
     attached_doc_ids: list[str] | None,
     fixtures: dict[str, Any],
     max_queries: int = 5,
+    prefetch_tier: str = "lite",
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """执行补检索；返回 (merged_prefetch, tool_calls)。无新 query 时 (None, [])。"""
     pack = prefetch_result.get("evidence_pack") or {}
-    queries = plan_supplemental_queries(user_query, evidence_pack=pack, max_queries=max_queries)
+    queries = plan_supplemental_queries(
+        user_query,
+        evidence_pack=pack,
+        max_queries=max_queries,
+        prefetch_tier=prefetch_tier,
+    )
     if not queries:
         return None, []
 
@@ -412,6 +602,7 @@ def iter_supplemental_revision_events(
         "message": "Hermes 未调用 MCP 补检索；Orient-G 自动执行定向 orientg_kb_ask…",
         "step": "supplemental_kb",
     }
+    max_q = supplemental_max_queries_for_route(agent_route)
     merged, sup_tools = run_supplemental_kb_asks(
         user_token=user_token,
         user_query=user_query,
@@ -419,6 +610,8 @@ def iter_supplemental_revision_events(
         kb_scope=kb_scope,
         attached_doc_ids=attached_doc_ids,
         fixtures=fixtures,
+        max_queries=max_q,
+        prefetch_tier=tier,
     )
     for tc in sup_tools:
         q = str(tc.get("query") or "")[:60]
@@ -463,6 +656,8 @@ def iter_supplemental_revision_events(
         hermes_reply=hermes_reply,
         synth_reply=synth_reply,
         prefetch_result=use_prefetch,
+        agent_route=agent_route,
+        user_query=user_query,
     )
     from backend.services.hermes_stream_sanitize import finalize_agent_reply
 

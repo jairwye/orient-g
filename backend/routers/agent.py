@@ -10,7 +10,12 @@ from typing import Any, Literal
 
 from fastapi.responses import StreamingResponse
 
-from backend.services.agent_kb_fast_path import comparison_answer_addon, fast_path_answer_addon, stream_kb_fast_path_events
+from backend.services.agent_kb_fast_path import (
+    comparison_answer_addon,
+    fast_path_answer_addon,
+    finalize_fast_path_reply,
+    stream_kb_fast_path_events,
+)
 from backend.services.agent_hermes_tier_policy import patch_prefetch_system_message
 from backend.services.agent_kb_router import (
     AgentRoute,
@@ -347,7 +352,7 @@ def agent_chat(request: Request, body: AgentChatBody):
         return {
             "ok": True,
             "tenant_id": tenant_id,
-            "reply": synth.get("reply") or "",
+            "reply": finalize_fast_path_reply(synth.get("reply") or "", user_query=user_query),
             "citations": synth.get("citations") or [],
             "tool_calls": prefetch_tool_calls,
             "hermes_session_id": body.hermes_session_id,
@@ -439,7 +444,7 @@ def agent_chat(request: Request, body: AgentChatBody):
                 model=body.model,
                 skill_addon_extra=_skill_addon_for_route(uq, agent_route) or None,
             )
-            reply = (synth.get("reply") or "").strip()
+            reply = finalize_fast_path_reply((synth.get("reply") or "").strip(), user_query=uq)
             if reply:
                 reply += "\n\n（Hermes 调用失败，已由本地 LLM 基于检索证据作答）"
             return {
@@ -578,7 +583,11 @@ def _agent_chat_stream_events(
 
     from backend.services.hermes_stream_sanitize import HermesDraftTraceAccumulator
 
-    hermes_draft_acc = HermesDraftTraceAccumulator() if defer_hermes_draft else None
+    hermes_draft_acc = (
+        HermesDraftTraceAccumulator()
+        if agent_route in (AgentRoute.hermes_lite, AgentRoute.hermes_full)
+        else None
+    )
 
     try:
         for evt in stream_agent_chat(
@@ -621,17 +630,21 @@ def _agent_chat_stream_events(
                     model=body.model,
                     skill_addon_extra=_skill_addon_for_route(uq, agent_route) or None,
                 )
-                from backend.services.hermes_stream_sanitize import finalize_agent_reply
+                from backend.services.agent_kb_supplemental import pick_hermes_error_fallback_reply
 
-                reply = finalize_agent_reply(
-                    str(synth.get("reply") or "").strip(),
+                reply, synthesis_mode = pick_hermes_error_fallback_reply(
+                    draft_acc=hermes_draft_acc,
+                    synth_reply=str(synth.get("reply") or ""),
+                    prefetch_result=prefetch_result,
                     user_query=uq,
-                    tier2_native=False,
                 )
-                if reply:
+                if reply and synthesis_mode == "hermes_salvaged":
+                    yield f"data: {json.dumps({'type': 'status', 'message': '（Hermes 已中断，终稿沿用已生成的 Hermes 过程稿）', 'step': 'hermes_salvage_note'}, ensure_ascii=False)}\n\n"
+                elif reply:
                     yield f"data: {json.dumps({'type': 'status', 'message': '（Hermes 流式超时或失败，已由本地 LLM 基于预检索证据作答）', 'step': 'hermes_fallback_note'}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'delta', 'content': reply}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'ok': True, 'reply': reply, 'tenant_id': tenant_id, 'kb_prefetch': True, 'hermes_fallback': True, 'synthesis': synth.get('synthesis'), 'citations': synth.get('citations') or [], 'tool_calls': prefetch_tool_calls, **_route_response_meta(agent_route, prefetch_result)}, ensure_ascii=False)}\n\n"
+                if reply:
+                    yield f"data: {json.dumps({'type': 'delta', 'content': reply}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'ok': True, 'reply': reply, 'tenant_id': tenant_id, 'kb_prefetch': True, 'hermes_fallback': synthesis_mode == 'local_fallback', 'hermes_salvaged': synthesis_mode == 'hermes_salvaged', 'synthesis': synthesis_mode if synthesis_mode == 'hermes_salvaged' else synth.get('synthesis'), 'citations': synth.get('citations') or [], 'tool_calls': prefetch_tool_calls, **_route_response_meta(agent_route, prefetch_result)}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
             if defer_hermes_draft and evt.get("type") == "delta" and evt.get("content"):
@@ -639,6 +652,13 @@ def _agent_chat_stream_events(
                 if draft:
                     yield f"data: {json.dumps({'type': 'thinking', 'content': draft, 'step': 'hermes_draft'}, ensure_ascii=False)}\n\n"
                 continue
+            if (
+                not defer_hermes_draft
+                and hermes_draft_acc
+                and evt.get("type") == "delta"
+                and evt.get("content")
+            ):
+                hermes_draft_acc.push(str(evt["content"]))
             if defer_hermes_draft and evt.get("type") == "thinking" and evt.get("content"):
                 yield f"data: {json.dumps({'type': 'thinking', 'content': str(evt['content']), 'step': 'hermes_reasoning'}, ensure_ascii=False)}\n\n"
                 continue
@@ -648,7 +668,16 @@ def _agent_chat_stream_events(
                     if final_draft:
                         yield f"data: {json.dumps({'type': 'thinking', 'content': final_draft, 'step': 'hermes_draft'}, ensure_ascii=False)}\n\n"
                 uq = last_user_query(messages)
-                hermes_raw_reply = str(evt.get("reply") or "")
+                from backend.services.hermes_stream_sanitize import resolve_hermes_effective_reply
+
+                hermes_raw_reply = resolve_hermes_effective_reply(
+                    evt_reply=str(evt.get("reply") or ""),
+                    draft_acc=hermes_draft_acc,
+                )
+                if hermes_raw_reply and len(hermes_raw_reply) > len(
+                    str(evt.get("reply") or "").strip()
+                ):
+                    evt = {**evt, "reply": hermes_raw_reply}
                 from backend.services.agent_kb_supplemental import (
                     apply_supplemental_to_done,
                     hermes_orientg_kb_ask_count,

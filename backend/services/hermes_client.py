@@ -959,12 +959,19 @@ def stream_agent_chat_runs(
     if allowed_toolsets:
         runs_body["toolsets"] = allowed_toolsets
 
-    read_timeout = max(60, int(settings.hermes_request_timeout_s or 600))
+    from backend.services.hermes_runs_loop_guard import HermesRunsLoopGuard, runs_read_timeout_s
+
+    read_timeout = runs_read_timeout_s(
+        orientg_route=orientg_route,
+        configured=int(settings.hermes_request_timeout_s or 600),
+    )
     timeout = httpx.Timeout(30.0, read=float(read_timeout))
     idle_stall_s = hermes_idle_stall_seconds(
         orientg_route=orientg_route,
         read_timeout=float(read_timeout),
     )
+    loop_guard = HermesRunsLoopGuard(orientg_route=orientg_route)
+    abort_runs = False
     accumulated_parts: list[str] = []
     final_output = ""
     seen_tool_keys: set[str] = set()
@@ -1039,11 +1046,14 @@ def stream_agent_chat_runs(
                 blocked = guard_kb_forbidden_tool_sse(
                     remapped,
                     orientg_route=orientg_route,
+                    on_block=loop_guard.on_forbidden_block,
                 )
                 if blocked:
                     out.append(blocked)
+                    loop_guard.on_stream_evt(blocked)
                     continue
                 _bump_stream_stats(stream_stats, remapped, stream_tools)
+                loop_guard.on_stream_evt(remapped)
                 out.append(remapped)
                 last_beat = time.monotonic()
         return out
@@ -1102,6 +1112,22 @@ def stream_agent_chat_runs(
                 if evt.get("type") == "run_completed":
                     continue
                 yield evt
+                if not abort_runs:
+                    should_abort, code, msg = loop_guard.should_abort()
+                    if should_abort:
+                        abort_runs = True
+                        stop_reader.set()
+                        if hermes_run_id:
+                            stop_hermes_run(hermes_run_id)
+                        yield {
+                            "type": "status",
+                            "message": msg,
+                            "step": "hermes_run_abort",
+                            "code": code,
+                        }
+                        break
+            if abort_runs:
+                break
     finally:
         stop_reader.set()
 
@@ -1109,13 +1135,9 @@ def stream_agent_chat_runs(
     from backend.services.hermes_stream_sanitize import pick_best_hermes_runs_raw
 
     raw = pick_best_hermes_runs_raw("".join(accumulated_parts), final_output)
-    route = (orientg_route or "").strip().lower()
-    if route == "hermes_full":
-        reply = raw.strip()
-    else:
-        from backend.services.hermes_stream_sanitize import sanitize_hermes_accumulated_reply
+    from backend.services.hermes_stream_sanitize import sanitize_hermes_accumulated_reply
 
-        reply = sanitize_hermes_accumulated_reply(raw, user_query=uq).strip()
+    reply = sanitize_hermes_accumulated_reply(raw, user_query=uq).strip()
     if not reply:
         yield {
             "type": "error",
@@ -1246,6 +1268,10 @@ def stream_agent_chat(
         read_timeout=float(read_timeout),
     )
     connected = False
+    from backend.services.hermes_runs_loop_guard import HermesRunsLoopGuard
+
+    loop_guard = HermesRunsLoopGuard(orientg_route=orientg_route)
+    abort_chat = False
 
     def _reader() -> None:
         try:
@@ -1299,11 +1325,14 @@ def stream_agent_chat(
                     blocked = guard_kb_forbidden_tool_sse(
                         remapped,
                         orientg_route=orientg_route,
+                        on_block=loop_guard.on_forbidden_block,
                     )
                     if blocked:
                         out.append(blocked)
+                        loop_guard.on_stream_evt(blocked)
                         continue
                     _bump_stream_stats(stream_stats, remapped, stream_tools)
+                    loop_guard.on_stream_evt(remapped)
                     out.append(remapped)
                     last_beat = time.monotonic()
         return out
@@ -1340,6 +1369,13 @@ def stream_agent_chat(
                                 yield evt
                                 return
                             yield evt
+                            if not abort_chat:
+                                should_abort, code, msg = loop_guard.should_abort()
+                                if should_abort:
+                                    abort_chat = True
+                                    stop_reader.set()
+                                    yield {"type": "error", "message": msg, "code": code}
+                                    return
                     if not _stream_reply():
                         yield {
                             "type": "error",
@@ -1377,6 +1413,13 @@ def stream_agent_chat(
                     yield evt
                     return
                 yield evt
+                if not abort_chat:
+                    should_abort, code, msg = loop_guard.should_abort()
+                    if should_abort:
+                        abort_chat = True
+                        stop_reader.set()
+                        yield {"type": "error", "message": msg, "code": code}
+                        return
     finally:
         stop_reader.set()
 

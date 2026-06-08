@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 import time
 import urllib.error
@@ -50,6 +49,7 @@ INIT_SCRIPT = (
     "}));"
 )
 
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
 from finance_matrix_browser_retry_queue import retry_pending  # noqa: E402
 from finance_matrix_browser_validate import (  # noqa: E402
@@ -58,6 +58,7 @@ from finance_matrix_browser_validate import (  # noqa: E402
     WAIT_CITATIONS_MS,
 )
 from finance_matrix_cases import MODE_LABEL  # noqa: E402
+from finance_matrix_browser_append import append_matrix_row  # noqa: E402
 
 
 def _http_get_json(url: str, timeout: float = 5.0) -> Any:
@@ -211,6 +212,15 @@ def _js_send(mode_label: str, query: str) -> str:
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const modeLabel = {m};
   const query = {q};
+  localStorage.setItem(
+    "orientg.kb_scope_capsule.v1",
+    JSON.stringify({{
+      folder_ids: ["{FOLDER_ID}"],
+      collection_ids: [],
+      table_ids: [],
+      updated_at: Date.now(),
+    }}),
+  );
   for (let i = 0; i < 60; i++) {{
     if (document.querySelector('[aria-label="智能体模式"]')) break;
     const nav = Array.from(document.querySelectorAll('nav button')).find(b => b.textContent?.trim() === '智能体');
@@ -236,10 +246,35 @@ def _js_send(mode_label: str, query: str) -> str:
 
 
 def _ensure_login(page: CdpPage) -> None:
+    """API 登录 + sessionStorage 注入，避免 React 受控表单在 CDP 下偶发失败。"""
+    req = urllib.request.Request(
+        "http://127.0.0.1:8000/api/auth/login",
+        data=json.dumps({"username": "finance_test", "password": "FinanceTest!2026"}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    token = str(data.get("token") or "")
+    if not data.get("ok") or not token:
+        raise RuntimeError(f"API 登录失败: {data}")
     page.navigate(LOGIN_URL)
-    r = page.evaluate(_js_login(), timeout=30)
-    if not isinstance(r, dict) or not r.get("ok"):
-        raise RuntimeError(f"登录失败: {r}")
+    time.sleep(2.5)
+    tok_js = json.dumps(token)
+    page.evaluate(
+        f"""(() => {{
+  sessionStorage.setItem('orient_g_token', {tok_js});
+  window.location.href = '/';
+  return {{ ok: true }};
+}})()""",
+        timeout=20,
+    )
+    for _ in range(20):
+        time.sleep(0.5)
+        href = page.evaluate("location.href", timeout=10)
+        if isinstance(href, str) and "/login" not in href:
+            return
+    raise RuntimeError("token 注入后仍停留在登录页")
 
 
 def _poll_until_done(page: CdpPage, mode: str) -> dict[str, Any]:
@@ -251,6 +286,7 @@ def _poll_until_done(page: CdpPage, mode: str) -> dict[str, Any]:
     last_len = -1
     t0 = time.monotonic()
     last: dict[str, Any] = {}
+    idle_streak = 0
 
     while (time.monotonic() - t0) * 1000 < max_ms:
         last = page.evaluate(poll_js, await_promise=False, timeout=30) or {}
@@ -258,6 +294,14 @@ def _poll_until_done(page: CdpPage, mode: str) -> dict[str, Any]:
             last = {"streamDone": False, "streamFail": True}
         if last.get("streamFail"):
             return last
+        if last.get("agentIdleNoReply"):
+            idle_streak += 1
+            if idle_streak >= 3 and (time.monotonic() - t0) >= 45:
+                last["streamFail"] = True
+                last["lost_session"] = True
+                return last
+        else:
+            idle_streak = 0
         ext = last.get("extract") or {}
         cur_len = int(ext.get("len") or 0)
         if last.get("streamDone"):
@@ -285,11 +329,14 @@ def _extract(page: CdpPage) -> dict[str, Any]:
     return row
 
 
-def _append_row(poll: dict[str, Any], *, notes: str, console_depth: bool) -> dict[str, Any]:
-    pending = retry_pending()
-    if not pending:
-        return {"ok": False, "err": "queue empty"}
-    cat, subj, mode, query = pending[0]
+def _append_row(
+    poll: dict[str, Any],
+    *,
+    notes: str,
+    console_depth: bool,
+    case: tuple[str, str, str, str],
+) -> dict[str, Any]:
+    cat, subj, mode, query = case
     payload = {
         "category": cat,
         "subject": subj,
@@ -302,24 +349,8 @@ def _append_row(poll: dict[str, Any], *, notes: str, console_depth: bool) -> dic
         "console_depth_error": console_depth,
     }
     POLL_TMP.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    py = sys.executable
-    subprocess.run(
-        [py, str(SCRIPTS / "finance_matrix_browser_write_row.py"), str(POLL_TMP), notes],
-        cwd=str(ROOT),
-        check=True,
-    )
-    proc = subprocess.run(
-        [py, str(SCRIPTS / "finance_matrix_browser_append.py"), str(ROW_TMP)],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    out = proc.stdout.strip()
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        return {"ok": False, "raw": out, "stderr": proc.stderr}
+    ROW_TMP.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return append_matrix_row(payload)
 
 
 def _write_blocked(case: tuple[str, str, str, str], poll: dict[str, Any], result: dict[str, Any]) -> None:
@@ -357,7 +388,7 @@ def _run_case_once(page: CdpPage, case: tuple[str, str, str, str]) -> dict[str, 
     notes = f"cdp-unattended; console_depth={depth_err}"
     if poll.get("timeout"):
         notes += "; poll_timeout"
-    append = _append_row(merged, notes=notes, console_depth=depth_err)
+    append = _append_row(merged, notes=notes, console_depth=depth_err, case=case)
     ok = bool(append.get("ok"))
     return {
         "ok": ok,
@@ -429,6 +460,23 @@ def run_case(page: CdpPage, case: tuple[str, str, str, str], *, case_retries: in
     return last
 
 
+def _parse_only_keys(raw_list: list[str] | None) -> set[str]:
+    out: set[str] = set()
+    for item in raw_list or []:
+        parts = re.split(r"[/:：]", item.strip())
+        if len(parts) == 3:
+            out.add(f"{parts[0]}::{parts[1]}::{parts[2]}")
+    return out
+
+
+def _cases_for_run(*, only_keys: set[str] | None) -> list[tuple[str, str, str, str]]:
+    if only_keys:
+        from finance_matrix_cases import MATRIX  # noqa: E402
+
+        return [c for c in MATRIX if f"{c[0]}::{c[1]}::{c[2]}" in only_keys]
+    return retry_pending()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="无人值守财务矩阵 CDP runner")
     parser.add_argument("--cdp", default="http://127.0.0.1:9222", help="Chrome remote debugging URL")
@@ -436,9 +484,15 @@ def main() -> None:
     parser.add_argument("--case-retries", type=int, default=2, help="同条 timeout/send 失败时 reload 重测次数")
     parser.add_argument("--dry-run", action="store_true", help="只打印待跑队列")
     parser.add_argument("--skip-login", action="store_true", help="跳过登录（已登录 session）")
+    parser.add_argument(
+        "--only",
+        action="append",
+        help="只跑指定条，格式 cat/subject/mode（可重复），忽略 report 已通过状态",
+    )
     args = parser.parse_args()
+    only_keys = _parse_only_keys(args.only)
 
-    pending = retry_pending()
+    pending = _cases_for_run(only_keys=only_keys or None)
     print(json.dumps({"pending": len(pending), "total": 42}, ensure_ascii=False))
     if args.dry_run:
         for c in pending:
@@ -456,17 +510,27 @@ def main() -> None:
             _ensure_login(page)
         passed = 0
         failed = 0
+        done_keys: set[str] = set()
         while True:
-            pending = retry_pending()
+            if only_keys:
+                pending = [
+                    c
+                    for c in _cases_for_run(only_keys=only_keys)
+                    if f"{c[0]}::{c[1]}::{c[2]}" not in done_keys
+                ]
+            else:
+                pending = retry_pending()
             if not pending:
                 break
             case = pending[0]
+            case_key = f"{case[0]}::{case[1]}::{case[2]}"
             try:
                 result = run_case(page, case, case_retries=max(0, args.case_retries))
             except Exception as e:
                 result = {"ok": False, "stage": "exception", "detail": str(e)}
                 _write_blocked(case, {}, result)
                 print(f"BLOCKED: {e}", flush=True)
+                done_keys.add(case_key)
                 if not args.continue_on_fail:
                     print(
                         "进程退出(exit 1)：异常须 Agent 修代码后重跑同一命令。"
@@ -476,6 +540,7 @@ def main() -> None:
                     sys.exit(1)
                 failed += 1
                 continue
+            done_keys.add(case_key)
             if result.get("ok"):
                 passed += 1
                 if BLOCKED.is_file():
@@ -491,7 +556,8 @@ def main() -> None:
                     flush=True,
                 )
                 sys.exit(1)
-        print(json.dumps({"passed_this_run": passed, "failed": failed, "remaining": len(retry_pending())}, ensure_ascii=False))
+        remaining = len(_cases_for_run(only_keys=only_keys)) - len(done_keys) if only_keys else len(retry_pending())
+        print(json.dumps({"passed_this_run": passed, "failed": failed, "remaining": remaining}, ensure_ascii=False))
     finally:
         page.close()
 

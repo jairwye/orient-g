@@ -18,6 +18,10 @@ _SHELL_LOOPBACK_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bimport urllib\b", re.I),
     re.compile(r"/api/agent/chat", re.I),
     re.compile(r"\bwget\b", re.I),
+    re.compile(r"python\.exe\s+-c\b", re.I),
+    re.compile(r"\.venv[\\/]Scripts[\\/]python", re.I),
+    re.compile(r"\borientg_mcp_tools\b", re.I),
+    re.compile(r"\bsubprocess\b", re.I),
 )
 
 

@@ -84,6 +84,18 @@ kb_debug.log
 shot-targets.png
 frontend/shot-targets.png
 
+# 本地一次性调试脚本（勿提交；正式测试见 backend/tests/）
+temp_*.py
+temp_query*.py
+temp_config.py
+temp_fixtures*.py
+temp_mcp*.py
+temp_q*.py
+backend/temp_*.py
+backend/query_*.py
+backend/list_*.py
+backend/scripts/query_financials.py
+
 # 本地冒烟/验收脚本与截图工具（非产品交付物；正式测试见 backend/tests/）
 scripts/smoke_*.py
 scripts/check_agent_remote.ps1

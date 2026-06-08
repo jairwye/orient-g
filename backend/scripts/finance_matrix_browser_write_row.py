@@ -19,11 +19,17 @@ def main() -> None:
         sys.exit(1)
     poll = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     notes = sys.argv[2] if len(sys.argv) > 2 else "serial loop"
-    pending = retry_pending()
-    if not pending:
-        print("null")
-        return
-    cat, subj, mode, query = pending[0]
+    if poll.get("category") and poll.get("subject") and poll.get("mode"):
+        cat = str(poll["category"])
+        subj = str(poll["subject"])
+        mode = str(poll["mode"])
+        query = str(poll.get("query") or "")
+    else:
+        pending = retry_pending()
+        if not pending:
+            print("null")
+            return
+        cat, subj, mode, query = pending[0]
     row = {
         "category": cat,
         "subject": subj,

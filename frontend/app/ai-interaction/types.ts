@@ -43,6 +43,8 @@ export type AgentMeta = {
   hermes_used?: boolean;
   kb_fast_path?: boolean;
   hermes_fallback?: boolean;
+  /** Hermes 流式 error 后 salvage 过程稿为终稿（非本地 synth） */
+  hermes_salvaged?: boolean;
   synthesis?: string;
   llm_model?: string;
   /** Hermes 流式通道：chat_completions | runs */

@@ -133,9 +133,9 @@ def _comparison_addon_lite(q: str) -> str:
     )
     if wants_reason:
         base += (
-            "\n5) 变动原因仅可归纳证据原文（如「主要系人员减少…」），句末可标注 doc_id；"
+            "\n5) 变动原因仅可归纳证据原文（如「主要系人员减少…」）；"
             "无原因文字时写「证据未提供变动原因说明，仅列示金额与分项对比」。"
-            "禁止未引用表述。"
+            "禁止正文 inline doc_id / [doc_chunk] / ud_*（引用见 citations 面板）。"
         )
     base += "\n6) 禁止 orientg_kb_import_artifact；正文直接输出 Markdown 报告。"
     return base
@@ -167,6 +167,12 @@ def chunk_text_for_stream(text: str, *, size: int = 96) -> list[str]:
 
 def fast_path_status_message() -> str:
     return "Evidence Pack 已就绪，正在基于证据生成回答（Tier 0）…"
+
+
+def finalize_fast_path_reply(reply: str, *, user_query: str) -> str:
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    return finalize_agent_reply(reply, user_query=user_query, tier2_native=False)
 
 
 def stream_kb_fast_path_events(
@@ -217,7 +223,10 @@ def stream_kb_fast_path_events(
         skill_addon_extra=skill_extra or None,
         run_id=run_id,
     )
-    reply = (synth.get("reply") or "").strip() or "（未能生成回答）"
+    reply = finalize_fast_path_reply(
+        (synth.get("reply") or "").strip() or "（未能生成回答）",
+        user_query=user_query,
+    )
     yield {
         "type": "status",
         "message": "本地 LLM 综合完成，正在输出正文…",

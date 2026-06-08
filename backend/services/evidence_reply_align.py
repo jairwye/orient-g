@@ -7,7 +7,8 @@ from typing import Any
 
 _AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})+\.\d{2}")
 _GAP_PLACEHOLDER_RE = re.compile(
-    r"证据中未提供.+分项|无法按科目展开|费用明细说明|无法按科目|分项缺项|未提供变动原因"
+    r"证据中未提供.+分项|无法按科目展开|费用明细说明|无法按科目|分项缺项|"
+    r"未提供变动原因|证据未提供.{0,32}原因说明|仅列示金额与分项"
 )
 _DERIVED_BREAKDOWN_RE = re.compile(
     r"计算得出|减去变动|反推|通过.{0,24}得出|"

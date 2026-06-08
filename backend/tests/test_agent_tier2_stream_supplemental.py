@@ -95,7 +95,10 @@ def test_tier2_stream_supplemental_before_finalize_not_false_gap(monkeypatch):
     ):
         r = client.post(
             "/api/agent/chat/stream",
-            headers={"Authorization": f"Bearer {_finance_token()}"},
+            headers={
+                "Authorization": f"Bearer {_finance_token()}",
+                "X-Agent-Run-Id": "test-tier2-stream-supplemental",
+            },
             json={
                 "messages": [{"role": "user", "content": QUERY}],
                 "kb_scope": {"selected_folder_ids": [FOLDER_JINGPIN_CAIBAO_25]},

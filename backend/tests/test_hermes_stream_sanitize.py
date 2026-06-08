@@ -245,6 +245,46 @@ def test_strip_inline_source_markers_from_reply():
     assert "[doc_chunk" not in fin
 
 
+def test_full_body_strips_python_script_before_report():
+    from backend.services.hermes_stream_sanitize import HermesDraftTraceAccumulator
+
+    acc = HermesDraftTraceAccumulator()
+    acc.push("让我先搜索。\nimport json\nprint('x')\n")
+    acc.push("## 华清管理费用\n| 管理费用 | 44,933,044.34 |\n")
+    body = acc.full_body()
+    assert "import json" not in body
+    assert "44,933,044.34" in body
+
+
+def test_extract_user_facing_reply_strips_english_runs_preamble():
+    from backend.services.hermes_stream_sanitize import extract_user_facing_reply
+
+    raw = (
+        "I'll start by searching the Orient-G knowledge base for R&D expense details.\n"
+        "Let me use the MCP tools directly.\n"
+        "Login failed. Let me check the app settings.\n"
+        "## 华清飞扬研发费用对比分析报告\n"
+        "一、结论\n2025年研发费用 123,448,492.22 元。\n"
+    )
+    out = extract_user_facing_reply(raw)
+    assert "I'll start" not in out
+    assert "Login failed" not in out
+    assert "123,448,492.22" in out
+
+
+def test_resolve_hermes_effective_reply_prefers_deferred_draft():
+    from backend.services.hermes_stream_sanitize import (
+        HermesDraftTraceAccumulator,
+        resolve_hermes_effective_reply,
+    )
+
+    acc = HermesDraftTraceAccumulator()
+    acc.push("## 华清管理费用\n| 管理费用 | 44,933,044.34 |\n")
+    out = resolve_hermes_effective_reply(evt_reply="", draft_acc=acc)
+    assert "44,933,044.34" in out
+    assert len(out) > 20
+
+
 def test_hermes_draft_accumulator_not_single_chunk_fragment():
     from backend.services.hermes_stream_sanitize import HermesDraftTraceAccumulator, format_hermes_draft_trace
 
@@ -347,3 +387,51 @@ def test_finalize_tier2_strips_unsupported_estimate_sections():
     assert "300-400" not in out
     assert "13,722,360.23" in out
     assert "费用明细说明" in out or "无法按科目展开" in out
+
+
+def test_reply_has_unsupported_speculation_detects_kenengxi():
+    from backend.services.hermes_stream_sanitize import reply_has_unsupported_speculation
+
+    assert reply_has_unsupported_speculation("* **原因**：可能系部分固定资产已提足折旧。")
+    assert not reply_has_unsupported_speculation(
+        "* **原因**：主要系使用权资产减少，租赁面积缩减。"
+    )
+
+
+def test_finalize_strips_speculation_and_evidence_pack_inline():
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "出一份华清25、24两年管理费用明细的对比分析报告"
+    raw = (
+        "结论：管理费用 44,933,044.34 元。\n"
+        "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
+        "4.变动原因\n"
+        "* **原因**：可能系公司减少了审计、法律或咨询等外部专业服务采购。\n"
+        "引用证据：数据明细：`evidence_pack 32 、管理费用`、\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=False)
+    assert "可能系" not in out
+    assert "evidence_pack" not in out
+    assert "44,933,044.34" in out
+    assert "证据未提供变动原因" in out or "仅列示金额" in out
+
+
+def test_finalize_tier2_native_strips_speculation_keeps_hermes_body():
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "出一份华清25、24两年管理费用明细的对比分析报告"
+    raw = (
+        "## 华清管理费用对比分析\n\n"
+        "结论：2025 年管理费用较 2024 年下降 15.1%。\n"
+        "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
+        "#### 4. 变动原因\n"
+        "* **原因**：可能系公司减少了审计、法律或咨询等外部专业服务采购。\n"
+        "#### 5. 盈利能力影响\n"
+        "管理费用率下降，有利于提升净利率。\n"
+        "引用证据：`evidence_pack 32`\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert "可能系" not in out
+    assert "evidence_pack" not in out
+    assert "盈利能力影响" in out
+    assert "44,933,044.34" in out

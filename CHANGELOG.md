@@ -15,6 +15,8 @@
 
 ### Changed
 
+- Hermes 流式：Runs/chat 双路径 `HermesRunsLoopGuard`；error 时 salvage 过程稿（`hermes_salvaged`）；Tier 1 pack 充分时跳过 supplemental；Tier 0 终稿统一 `finalize_agent_reply`。
+- AI 互动页：Agent 流式期间防抖 session 持久化（修复 Maximum update depth）；Markdown 规范化拆至 `markdownNormalize.ts`。
 - 用户可见文案：「AI互动」统一为 **「AI内网」**（路由 `/ai-interaction`、API 不变）；侧栏/知识库/合同/BigPDF 等引用 `frontend/app/lib/ui_labels.ts`。
 - AI 互动页与知识库页布局/交互对齐 2026 spec；Markdown 气泡、KB 预检索与证据引用展示。
 - BigPDF 队列：持久化 `kb_tasks`、worker 重启续跑、智能轮询与 UI 状态归一。

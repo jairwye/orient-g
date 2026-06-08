@@ -354,7 +354,13 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 
 **Tier 1/2 禁 terminal（产品约定）：** Gateway 在 `orientg_route=hermes_lite|hermes_full` 时于 system JSON 注入 `orientg_forbidden_tools: ["terminal", "skill_view", "orientg-debugging"]` 与 `orientg_tool_policy`（仅 `orientg_kb_*` 取证，禁止 curl/openapi 探测）。Hermes 仍可能通过 Gateway 执行 terminal——若 Trace 出现 `curl`/`import urllib`，属 Hermes 侧未拦截；Orient-G 网关会将此类文本**分流到「推理过程」**，不写入主气泡正文。
 
-**推理 vs 正文（Orient-G 网关）：** 若模型把计划/脚本写在 `content` 而非 `reasoning_content`，`hermes_stream_sanitize` 会将其映射为 SSE `thinking`；用户可见报告（`###`、表格等）才进入 `delta`/`done.reply`。补检索在 Hermes `done` **之后**执行，可能 `replace_reply`；若本地重综合更差则保留 Hermes 原文（Trace：`保留 Hermes 原文`）。
+**推理 vs 正文（Orient-G 网关）：** 若模型把计划/脚本写在 `content` 而非 `reasoning_content`，`hermes_stream_sanitize` 会将其映射为 SSE `thinking`；用户可见报告（`###`、表格等）才进入 `delta`/`done.reply`。补检索在 Hermes `done` **之后**执行，可能 `replace_reply`；若本地重综合更差则保留 Hermes 原文（Trace：`保留 Hermes 原文`）。**Tier 0 / fast path** 终稿经 `finalize_fast_path_reply` → `finalize_agent_reply`，剥离 `ud_*` 等 inline 标记。
+
+**Hermes 中断 salvage：** 流式 `error`（stall / cancel / loop abort）时，若过程稿已累积且 pack 金额覆盖率足够（或结构化报告且无 planning 残留），`done` 带 `hermes_salvaged: true`、`synthesis: hermes_salvaged`，**不**用本地 synth 覆盖；前端完成行显示「salvage 过程稿为终稿」。
+
+**Runs / chat 循环护栏：** `HermesRunsLoopGuard` 同时用于 **Runs API** 与 **chat/completions 回退**；多次 forbidden shell 或超长未成稿时 abort，错误码 `hermes_run_forbidden_loop` / `hermes_run_wall_timeout`。
+
+**Tier 1 补检索 skip：** `needs_hermes_supplemental` 在 Hermes 终稿已 `hermes_reply_sufficient_against_pack` 时跳过额外 `orientg_kb_ask`，Trace 仍可能显示预检索 Evidence Pack。
 
 **智能体 ↔ Hermes 会话：** 请求体传 `orientg_chat_session_id`（侧栏会话 `s_…`）+ 可选 `hermes_session_id`（首轮 done 后持久化）。backend 解析为 `orientg-{username}--{chat_id}`，**同用户续聊同会话、换用户隔离、新建智能体对话=new chat id**。
 
@@ -425,6 +431,9 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 | 深度模式 GPU 飙高 / 掉线？ | 深度链路过长：**预检索** + **Hermes Runs（多轮 MCP + 推理）** + 可能 **Orient-G 补检索 + 本地重综合**（同一张卡连续占满）。点 **停止** 会 cancel run 并跳过补检索；仍占用时请等 Gateway 收尾或重启 `hermes gateway` |
 | 推理有字但无工具、很快结束？ | 查 Gateway/LLM 日志 `reasoning-budget` 是否耗尽；或模型未调用 MCP；`thinking_chars>0` 且 `tool_progress_events=0` 多为 budget/策略问题 |
 | Windows 仍走 mock | 设 `HERMES_DEV_MOCK=false` 且 `HERMES_ENABLED=true` |
+| Hermes error 后答案变短/变「缺少证据」？ | 查 `done.hermes_salvaged`；若为 true 表示 salvage 过程稿；若为 `hermes_fallback` 才是本地 synth |
+| `hermes_run_forbidden_loop` / `hermes_run_wall_timeout` | Runs 或 chat/completions 循环护栏主动收束；可重试或换「快速」Tier 0 |
+| 标准模式 pack 已够仍走 Hermes？ | **标准=固定 Tier 1**；pack 够时跳过**补检索**，不跳过 Hermes 编排本身 |
 
 本机探活远程生产 API：`.\scripts\check_agent_remote.ps1 -BaseUrl "http://<内网>/api"`。
 

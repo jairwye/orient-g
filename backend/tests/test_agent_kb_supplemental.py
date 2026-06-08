@@ -7,9 +7,11 @@ from unittest.mock import patch
 from backend.services.agent_kb_router import AgentRoute
 from backend.services.agent_kb_supplemental import (
     hermes_orientg_kb_ask_count,
+    hermes_reply_sufficient_against_pack,
     needs_hermes_supplemental,
     plan_supplemental_queries,
     prefetch_defers_hermes_draft_to_process,
+    supplemental_max_queries_for_route,
 )
 
 
@@ -77,7 +79,12 @@ def test_tier2_supplemental_when_hermes_estimates_and_pack_has_breakdown():
 def test_tier2_no_supplemental_when_hermes_has_exact_line_items():
     pack = {
         **PREFETCH_BREAKDOWN["evidence_pack"],
-        "facets": [{"label": "附注", "excerpt": "职工薪酬 10,802,366.11 市场及推广 2,889,547.75"}],
+        "facets": [
+            {
+                "label": "附注",
+                "excerpt": "职工薪酬 10,802,366.11 市场及推广 2,889,547.75 合计 13,722,360.23",
+            }
+        ],
     }
     prefetch = {**PREFETCH_BREAKDOWN, "evidence_pack": pack}
     good = (
@@ -91,6 +98,207 @@ def test_tier2_no_supplemental_when_hermes_has_exact_line_items():
         hermes_reply=good,
         user_query="出一份华清25、24两年销售费用明细的对比分析报告",
     )
+
+
+def test_lite_skips_supplemental_when_pack_and_hermes_sufficient():
+    pack = {
+        **PREFETCH_BREAKDOWN["evidence_pack"],
+        "task_type": "compare",
+        "coverage_score": 1.0,
+        "facets": [
+            {
+                "label": "附注",
+                "excerpt": "职工薪酬 10,802,366.11 市场及推广 2,889,547.75 合计 13,722,360.23",
+            }
+        ],
+    }
+    prefetch = {**PREFETCH_BREAKDOWN, "evidence_pack": pack}
+    good = (
+        "结论：2025 年销售费用较 2024 年下降。\n"
+        "| 销售费用 | 13,722,360.23 | 25,081,092.51 |\n"
+        "职工薪酬 10,802,366.11 市场及推广 2,889,547.75\n"
+    )
+    assert hermes_reply_sufficient_against_pack(
+        good, prefetch_result=prefetch, user_query="华清25、24两年销售费用明细对比"
+    )
+    assert not needs_hermes_supplemental(
+        agent_route=AgentRoute.hermes_lite,
+        prefetch_result=prefetch,
+        hermes_kb_ask_count=0,
+        hermes_reply=good,
+        user_query="华清25、24两年销售费用明细对比",
+    )
+
+
+def test_tier2_no_supplemental_when_only_speculation():
+    pack = {
+        **PREFETCH_BREAKDOWN["evidence_pack"],
+        "task_type": "compare",
+        "coverage_score": 1.0,
+        "facets": [
+            {
+                "label": "附注",
+                "excerpt": "职工薪酬 30,678,824.83 折旧 7,624,220.17 合计 44,933,044.34",
+            }
+        ],
+    }
+    prefetch = {**PREFETCH_BREAKDOWN, "evidence_pack": pack}
+    hermes = (
+        "结论：2025 年管理费用较 2024 年下降。\n"
+        "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
+        "职工薪酬 30,678,824.83 折旧 7,624,220.17\n"
+        "4.变动原因\n"
+        "* **原因**：可能系公司减少了审计、法律或咨询等外部专业服务采购。\n"
+        "5.盈利能力影响\n"
+        "管理费用率下降，有利于提升净利率。\n"
+    )
+    assert not needs_hermes_supplemental(
+        agent_route=AgentRoute.hermes_full,
+        prefetch_result=prefetch,
+        hermes_kb_ask_count=0,
+        hermes_reply=hermes,
+        user_query="出一份华清25、24两年管理费用明细的对比分析报告",
+    )
+
+
+def test_choose_supplemental_keeps_hermes_when_synth_denies_reason_but_hermes_has_narrative():
+    from backend.services.agent_kb_supplemental import choose_supplemental_reply
+
+    pack = {
+        "facets": [
+            {"excerpt": "职工薪酬 30,678,824.83 折旧 7,624,220.17 合计 44,933,044.34"},
+        ]
+    }
+    hermes = (
+        "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
+        "#### 变动原因\n"
+        "年报指出主要是由于人员减少，职工薪酬减少。\n"
+    )
+    synth = (
+        "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
+        "变动原因：证据未提供管理费用变动的具体原因说明，仅列示金额与分项对比。\n"
+    )
+    final, adopted, reason = choose_supplemental_reply(
+        hermes_reply=hermes,
+        synth_reply=synth,
+        prefetch_result={"evidence_pack": pack},
+        agent_route=AgentRoute.hermes_lite,
+    )
+    assert adopted is False
+    assert reason == "keep_hermes_has_narrative_reason"
+    assert "人员减少" in final
+
+
+def test_tier2_choose_supplemental_keeps_richer_hermes_over_thin_synth():
+    from backend.services.agent_kb_supplemental import choose_supplemental_reply
+
+    pack = {
+        "facets": [
+            {
+                "excerpt": "职工薪酬 30,678,824.83 折旧 7,624,220.17 合计 44,933,044.34",
+            }
+        ]
+    }
+    hermes = (
+        "结论：2025 年管理费用较 2024 年下降。\n"
+        "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
+        "职工薪酬 30,678,824.83 折旧 7,624,220.17\n"
+        "变动原因：主要系使用权资产减少，租赁面积缩减。\n"
+        "盈利能力：费比改善。\n" * 40
+    )
+    synth = "结论：管理费用下降。\n| 管理费用 | 44,933,044.34 | 52,950,207.05 |"
+    final, adopted, reason = choose_supplemental_reply(
+        hermes_reply=hermes,
+        synth_reply=synth,
+        prefetch_result={"evidence_pack": pack},
+        agent_route=AgentRoute.hermes_full,
+    )
+    assert adopted is False
+    assert "hermes" in reason
+    assert "44,933,044.34" in final
+    assert len(final) >= len(synth) * 2
+
+
+def test_lite_needs_supplemental_when_hermes_has_speculation():
+    pack = {
+        **PREFETCH_BREAKDOWN["evidence_pack"],
+        "task_type": "compare",
+        "coverage_score": 1.0,
+        "facets": [
+            {
+                "label": "附注",
+                "excerpt": "职工薪酬 30,678,824.83 折旧 7,624,220.17 合计 44,933,044.34",
+            }
+        ],
+    }
+    prefetch = {**PREFETCH_BREAKDOWN, "evidence_pack": pack}
+    bad = (
+        "结论：管理费用下降。\n"
+        "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
+        "4.变动原因\n"
+        "* **原因**：可能系公司减少了审计、法律或咨询等外部专业服务采购。\n"
+    )
+    assert not hermes_reply_sufficient_against_pack(
+        bad, prefetch_result=prefetch, user_query="华清25、24两年管理费用明细对比"
+    )
+    assert needs_hermes_supplemental(
+        agent_route=AgentRoute.hermes_lite,
+        prefetch_result=prefetch,
+        hermes_kb_ask_count=0,
+        hermes_reply=bad,
+        user_query="出一份华清25、24两年管理费用明细的对比分析报告",
+    )
+
+
+def test_tier2_analyst_short_but_sufficient_skips_supplemental():
+    pack = {
+        **PREFETCH_BREAKDOWN["evidence_pack"],
+        "task_type": "compare",
+        "coverage_score": 1.0,
+        "facets": [
+            {
+                "label": "附注",
+                "excerpt": "职工薪酬 10,802,366.11 市场及推广 2,889,547.75 合计 13,722,360.23",
+            }
+        ],
+    }
+    prefetch = {**PREFETCH_BREAKDOWN, "evidence_pack": pack}
+    good = (
+        "结论：2025 年销售费用较 2024 年下降。\n"
+        "| 销售费用 | 13,722,360.23 | 25,081,092.51 |\n"
+        "职工薪酬 10,802,366.11 市场及推广 2,889,547.75\n"
+    )
+    q = "出一份华清25、24两年销售费用明细的对比分析报告"
+    assert not needs_hermes_supplemental(
+        agent_route=AgentRoute.hermes_full,
+        prefetch_result=prefetch,
+        hermes_kb_ask_count=0,
+        hermes_reply=good,
+        user_query=q,
+    )
+
+
+def test_supplemental_max_queries_by_route():
+    assert supplemental_max_queries_for_route(AgentRoute.hermes_lite) == 5
+    assert supplemental_max_queries_for_route(AgentRoute.hermes_full) == 2
+
+
+def test_plan_supplemental_full_prefers_narrative_and_caps():
+    pack = {
+        **PREFETCH_BREAKDOWN["evidence_pack"],
+        "retrieval_queries": ["出一份华清销售费用明细"],
+    }
+    qs = plan_supplemental_queries(
+        "华清25、24两年销售费用明细对比分析报告",
+        evidence_pack=pack,
+        max_queries=2,
+        prefetch_tier="full",
+    )
+    assert len(qs) <= 2
+    if qs:
+        assert any(
+            kw in q for q in qs for kw in ("经营", "变动原因", "市场及推广", "主营业务")
+        )
 
 
 def test_prefetch_defers_hermes_draft_for_breakdown_only():
