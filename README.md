@@ -196,7 +196,26 @@ alembic -c backend\alembic.ini upgrade head
 
 ## 生产部署
 
-服务器上以 **docker-compose.yml** 方式运行，仅监听内网 IP。首次部署可在服务器上执行 `docker compose up -d`；若使用 Portainer 等工具，可上传 `docker-compose.yml` 并配置环境变量后一键部署。
+服务器上以 **docker-compose.yml** 方式运行，仅监听内网 IP。**环境变量模板**：复制 [`.env.example`](.env.example) 为 `.env`，主要改「Docker / 生产部署」段；**Hermes 另需** [`.env.hermes`](docker/hermes/env.hermes.example)（见下方步骤 5 与 [docs/hermes.md](docs/hermes.md) §3）。
+
+### 生产部署步骤（含 Hermes + MCP 接生产库）
+
+| 步骤 | 做什么 | 参考 |
+|------|--------|------|
+| 1 | 克隆仓库到部署目录（须含 `Caddyfile`），`cp .env.example .env` 并改 `POSTGRES_*`、`AUTH_SECRET`、`FRONTEND_ORIGIN`、`BIND_IP`、`LLM_*`、`OLLAMA_URL=http://ollama:11434`、`DOCLING_HTTP_BASE_URL=http://docling:5001` | [`.env.example`](.env.example)；README「部署时务必配置」 |
+| 2 | `DB_MIGRATION_MODE=alembic`；**备份**后 `docker compose exec backend alembic -c backend/alembic.ini upgrade head` | README「数据库结构迁移」 |
+| 3 | `docker compose pull db backend frontend caddy`（按需 `ollama`）；可选固定 `BACKEND_IMAGE`/`FRONTEND_IMAGE` 为 `ghcr.io/.../sha-xxx` | 下文「更新业务镜像」 |
+| 4 | `docker compose up -d`，确认 `/api/health`、登录、知识库可用 | — |
+| 5 | **Hermes**：`cp docker/hermes/env.hermes.example .env.hermes`；设 `API_SERVER_KEY`；`OPENAI_API_BASE` 与 `.env` 中 `LLM_BASE_URL` 同网关（容器 URL）；在 `.env` 设 `HERMES_ENABLED=true`、`HERMES_BASE_URL=http://hermes-agent:8642`、`HERMES_INTERNAL_TOKEN=<同 API_SERVER_KEY>` 及 `.env.example` § Hermes **B) 生产** 段 | [docs/hermes.md §3](docs/hermes.md)；[docker-compose.hermes.yml](docker-compose.hermes.yml) |
+| 6 | **MCP**：`docker ps` 查 backend 容器名，改 [docker/hermes/mcp-orientg.snippet.json](docker/hermes/mcp-orientg.snippet.json) 后合并进 `hermes_state` 卷内 `/root/.hermes/config.yaml`；`docker exec -i <backend> python -m backend.mcp.orientg_server` 冒烟 | [docs/hermes.md §3.5–3.6](docs/hermes.md) |
+| 7 | `docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d` | — |
+| 8 | 验收：`curl hermes-agent:8642/health`（在 backend 容器内）、浏览器 **AI 内网 → 智能体** 带 KB 提问；完成 [docs/hermes.md §8](docs/hermes.md) ≥2 项 | §8 验收清单 |
+
+**勿**把开发机 `.env` 整份复制到生产（`DATABASE_URL`、`HERMES_BASE_URL=127.0.0.1`、远程 IP 形式的 `OLLAMA_URL`/`DOCLING_*` 在容器内不可用）。业务开关（`HERMES_AGENT_*`）可按开发验收结果从 `.env.example` **B) 段**迁移。
+
+**架构**：用户 JWT → backend → `hermes-agent:8642` → MCP `docker exec` backend → `orientg_server` → **同一 PostgreSQL + uploads**（[docs/hermes.md §0、§4](docs/hermes.md)）。
+
+首次部署可在服务器上执行 `docker compose up -d`；若使用 Portainer 等工具，可上传 `docker-compose.yml` 并配置环境变量后一键部署。
 
 **Caddy 相关**：反向代理 Caddy 通过卷挂载使用项目根目录的 `Caddyfile`，因此**必须在包含 Caddyfile 的目录下执行** `docker compose`（推荐：先克隆仓库，再在项目根目录执行）。若仅用 Portainer 粘贴 compose 而不克隆仓库，需在宿主机某路径（如 `/opt/mgmt-web/`）放置 `Caddyfile`，并在 compose 中把 `./Caddyfile` 改为该绝对路径。
 
@@ -303,11 +322,12 @@ DOCKER_BUILDKIT=1 docker build \
 docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 ```
 
-**部署时务必配置的环境变量**（在 Portainer 的 Stack 环境变量或服务器 `.env` 中设置）：
+**部署时务必配置的环境变量**（在 Portainer 的 Stack 环境变量或服务器 `.env` 中设置；Hermes 容器见 `.env.hermes`）：
 
 - **POSTGRES_PASSWORD**：数据库密码；生产环境务必修改，勿使用默认值。
 - **FRONTEND_ORIGIN**：浏览器实际访问的地址（如 `http://192.168.1.100` 或 `https://192.168.1.100`），用于后端 CORS。未设置时默认为 `http://localhost:3000`，若用户通过内网 IP 访问则跨域请求会被拒绝。
 - **AUTH_SECRET**：页面登录 JWT 签名密钥；生产环境务必设置为强随机字符串，勿使用默认值，防止 token 被伪造。
+- **HERMES（智能体）**：`HERMES_ENABLED=true`、`HERMES_DEV_MOCK=false`、`HERMES_BASE_URL=http://hermes-agent:8642`、`HERMES_INTERNAL_TOKEN` 与 `.env.hermes` 的 `API_SERVER_KEY` 一致；详见 [`.env.example`](.env.example) Hermes **B) 生产** 与 [docs/hermes.md §3](docs/hermes.md)。
 
 ## 开发/生产与 LLM / Ollama
 
