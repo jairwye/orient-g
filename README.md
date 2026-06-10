@@ -202,7 +202,7 @@ alembic -c backend\alembic.ini upgrade head
 
 | 步骤 | 做什么 | 参考 |
 |------|--------|------|
-| 1 | 克隆仓库到部署目录（须含 `Caddyfile`），`cp .env.example .env` 并改 `POSTGRES_*`、`AUTH_SECRET`、`FRONTEND_ORIGIN`、`BIND_IP`、`LLM_*`、`OLLAMA_URL=http://ollama:11434`、`DOCLING_HTTP_BASE_URL=http://docling:5001` | [`.env.example`](.env.example)；README「部署时务必配置」 |
+| 1 | **git clone** 仓库到部署目录（`pull` 镜像不会带 `docker/hermes/`、`docker-compose.hermes.yml`、`Caddyfile`）；`cp .env.example .env`、`cp docker/hermes/env.hermes.example .env.hermes` | [`.env.example`](.env.example) Docker 段已含生产 Hermes 默认值 |
 | 2 | `DB_MIGRATION_MODE=alembic`；**备份**后 `docker compose exec backend alembic -c backend/alembic.ini upgrade head` | README「数据库结构迁移」 |
 | 3 | `docker compose pull db backend frontend caddy`（按需 `ollama`）；可选固定 `BACKEND_IMAGE`/`FRONTEND_IMAGE` 为 `ghcr.io/.../sha-xxx` | 下文「更新业务镜像」 |
 | 4 | `docker compose up -d`，确认 `/api/health`、登录、知识库可用 | — |
