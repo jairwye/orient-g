@@ -5,7 +5,7 @@
 
 services:
   db:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mgmt}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
@@ -133,7 +133,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     ports:
-      - "127.0.0.1:11434:11434"
+      - "${BIND_IP:-127.0.0.1}:11434:11434"
     environment:
       - OLLAMA_NUM_GPU=0
 

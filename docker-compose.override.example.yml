@@ -1,0 +1,20 @@
+# 生产机本地 overlay（复制为 docker-compose.override.yml，勿提交 Git）
+# Compose 会自动与 docker-compose.yml 合并；用于保留与仓库不同的生产项。
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   echo "docker-compose.override.yml" >> .git/info/exclude
+#
+# 示例：本机 mihomo 代理、取消 docling/ollama 的 CPU/内存上限（override 无法「删除」基座字段，可写极大值或改 .env）
+
+services:
+  docling:
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY:-http://mihomo:7890}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://mihomo:7890}
+    # 若需取消 compose 默认 cpus/mem_limit，在此覆盖为更大值，或在本机 skip-worktree 改 docker-compose.yml
+    # cpus: "32"
+    # mem_limit: 64g
+
+  ollama:
+    # cpus: "32"
+    # mem_limit: 64g

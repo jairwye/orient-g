@@ -215,6 +215,8 @@ cp docker/hermes/env.hermes.example .env.hermes
 
 **`.env.hermes`**：仓库里只有 `docker/hermes/env.hermes.example`，需 **`cp` 到项目根 `.env.hermes`**（git 忽略，不会随 pull 自动生成）。**MCP**：按 [docs/hermes.md §3.5](docs/hermes.md) 改 `docker/hermes/mcp-orientg.snippet.json` 并合并进 Hermes 卷（一次性）。
 
+**生产 compose 差异**：与仓库不同的项（如 mihomo 代理）放 **`docker-compose.override.yml`**（见 [`docker-compose.override.example.yml`](docker-compose.override.example.yml)），`git pull` 不再改动手改 `docker-compose.yml`。Compose 无法通过 override「删掉」基座里的 `cpus`/`mem_limit`，若需取消上限可写更大值或 `git update-index --skip-worktree docker-compose.yml`。
+
 ### 生产部署步骤（含 Hermes + MCP 接生产库）
 
 | 步骤 | 做什么 | 参考 |

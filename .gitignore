@@ -83,6 +83,9 @@ CLAUDE.md
 kb_debug.log
 backend/data/orient_g.db
 backend/data/*.db
+
+# 生产机 compose 本地差异（见 docker-compose.override.example.yml）
+docker-compose.override.yml
 shot-targets.png
 frontend/shot-targets.png
 
