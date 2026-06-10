@@ -210,3 +210,48 @@ def test_hermes_lite_error_salvages_rich_draft_over_synth(mock_stream, mock_synt
     assert done.get("hermes_salvaged") is True
     assert "44,933,044.34" in (done.get("reply") or "")
     assert "证据未提供" not in (done.get("reply") or "")
+
+
+@patch("backend.services.ai_interaction_llm.generate_chat_reply")
+@patch("backend.routers.agent.settings")
+@patch("backend.routers.agent.stream_agent_chat")
+def test_hermes_empty_without_kb_scope_falls_back_to_local_llm(mock_stream, mock_settings, mock_chat):
+    mock_settings.chat_llm_available = True
+    mock_settings.llm_chat_configured = True
+    mock_settings.llm_model = "test-model"
+    mock_settings.ollama_model = "ollama-model"
+    mock_stream.return_value = iter(
+        [{"type": "error", "message": "Hermes 已完成编排，但未生成可展示的正文。", "code": "hermes_empty"}]
+    )
+    mock_chat.return_value = "你好，我是本地 LLM 回答。"
+    raw = list(
+        _agent_chat_stream_events(
+            token="tok",
+            uname="finance_test",
+            tenant_id="tenant1",
+            messages=[{"role": "user", "content": "你好"}],
+            kb_scope_payload={},
+            attached=[],
+            body=type(
+                "B",
+                (),
+                {
+                    "allow_kb_write": False,
+                    "enabled_skills": None,
+                    "model": None,
+                    "hermes_session_id": None,
+                    "orientg_chat_session_id": None,
+                },
+            )(),
+            prefetch_tool_calls=[],
+            prefetch_result=None,
+            fixtures={"tenant_id": "tenant1", "documents": []},
+            agent_route=AgentRoute.hermes_lite,
+        )
+    )
+    evts = _parse_sse(raw)
+    done = [e for e in evts if e.get("type") == "done"][-1]
+    assert done.get("hermes_fallback") is True
+    assert done.get("synthesis") == "local_llm"
+    assert "本地 LLM" in (done.get("reply") or "")
+    mock_chat.assert_called_once()

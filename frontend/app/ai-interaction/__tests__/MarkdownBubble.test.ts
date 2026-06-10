@@ -19,4 +19,11 @@ describe("normalizeAssistantMarkdown", () => {
     const out = normalizeAssistantMarkdown(raw);
     expect(out.startsWith("## 结论")).toBe(true);
   });
+
+  it("splits glued bold heading and bullet list", () => {
+    const raw = "**任务执行**-编写、调试-执行终端命令";
+    const out = normalizeAssistantMarkdown(raw);
+    expect(out).toContain("**任务执行**");
+    expect(out).toContain("- 编写");
+  });
 });

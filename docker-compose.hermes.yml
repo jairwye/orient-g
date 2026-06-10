@@ -11,10 +11,15 @@ services:
   hermes-agent:
     image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
     pull_policy: ${HERMES_PULL_POLICY:-if_not_present}
+    # 官方镜像默认 CMD 为交互 CLI；Orient-G 需要 Gateway API（8642）
+    command: gateway run
     env_file:
       - .env.hermes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - hermes_state:/root/.hermes
+      # 官方数据目录为 /opt/data（非 /root/.hermes），见 Hermes Docker 文档
+      - hermes_state:/opt/data
       # MCP 通过 docker exec 调 backend 时需访问宿主机 Docker（生产请评估安全策略）
       - /var/run/docker.sock:/var/run/docker.sock:ro
     expose:
@@ -30,6 +35,8 @@ services:
       HERMES_BASE_URL: ${HERMES_BASE_URL:-http://hermes-agent:8642}
       HERMES_INTERNAL_TOKEN: ${HERMES_INTERNAL_TOKEN:-}
       HERMES_MODEL: ${HERMES_MODEL:-hermes-agent}
+      # .env 若设 HTTP_PROXY，须 bypass 内网 Hermes；否则 httpx/urllib 走代理且无法解析 hermes-agent
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1,docling,backend,db,frontend,caddy,ollama,10.0.0.0/8,172.16.0.0/12,192.168.104.0/16},hermes-agent,orient-g-hermes-agent-1"
     depends_on:
       hermes-agent:
         condition: service_started

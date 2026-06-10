@@ -41,9 +41,33 @@ function convertTsvTables(text: string): string {
   return out.join("\n");
 }
 
+function fixGluedMarkdownLists(text: string): string {
+  let t = text;
+  t = t.replace(/(\*\*[^*]+\*\*)\s*-/g, "$1\n\n-");
+  t = t.replace(/([）\)\]」』。.!?；;])\s*-/g, "$1\n\n-");
+  t = t.replace(/(\*\*[^*]+\*\*)\s*([📝💻📊🗂️🌐])/g, "$1\n\n$2");
+  let prev = "";
+  while (prev !== t) {
+    prev = t;
+    t = t.replace(/(-[^\n-]{4,}?)-(?=[^\n-])/g, "$1\n-");
+  }
+  return t.replace(/\n{3,}/g, "\n\n");
+}
+
+function normalizeMarkdownBulletLines(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/^(\s*)-(?!\s)(.+)$/);
+      return m ? `${m[1]}- ${m[2].trim()}` : line;
+    })
+    .join("\n");
+}
+
 export function normalizeAssistantMarkdown(text: string): string {
   let t = (text || "").trim();
   if (!t) return "";
+  t = normalizeMarkdownBulletLines(fixGluedMarkdownLists(t));
   t = t.replace(/^(根据检索到的[^\n]+。\n?)/, "");
   t = convertTsvTables(t);
   t = t.replace(

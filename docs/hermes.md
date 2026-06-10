@@ -168,7 +168,7 @@ HERMES_REQUEST_TIMEOUT_S=300
 | Tier | `agent_route` | 行为 |
 |------|---------------|------|
 | 0 | `fast` | 多 query 预检索 → **Evidence Pack** → Orient-G 本地 LLM 综合（`hermes_used=false`） |
-| 1 | `hermes_lite` | 注入 pack；Hermes 编排；`orientg_kb_ask` 补检索预算默认 ≤2；**勿用 terminal 编造证据** |
+| 1 | `hermes_lite` | 注入 pack；Hermes 编排；`orientg_kb_ask` 补检索预算默认 ≤2；**勿用 terminal 编造证据**；**未选 KB 时**（含 UI「快速」档）仍走 Hermes lite，注入中文/排版约束 |
 | 2 | `hermes_full` | 深度 / 写库 / 无 KB；完整工具环 |
 
 `HERMES_AGENT_KB_PREFETCH=true` + `HERMES_AGENT_KB_MULTI_QUERY=true`（默认）时网关执行检索计划（1–4 子 query）并合并 citation。`HERMES_AGENT_STANDARD_TIER0=true`（默认）时 **仅 auto 模式**在 pack 覆盖率足够且无需多轮编排时走 Tier 0；**标准模式固定 Tier 1 Hermes lite**。前端三档：`agent_mode=fast|standard|deep`。SSE `done` 含 `agent_tier`、`evidence_pack` 摘要。`GET /api/agent/status` 含 `hermes_agent_kb_multi_query`、`hermes_agent_standard_tier0`。
@@ -242,10 +242,40 @@ cp docker/hermes/env.hermes.example .env.hermes
 docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d
 ```
 
+### 3.4.1 `/opt/data/config.yaml`（LLM，Hermes v0.16+ 必需）
+
+Docker 卷内路径为 **`/opt/data/config.yaml`**（非 `/root/.hermes`）。内网 OpenAI 兼容端点（llama.cpp 等）须显式 **`provider: custom`**，否则 Gateway 报 `No LLM provider configured`：
+
+```yaml
+model:
+  provider: custom
+  default: qwen3.6-35b-apex          # 与 LLM_MODEL、/v1/models 的 id 一致
+  model: qwen3.6-35b-apex
+  base_url: http://host.docker.internal:28800/v1
+  api_key: "${OPENAI_API_KEY}"       # 与 Orient-G .env 的 LLM_API_KEY 相同；见 /opt/data/.env
+
+mcp_servers:
+  orientg:
+    command: docker
+    args: [exec, -i, -e, ORIENTG_USER_TOKEN, orient-g-backend-1, python, -m, backend.mcp.orientg_server]
+    env:
+      ORIENTG_USER_TOKEN: "${ORIENTG_USER_TOKEN}"
+    timeout: 180
+    connect_timeout: 60
+```
+
+`.env.hermes` 仍写入 **`/opt/data/.env`**（含 `API_SERVER_*`）。**`OPENAI_API_KEY` 必须与项目 `.env` 的 `LLM_API_KEY` 一致**（同一 `:28800` 网关）。若 `.env` 里残留 `OPENROUTER_API_KEY` 等，可能干扰路由，生产建议删除。
+
+写回卷后 `docker compose … restart hermes-agent`，容器内验证：
+
+```bash
+docker exec orient-g-hermes-agent-1 hermes config show | head -30
+```
+
 ### 3.5 MCP（生产）
 
 1. `docker ps` 查 backend 容器名，替换 [`mcp-orientg.snippet.json`](../docker/hermes/mcp-orientg.snippet.json) 中的 `BACKEND_CONTAINER_NAME`。
-2. 将 `mcp_servers` 合并进 Hermes 状态卷（`hermes_state` → 容器内 `/root/.hermes/config.yaml`）。
+2. 将 `mcp_servers` 合并进 Hermes 状态卷（`hermes_state` → 容器内 `/opt/data/config.yaml`；`.env.hermes` 内容亦需写入 `/opt/data/.env`）。
 
 等价命令：
 
@@ -418,9 +448,11 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 | 现象 | 处理 |
 |------|------|
 | `/agent` 503 `hermes_disabled` | 对应环境 `.env` 未设 `HERMES_ENABLED=true` 或未重启 backend |
-| 502 无法连接 Hermes | Gateway 未起；开发 `127.0.0.1:8642`，生产 `hermes-agent:8642` |
+| 502 无法连接 Hermes | Gateway 未起；开发 `127.0.0.1:8642`，生产 `hermes-agent:8642`；backend 设了 `HTTP_PROXY` 时须把 `hermes-agent` 加入 `NO_PROXY`（见 `docker-compose.hermes.yml`） |
 | 502 HTTP 401 | `HERMES_INTERNAL_TOKEN` ≠ `API_SERVER_KEY` |
 | MCP 无 orientg 工具 | 检查 `mcp_servers`、Python 路径、`cwd`、容器名（生产） |
+| Gateway 500 `No LLM provider configured` | `/opt/data/config.yaml` 缺 `model.provider: custom` 与 `base_url`；见 §3.4.1 |
+| Gateway 502 / upstream 401 `Invalid API Key` | Hermes 的 `api_key` 与 `:28800` 网关要求不一致；对齐 `LLM_API_KEY` → `/opt/data/.env` 的 `OPENAI_API_KEY` |
 | KB deny | 用 `finance_test` 或确认对 `c_finance_public_1` 有读权限 |
 | mock 通过但 Hermes 失败 | mock 不是产品链路；按 §2 / §3 同一架构验收 |
 | 开发/生产两套方案？ | 只有 §0 一条链路；§6 是单元测试加速器 |

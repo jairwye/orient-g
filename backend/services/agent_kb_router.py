@@ -56,12 +56,14 @@ def resolve_agent_route(
     needs_orch = query_needs_hermes_orchestration(user_query, pack) if pack else False
 
     if not has_kb_scope:
-        if mode == "deep" and hermes_configured:
-            return AgentRoute.hermes_full
+        # 无 KB：Hermes 已配置时一律走 Hermes（含「快速」UI 档）。
+        # 注意：这不影响「已选知识库 + 快速」→ 仍 Tier 0 本地综合（见下方 mode == fast）。
+        if hermes_configured:
+            if mode == "deep":
+                return AgentRoute.hermes_full
+            return AgentRoute.hermes_lite
         if mode == "fast":
             return AgentRoute.fast
-        if hermes_configured and mode in ("standard", "auto"):
-            return AgentRoute.hermes_lite
         return AgentRoute.fast
     if allow_kb_write and query_implies_kb_write(user_query):
         return AgentRoute.hermes_full

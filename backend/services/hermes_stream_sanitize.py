@@ -566,9 +566,12 @@ def pick_best_hermes_runs_raw(accumulated: str, final_output: str) -> str:
 
 def normalize_reply_markdown(text: str) -> str:
     """修复 Hermes 流式挤成一行的标题与 Markdown 表。"""
+    from backend.services.orientg_agent_presentation import fix_glued_markdown_lists
+
     t = _dedupe_report_intro((text or "").strip())
     if not t:
         return ""
+    t = fix_glued_markdown_lists(t)
     t = _convert_tsv_tables(t)
     t = re.sub(r"^(根据检索到的[^\n]+。\n?)", "", t, count=1).strip()
     t = re.sub(

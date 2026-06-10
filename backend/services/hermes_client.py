@@ -96,19 +96,6 @@ def _build_messages(
     }
     if orientg_route:
         ctx["orientg_route"] = orientg_route
-    if orientg_route in ("hermes_lite", "hermes_full"):
-        ctx["orientg_tool_policy"] = (
-            "知识库类任务：仅通过 orientg_kb_* MCP 获取与引用证据；"
-            "禁止用 terminal/shell/curl 探测 API 或读取本地路径；禁止编造文件内容充当 KB 答案。"
-        )
-    if orientg_route in ("hermes_lite", "hermes_full"):
-        from backend.services.hermes_orientg_policy import KB_FORBIDDEN_TOOL_NAMES
-
-        ctx["orientg_forbidden_tools"] = list(KB_FORBIDDEN_TOOL_NAMES)
-        ctx["orientg_allowed_kb_tools"] = ["orientg_kb_ask", "orientg_kb_list", "orientg_kb_import_artifact"]
-        if not allow_kb_write:
-            ctx["orientg_kb_write"] = False
-            ctx["orientg_allowed_kb_tools"] = ["orientg_kb_ask", "orientg_kb_list"]
     if orientg_kb_ask_budget is not None:
         ctx["orientg_kb_ask_budget"] = orientg_kb_ask_budget
     user_q = ""
@@ -116,25 +103,56 @@ def _build_messages(
         if m.get("role") == "user":
             user_q = str(m.get("content") or "").strip()
             break
-    if user_q and orientg_route in ("hermes_lite", "hermes_full"):
+    if orientg_route in ("hermes_lite", "hermes_full"):
         from backend.services.agent_hermes_tier_policy import (
             hermes_answer_requirements,
             hermes_orientg_context_extras,
             prefetch_tier_from_route,
         )
+        from backend.services.orientg_agent_presentation import (
+            orientg_agent_presentation_context,
+            orientg_tool_policy_for_route,
+        )
 
-        tier = prefetch_tier_from_route(orientg_route)
-        req = hermes_answer_requirements(tier=tier, user_query=user_q)
-        if req:
-            ctx["orientg_answer_requirements"] = req
         ctx.update(
-            hermes_orientg_context_extras(
-                tier=tier,
-                evidence_pack=evidence_pack,
+            orientg_tool_policy_for_route(
+                orientg_route=orientg_route,
+                kb_scope=kb_scope,
+                allow_kb_write=allow_kb_write,
+            )
+        )
+        ctx.update(
+            orientg_agent_presentation_context(
                 user_query=user_q,
+                kb_scope=kb_scope,
                 enabled_skills=enabled_skills,
             )
         )
+        tier = prefetch_tier_from_route(orientg_route)
+        req_parts: list[str] = []
+        fmt = ctx.get("orientg_answer_format")
+        if fmt:
+            req_parts.append(str(fmt))
+        lang_rule = ctx.get("orientg_reply_language_rule")
+        if lang_rule:
+            req_parts.append(str(lang_rule))
+        intro = ctx.get("orientg_product_intro_scope")
+        if intro:
+            req_parts.append(str(intro))
+        if user_q:
+            tier_req = hermes_answer_requirements(tier=tier, user_query=user_q)
+            if tier_req:
+                req_parts.append(tier_req)
+            ctx.update(
+                hermes_orientg_context_extras(
+                    tier=tier,
+                    evidence_pack=evidence_pack,
+                    user_query=user_q,
+                    enabled_skills=enabled_skills,
+                )
+            )
+        if req_parts:
+            ctx["orientg_answer_requirements"] = "\n".join(req_parts).strip()
         ctx["orientg_stream_reasoning"] = bool(settings.hermes_stream_reasoning)
         if tier == "full":
             ctx["orientg_deep_orchestration"] = True

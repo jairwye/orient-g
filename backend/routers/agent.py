@@ -545,6 +545,35 @@ def agent_chat(request: Request, body: AgentChatBody):
     }
 
 
+def _yield_local_llm_stream_fallback(
+    *,
+    messages: list[dict[str, str]],
+    body: AgentChatBody,
+    tenant_id: str,
+    agent_route: AgentRoute,
+    prefetch_tool_calls: list[dict[str, Any]],
+    prefetch_result: dict[str, Any] | None,
+    status_message: str,
+) -> Any:
+    """无 KB 范围时 Hermes 失败：回退本地对话 LLM（与非流式 /agent 无 scope 路径一致）。"""
+    from backend.services.agent_skills_loader import build_system_addon_for_enabled_skills
+    from backend.services.ai_interaction_llm import generate_chat_reply
+
+    yield f"data: {json.dumps({'type': 'status', 'message': status_message, 'step': 'hermes_fallback'}, ensure_ascii=False)}\n\n"
+    skill_addon = build_system_addon_for_enabled_skills(body.enabled_skills or [])
+    use_model = (body.model or "").strip() or (
+        (settings.llm_model or "").strip() if settings.llm_chat_configured else (settings.ollama_model or "").strip()
+    ) or settings.ollama_model
+    reply = generate_chat_reply(
+        model=use_model,
+        messages=messages,
+        skill_addon=skill_addon or None,
+    )
+    yield f"data: {json.dumps({'type': 'delta', 'content': reply}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'ok': True, 'reply': reply, 'tenant_id': tenant_id, 'kb_prefetch': bool(prefetch_tool_calls), 'hermes_fallback': True, 'hermes_used': False, 'synthesis': 'local_llm', 'llm_model': use_model, 'tool_calls': prefetch_tool_calls, 'citations': (prefetch_result or {}).get('citations') or [], 'agent_route': agent_route.value, 'agent_tier': route_to_agent_tier(agent_route)}, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 def _agent_chat_stream_events(
     *,
     token: str,
@@ -561,8 +590,10 @@ def _agent_chat_stream_events(
     agent_route: AgentRoute = AgentRoute.hermes_lite,
     kb_ask_budget: int | None = None,
 ) -> Any:
-    """SSE：Hermes 流式；失败且已有预检索时回退本地 LLM 综合。"""
+    """SSE：Hermes 流式；失败且已有预检索时回退本地 LLM 综合；无 KB 时 Hermes 失败亦回退本地对话 LLM。"""
     from backend.services.agent_kb_router import hermes_prefetch_status_message
+
+    has_kb_scope = should_prefetch_kb(kb_scope_payload, attached_doc_ids=attached)
 
     if prefetch_tool_calls:
         msg = hermes_prefetch_status_message(agent_route)
@@ -611,6 +642,21 @@ def _agent_chat_stream_events(
             if evt.get("type") == "error" and evt.get("code") == "cancelled":
                 yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
+                return
+            if evt.get("type") == "error" and not has_kb_scope and settings.chat_llm_available:
+                if evt.get("code") == "hermes_empty":
+                    fb_msg = "Hermes 未返回正文，Orient-G 改用本地 LLM 作答（未选知识库）。"
+                else:
+                    fb_msg = str(evt.get("message") or "Hermes 调用异常") + "；Orient-G 改用本地 LLM 作答（未选知识库）。"
+                yield from _yield_local_llm_stream_fallback(
+                    messages=messages,
+                    body=body,
+                    tenant_id=tenant_id,
+                    agent_route=agent_route,
+                    prefetch_tool_calls=prefetch_tool_calls,
+                    prefetch_result=prefetch_result,
+                    status_message=fb_msg,
+                )
                 return
             if evt.get("type") == "error" and prefetch_result and prefetch_result.get("ok"):
                 if agent_route == AgentRoute.hermes_full:

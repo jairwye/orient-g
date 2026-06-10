@@ -22,7 +22,8 @@ function parseTableRow(line: string): string[] {
 type Block =
   | { kind: "para"; text: string }
   | { kind: "table"; rows: string[][] }
-  | { kind: "heading"; level: number; text: string };
+  | { kind: "heading"; level: number; text: string }
+  | { kind: "list"; items: string[] };
 
 function parseBlocks(text: string): Block[] {
   const blocks: Block[] = [];
@@ -49,6 +50,20 @@ function parseBlocks(text: string): Block[] {
       flushPara();
       blocks.push({ kind: "heading", level: hm[1].length, text: hm[2].trim() });
       i += 1;
+      continue;
+    }
+    if (/^-\s+/.test(trimmed)) {
+      flushPara();
+      const items: string[] = [];
+      while (i < lines.length) {
+        const ln = lines[i].trim();
+        if (!ln) break;
+        const bm = ln.match(/^-\s+(.*)$/);
+        if (!bm) break;
+        items.push(bm[1].trim());
+        i += 1;
+      }
+      if (items.length) blocks.push({ kind: "list", items });
       continue;
     }
     if (
@@ -149,6 +164,17 @@ export function MarkdownBubble({ text }: { text: string }) {
             <p key={idx} className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
               {renderInline(b.text)}
             </p>
+          );
+        }
+        if (b.kind === "list") {
+          return (
+            <ul key={idx} className="list-disc space-y-1.5 pl-5 text-zinc-200">
+              {b.items.map((item, li) => (
+                <li key={li} className="leading-relaxed">
+                  {renderInline(item)}
+                </li>
+              ))}
+            </ul>
           );
         }
         return null;
