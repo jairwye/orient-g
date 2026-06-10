@@ -198,11 +198,28 @@ alembic -c backend\alembic.ini upgrade head
 
 服务器上以 **docker-compose.yml** 方式运行，仅监听内网 IP。**环境变量模板**：复制 [`.env.example`](.env.example) 为 `.env`，主要改「Docker / 生产部署」段；**Hermes 另需** [`.env.hermes`](docker/hermes/env.hermes.example)（见下方步骤 5 与 [docs/hermes.md](docs/hermes.md) §3）。
 
+### 部署目录与 git（常见：~/docker/orient-g）
+
+**`docker compose pull` 只下载镜像**（backend / frontend / db 等），**不会**带上 `docker-compose.yml`、`docker-compose.hermes.yml`、`Caddyfile`、`docker/hermes/` 等文件。这些在 **Git 仓库**里，生产机需要保留一份仓库目录：
+
+```bash
+mkdir -p ~/docker && cd ~/docker
+git clone <你的仓库 URL> orient-g    # 已有目录则 cd orient-g && git pull
+cd ~/docker/orient-g
+cp .env.example .env
+cp docker/hermes/env.hermes.example .env.hermes
+# 编辑 .env、.env.hermes（HERMES_INTERNAL_TOKEN = API_SERVER_KEY）
+```
+
+在 **`~/docker/orient-g`**（与 `docker-compose.yml` 同目录）执行所有 `docker compose` 命令。若当前目录只有 `.env` 而没有 compose 文件，说明缺仓库内容，应 `git clone` 或 `git pull`，**不要**手建空的 `docker/hermes/` 目录代替。
+
+**`.env.hermes`**：仓库里只有 `docker/hermes/env.hermes.example`，需 **`cp` 到项目根 `.env.hermes`**（git 忽略，不会随 pull 自动生成）。**MCP**：按 [docs/hermes.md §3.5](docs/hermes.md) 改 `docker/hermes/mcp-orientg.snippet.json` 并合并进 Hermes 卷（一次性）。
+
 ### 生产部署步骤（含 Hermes + MCP 接生产库）
 
 | 步骤 | 做什么 | 参考 |
 |------|--------|------|
-| 1 | **git clone** 仓库到部署目录（`pull` 镜像不会带 `docker/hermes/`、`docker-compose.hermes.yml`、`Caddyfile`）；`cp .env.example .env`、`cp docker/hermes/env.hermes.example .env.hermes` | [`.env.example`](.env.example) Docker 段已含生产 Hermes 默认值 |
+| 1 | 克隆仓库到部署目录（须含 `Caddyfile`），`cp .env.example .env` 并改 `POSTGRES_*`、`AUTH_SECRET`、`FRONTEND_ORIGIN`、`BIND_IP`、`LLM_*`、`OLLAMA_URL=http://ollama:11434`、`DOCLING_HTTP_BASE_URL=http://docling:5001` | [`.env.example`](.env.example)；README「部署时务必配置」 |
 | 2 | `DB_MIGRATION_MODE=alembic`；**备份**后 `docker compose exec backend alembic -c backend/alembic.ini upgrade head` | README「数据库结构迁移」 |
 | 3 | `docker compose pull db backend frontend caddy`（按需 `ollama`）；可选固定 `BACKEND_IMAGE`/`FRONTEND_IMAGE` 为 `ghcr.io/.../sha-xxx` | 下文「更新业务镜像」 |
 | 4 | `docker compose up -d`，确认 `/api/health`、登录、知识库可用 | — |
