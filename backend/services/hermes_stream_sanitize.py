@@ -38,6 +38,11 @@ _PLANNING_MARKERS = (
     "不需要加载",
     "定向补检索",
     "Evidence Pack",
+    "根据已获取的证据",
+    "根据检索结果",
+    "让我通过",
+    "很明确了",
+    "直接成稿如下",
     "预检索 JSON",
     "需要确认合并",
     "需要确认母公司",
@@ -149,6 +154,22 @@ def strip_hermes_orchestration_preamble(text: str) -> str:
         "",
         t,
         flags=re.I,
+    )
+    t = re.sub(
+        r"^根据(?:已获取的证据|Evidence Pack|检索结果)[^，。.\n]*[，,]?\s*",
+        "",
+        t,
+    )
+    t = re.sub(
+        r"^根据 Evidence Pack[^。\n]*直接成稿如下：?\s*-+\s*",
+        "",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(
+        r"^根据 Evidence Pack[^，。\n]*[，,]\s*",
+        "",
+        t,
     )
     for anchor in ("让我直接输出：", "让我直接输出:", "让我直接输出"):
         if anchor in t:
@@ -345,6 +366,13 @@ def strip_inline_source_markers(text: str) -> str:
     t = re.sub(r"证据\s*`(?:\s*[^`]*\s*)?`\s*", "证据 ", t)
     t = re.sub(r"`\s*`", "", t)
     t = re.sub(r"\(doc_id:\s*\)", "", t, flags=re.I)
+    t = re.sub(r"doc_id:\s*和\s*", "", t, flags=re.I)
+    t = re.sub(r"分项驱动分析（基于 doc_id:[^）)]*）", "分项驱动分析", t, flags=re.I)
+    t = re.sub(r"证据来源[：:]\s*[（(]?\s*[）)]", "", t)
+    t = re.sub(r"数据来源[：:]\s*\[\s*\]", "", t)
+    t = re.sub(r"-\s*\[\s*\]\s*", "- ", t)
+    t = re.sub(r"\*数据来源：\[\s*\][^*]*\*", "", t)
+    t = re.sub(r"(?:^|\n)doc_chunk\s*$", "", t, flags=re.I | re.M)
     t = re.sub(r"[（(]\s*[）)]", "", t)
     t = re.sub(r"[ \t]{2,}", " ", t)
     t = re.sub(r" \n", "\n", t)
@@ -643,12 +671,17 @@ def enforce_breakdown_compare_reply(reply: str, *, user_query: str = "") -> str:
     """对比/分解类：规范化 Markdown；去掉无证据的「约 xxx 万」明细段。"""
     from backend.services.kb_retrieval_plan import TaskType, infer_task_type
 
-    t = normalize_reply_markdown(reply or "")
+    def _finish(body: str) -> str:
+        if re.search(r"\d{1,3}(?:,\d{3})+\.\d{2}", body):
+            body = _strip_unsupported_estimate_prose(body)
+        return normalize_reply_markdown(strip_inline_source_markers(body))
+
+    t = normalize_reply_markdown(strip_hermes_orchestration_preamble(reply or ""))
     if not t:
         return ""
     tt = infer_task_type(user_query or "")
     if tt not in (TaskType.breakdown, TaskType.compare):
-        return t
+        return _finish(t)
     t = _strip_unsupported_speculation_prose(t)
     if not reply_has_unsupported_breakdown_amounts(t):
         from backend.services.evidence_reply_align import reply_has_contradictory_change_reason
@@ -659,13 +692,20 @@ def enforce_breakdown_compare_reply(reply: str, *, user_query: str = "") -> str:
                 "",
                 t,
             )
-        return normalize_reply_markdown(t)
+        return _finish(t)
     t = _strip_derived_breakdown_sections(t)
     if reply_has_verifiable_breakdown_table(t):
+        t = re.sub(
+            r"(?:#{1,4}\s*)?2[\.\s、]?\s*费用明细说明\s*\n+"
+            r"证据中未提供可核查的分项金额[^\n]*\n+",
+            "",
+            t,
+            flags=re.I,
+        )
         t = _strip_unsupported_estimate_prose(t)
         t = _strip_unsupported_speculation_prose(t)
         if not reply_has_unsupported_breakdown_amounts(t):
-            return normalize_reply_markdown(t)
+            return _finish(t)
     sec2 = re.search(r"(#{2,4}\s*2[\.\s、]|#{2,4}\s*费用变动|费用变动分析|\*注：.*\n*#{2,4}\s*2)", t)
     gap = (
         "#### 2. 费用明细说明\n\n"
@@ -687,7 +727,7 @@ def enforce_breakdown_compare_reply(reply: str, *, user_query: str = "") -> str:
             "\n\n**说明**：证据中无附注分项明细；"
             "正文中「约 xxx 万」等区间描述不符合 Orient-G 证据约束，请勿采信。\n"
         )
-    return normalize_reply_markdown(t)
+    return _finish(t)
 
 
 def sanitize_hermes_accumulated_reply(text: str, *, user_query: str = "") -> str:

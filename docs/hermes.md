@@ -354,11 +354,13 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 
 **Tier 1/2 禁 terminal（产品约定）：** Gateway 在 `orientg_route=hermes_lite|hermes_full` 时于 system JSON 注入 `orientg_forbidden_tools: ["terminal", "skill_view", "orientg-debugging"]` 与 `orientg_tool_policy`（仅 `orientg_kb_*` 取证，禁止 curl/openapi 探测）。Hermes 仍可能通过 Gateway 执行 terminal——若 Trace 出现 `curl`/`import urllib`，属 Hermes 侧未拦截；Orient-G 网关会将此类文本**分流到「推理过程」**，不写入主气泡正文。
 
-**推理 vs 正文（Orient-G 网关）：** 若模型把计划/脚本写在 `content` 而非 `reasoning_content`，`hermes_stream_sanitize` 会将其映射为 SSE `thinking`；用户可见报告（`###`、表格等）才进入 `delta`/`done.reply`。补检索在 Hermes `done` **之后**执行，可能 `replace_reply`；若本地重综合更差则保留 Hermes 原文（Trace：`保留 Hermes 原文`）。**Tier 0 / fast path** 终稿经 `finalize_fast_path_reply` → `finalize_agent_reply`，剥离 `ud_*` 等 inline 标记。
+**推理 vs 正文（Orient-G 网关）：** Tier 1/2 **一律 defer**：Hermes 流式 `delta`/`thinking` 映射为执行过程（`hermes_draft` / `hermes_reasoning`），**主气泡在终稿前保持空白或仅占位**，仅 `done` / `replace_reply` / salvage / 本地回退写入正文。与 `task_type`（breakdown/compare）无关。若模型把计划/脚本写在 `content` 而非 `reasoning_content`，网关仍会分流到 thinking。补检索在 Hermes `done` **之后**执行，可能 `replace_reply`；若本地重综合更差则保留 Hermes 原文（Trace：`保留 Hermes 原文`）。**Tier 0 / fast path** 终稿经 `finalize_fast_path_reply` → `finalize_agent_reply`，剥离 `ud_*` 等 inline 标记。
 
 **Hermes 中断 salvage：** 流式 `error`（stall / cancel / loop abort）时，若过程稿已累积且 pack 金额覆盖率足够（或结构化报告且无 planning 残留），`done` 带 `hermes_salvaged: true`、`synthesis: hermes_salvaged`，**不**用本地 synth 覆盖；前端完成行显示「salvage 过程稿为终稿」。
 
 **Runs / chat 循环护栏：** `HermesRunsLoopGuard` 同时用于 **Runs API** 与 **chat/completions 回退**；多次 forbidden shell 或超长未成稿时 abort，错误码 `hermes_run_forbidden_loop` / `hermes_run_wall_timeout`。
+
+**Tier 2 深度编排与 MCP：** 深度档由 **Hermes Runs 多轮调用 `orientg_kb_*`** 主导取证；Orient-G 预检索仅提供 Evidence Pack 起点，**不替代** Hermes MCP。Tier 2 **默认不限制** `orientg_kb_ask` 次数（`hermes_agent_kb_ask_budget_full=0` 即无 cap）。若 Trace 出现 `terminal`/`python -c` 尝试，为 Hermes 侧违规路径，Orient-G 执行层拦截；**不得**据此认定 MCP 不可用——应检查 Hermes 是否带 `hermes_session_key` 调 `orientg_kb_ask`。检索不到余额常见根因是 **KB 切块/索引** 而非 MCP 预算。
 
 **Tier 1 补检索 skip：** `needs_hermes_supplemental` 在 Hermes 终稿已 `hermes_reply_sufficient_against_pack` 时跳过额外 `orientg_kb_ask`，Trace 仍可能显示预检索 Evidence Pack。
 

@@ -11,7 +11,7 @@
         if (!t) return false;
         if (/^[›◇◈▸•]/.test(t)) return false;
         if (
-          /^(已提交任务|Evidence Pack 已就绪|深度编排|正在连接|Hermes Runs|Hermes 仍在|KB 任务禁止|orientg-debugging)/.test(
+          /^(已提交任务|Evidence Pack 已就绪|深度编排|正在连接|Hermes Runs|Hermes 仍在|KB 任务禁止|orientg-debugging|●完成：Tier|完成：Tier)/.test(
             t,
           )
         )
@@ -67,20 +67,30 @@
     "";
   const citeMatch =
     lastBlockText.match(/citations\s*[（(]\s*(\d+)/i) ||
-    answerText.match(/citations\s*[（(]\s*(\d+)/i);
+    answerText.match(/citations\s*[（(]\s*(\d+)/i) ||
+    body.match(/citations\s*[（(]\s*(\d+)/i);
   const citations = citeMatch ? parseInt(citeMatch[1], 10) : 0;
   const streamFail =
     /流式连接失败|502|Hermes 流式错误|后端服务不可用|深度编排失败/.test(
       lastBlockText + body.slice(-2000),
     );
   const honestMissing =
-    /缺少证据|不确定|不确定\/缺少证据|未能获取|无法提取|无法进行对比|not available|does not contain|不含|永久限制|检索管道无法|未包含|无法回答/i.test(
+    /缺少证据|不确定|不确定\/缺少证据|未能获取|无法提取|无法进行对比|not available|does not contain|不含|永久限制|检索管道无法|未包含|无法回答|未披露|未进入.*索引|无法获取/i.test(
       answerBody,
     );
 
   let streamDone = streamFail;
+  const completedTier = completionMatch ? completionMatch[1] || "" : "";
   if (completionMatch && !loading && !thinking && !hermesStillRunning) {
-    streamDone = true;
+    if (
+      (completedTier === "1" || completedTier === "2") &&
+      citations === 0 &&
+      !honestMissing
+    ) {
+      streamDone = false;
+    } else {
+      streamDone = true;
+    }
   } else if (citations > 0 && !loading && !thinking) streamDone = true;
   else if (
     !loading &&
@@ -111,10 +121,29 @@
     !loading &&
     !thinking &&
     !hermesStillRunning &&
-    answerBody.length >= 600 &&
+    honestMissing &&
+    answerBody.length >= 180 &&
     /Tier 2|深度/.test(tierLine)
   )
     streamDone = true;
+
+  const englishProcessOnly =
+    /Let me |I need to find|The search results confirm/i.test(answerBody) &&
+    !/^(结论|#+\s)/m.test(answerBody) &&
+    !/\d{1,3}(?:,\d{3})+\.\d{2}/.test(answerBody) &&
+    !honestMissing;
+  if (englishProcessOnly) streamDone = false;
+
+  const tierNeedsCites =
+    completedTier === "1" ||
+    completedTier === "2" ||
+    /Tier [12]|深度|标准.*Hermes/.test(tierLine);
+  if (streamDone && tierNeedsCites && citations === 0 && !honestMissing) {
+    streamDone = false;
+  }
+  if (streamDone && answerBody.length < 60 && !honestMissing) {
+    streamDone = false;
+  }
 
   const thinkingInBody =
     /^思考中…|^同步中…/m.test(answerText) || /^思考中…|^同步中…/.test(answerBody);
@@ -134,7 +163,9 @@
     /证据\s*`\s*`/.test(answerBody) ||
     /\(doc_id:\s*\)/i.test(answerBody);
   const processInAnswer =
-    /用户要求|步骤：|让我先|我将尝试|预检索证据/i.test(answerBody);
+    /用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|根据(?:已获取|检索结果|Evidence Pack)|很明确了|直接成稿如下|Evidence Pack中缺少|Let me search|I need to find/i.test(
+      answerBody,
+    );
 
   const agentIdleNoReply =
     !!document.querySelector('[aria-label="智能体模式"]') &&

@@ -22,3 +22,21 @@ export function clearAuthToken(): void {
   if (typeof window === "undefined") return;
   sessionStorage.removeItem(AUTH_TOKEN_KEY);
 }
+
+/** HTTP 401：JWT 过期或未登录（60 分钟无活动滑动窗口） */
+export function isSessionExpiredHttpStatus(status: number): boolean {
+  return status === 401;
+}
+
+/** 清除本地 token 并跳转登录页；?expired=1 时登录页展示会话过期提示 */
+export function redirectToLogin(expired = false): void {
+  if (typeof window === "undefined") return;
+  clearAuthToken();
+  const q = expired ? "?expired=1" : "";
+  window.location.replace(`/login${q}`);
+}
+
+export function hasAuthToken(): boolean {
+  if (typeof window === "undefined") return false;
+  return !!sessionStorage.getItem(AUTH_TOKEN_KEY);
+}

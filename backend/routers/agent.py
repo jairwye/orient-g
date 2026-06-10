@@ -317,6 +317,7 @@ def agent_chat(request: Request, body: AgentChatBody):
             kb_scope_payload,
             attached_doc_ids=attached,
             agent_mode=(body.agent_mode or "standard"),
+            enabled_skills=body.enabled_skills,
         )
         if prefetch_result and prefetch_result.get("denied"):
             raise HTTPException(
@@ -421,6 +422,8 @@ def agent_chat(request: Request, body: AgentChatBody):
             attached_doc_ids=attached,
             orientg_route=agent_route.value,
             orientg_kb_ask_budget=kb_ask_budget,
+            evidence_pack=(prefetch_result or {}).get("evidence_pack"),
+            enabled_skills=body.enabled_skills,
         )
     except HermesDisabledError as e:
         raise HTTPException(
@@ -603,6 +606,7 @@ def _agent_chat_stream_events(
             orientg_route=agent_route.value,
             orientg_kb_ask_budget=kb_ask_budget,
             evidence_pack=(prefetch_result or {}).get("evidence_pack"),
+            enabled_skills=body.enabled_skills,
         ):
             if evt.get("type") == "error" and evt.get("code") == "cancelled":
                 yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
@@ -832,6 +836,7 @@ def agent_chat_stream(request: Request, body: AgentChatBody):
             kb_scope_payload,
             attached_doc_ids=attached,
             agent_mode=(body.agent_mode or "standard"),
+            enabled_skills=body.enabled_skills,
         )
         if prefetch_result and prefetch_result.get("denied"):
             raise HTTPException(status_code=403, detail=prefetch_result.get("reason") or "denied")
@@ -869,6 +874,9 @@ def agent_chat_stream(request: Request, body: AgentChatBody):
                     model=body.model,
                     hermes_session_id=body.hermes_session_id,
                     run_id=run_id,
+                    user_token=token,
+                    kb_scope=kb_scope_payload,
+                    attached_doc_ids=attached,
                 ):
                     yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"

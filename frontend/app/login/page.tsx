@@ -8,6 +8,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const justChangedPassword = searchParams.get("changed") === "1";
+  const sessionExpired = searchParams.get("expired") === "1";
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -39,6 +40,8 @@ function LoginForm() {
             ? data.detail
             : "用户名或密码错误",
         );
+      } else if (res.status === 422) {
+        setError("请求格式错误，请刷新页面后重试");
       } else if (res.status === 502 || res.status === 503) {
         setError(
           typeof data.detail === "string" && data.detail.trim()
@@ -62,6 +65,11 @@ function LoginForm() {
         <p className="mt-1 text-center text-sm text-zinc-500">请输入后台设置的用户名和密码</p>
         {justChangedPassword && (
           <p className="mt-2 text-center text-sm text-emerald-400">密码已修改，请使用新密码登录。</p>
+        )}
+        {sessionExpired && (
+          <p className="mt-2 text-center text-sm text-amber-400">
+            登录已过期（超过 60 分钟无活动），请重新登录。
+          </p>
         )}
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div>

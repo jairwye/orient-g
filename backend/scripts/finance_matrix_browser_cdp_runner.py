@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -37,6 +38,8 @@ REPORTS = ROOT / "backend" / "tests" / "reports"
 BLOCKED = REPORTS / "finance_matrix_browser_blocked.json"
 POLL_TMP = REPORTS / "_cdp_poll_tmp.json"
 ROW_TMP = REPORTS / "_browser_row_tmp.json"
+HERMES_STALL_MS = 180_000
+POLL_EVAL_TIMEOUT_S = 45.0
 
 FOLDER_ID = "f_6f3638e4513f492c9610ddb5dda77c20"
 AGENT_URL = (
@@ -48,6 +51,11 @@ INIT_SCRIPT = (
     f"folder_ids:['{FOLDER_ID}'], collection_ids:[], table_ids:[], updated_at: Date.now()"
     "}));"
 )
+_SESSION_TOKEN = ""
+
+
+def _finance_test_password() -> str:
+    return os.environ.get("ORIENTG_FINANCE_TEST_PASSWORD", "FinanceTest!2026")
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
@@ -77,10 +85,26 @@ def _preflight_backend() -> None:
 class CdpPage:
     """单 tab CDP 会话（websocket-client）。"""
 
-    def __init__(self, ws_url: str) -> None:
+    def __init__(self, ws_url: str, *, cdp_base: str = "") -> None:
+        self._cdp_base = cdp_base
+        self._ws_url = ws_url
         self._ws = websocket.create_connection(ws_url, timeout=120)
         self._id = 0
         self._console_errors: list[str] = []
+        self._call("Runtime.enable", {})
+        self._call("Log.enable", {})
+        self._call("Page.enable", {})
+
+    @classmethod
+    def connect(cls, cdp_base: str) -> CdpPage:
+        ws_url = _pick_page_target(cdp_base)
+        return cls(ws_url, cdp_base=cdp_base)
+
+    def reconnect(self) -> None:
+        self.close()
+        self._ws_url = _pick_page_target(self._cdp_base)
+        self._ws = websocket.create_connection(self._ws_url, timeout=120)
+        self._id = 0
         self._call("Runtime.enable", {})
         self._call("Log.enable", {})
         self._call("Page.enable", {})
@@ -173,36 +197,73 @@ def _as_iife(source: str) -> str:
     return f"({s})()"
 
 
-def _pick_page_target(cdp_base: str) -> str:
+def _pick_page_target(cdp_base: str, *, prefer_ai: bool = True) -> str:
     targets = _http_get_json(f"{cdp_base.rstrip('/')}/json/list")
-    for t in targets:
-        if t.get("type") == "page" and "webSocketDebuggerUrl" in t:
+    pages = [t for t in targets if t.get("type") == "page" and "webSocketDebuggerUrl" in t]
+    if prefer_ai:
+        ai_pages = [
+            t
+            for t in pages
+            if "localhost:3000" in str(t.get("url") or "")
+            or "127.0.0.1:3000" in str(t.get("url") or "")
+        ]
+        if ai_pages:
+            return str(ai_pages[-1]["webSocketDebuggerUrl"])
+    for t in pages:
+        url = str(t.get("url") or "")
+        if "localhost:3000" in url or "127.0.0.1:3000" in url:
             return str(t["webSocketDebuggerUrl"])
+    if pages:
+        return str(pages[-1]["webSocketDebuggerUrl"])
     raise SystemExit(f"CDP 无可用 page target: {cdp_base}")
 
 
+def _page_init_script(token: str = "") -> str:
+    parts: list[str] = []
+    if token:
+        parts.append(f"sessionStorage.setItem('orient_g_token', {json.dumps(token)});")
+    parts.append(INIT_SCRIPT)
+    return "".join(parts)
+
+
+def _fetch_auth_token() -> str:
+    req = urllib.request.Request(
+        "http://127.0.0.1:8000/api/auth/login",
+        data=json.dumps({"username": "finance_test", "password": _finance_test_password()}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    token = str(data.get("token") or "")
+    if not data.get("ok") or not token:
+        raise RuntimeError(f"API 登录失败: {data}")
+    return token
+
+
 def _js_login() -> str:
-    return """(async () => {
+    pwd = json.dumps(_finance_test_password())
+    return f"""(async () => {{
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 40; i++) {{
     const user = document.querySelector('input[type="text"], input:not([type])');
     const pass = document.querySelector('input[type="password"]');
     if (user && pass) break;
     await sleep(250);
-  }
+  }}
   const user = document.querySelector('input[type="text"], input:not([type])');
   const pass = document.querySelector('input[type="password"]');
-  if (!user || !pass) return { ok: false, err: 'no login form', url: location.href };
+  if (!user || !pass) return {{ ok: false, err: 'no login form', url: location.href }};
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
   setter?.call(user, 'finance_test');
-  user.dispatchEvent(new Event('input', { bubbles: true }));
-  setter?.call(pass, 'FinanceTest!2026');
-  pass.dispatchEvent(new Event('input', { bubbles: true }));
+  user.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  setter?.call(pass, {pwd});
+  pass.dispatchEvent(new Event('input', {{ bubbles: true }}));
   Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === '登录')?.click();
   await sleep(3000);
   const stillLogin = !!document.querySelector('input[type="password"]');
-  return { ok: !stillLogin, url: location.href, err: stillLogin ? 'still on login' : undefined };
-})()"""
+  return {{ ok: !stillLogin, url: location.href, err: stillLogin ? 'still on login' : undefined }};
+}})()"""
 
 
 def _js_send(mode_label: str, query: str) -> str:
@@ -229,6 +290,13 @@ def _js_send(mode_label: str, query: str) -> str:
   }}
   const nav = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === '智能体' && b.closest('nav'));
   if (nav) {{ nav.click(); await sleep(500); }}
+  const skillBtn = Array.from(document.querySelectorAll('button')).find(b => b.getAttribute('title') === '技能');
+  if (skillBtn && !document.getElementById('ai-skills-popover')) {{ skillBtn.click(); await sleep(400); }}
+  const skillLabel = Array.from(document.querySelectorAll('#ai-skills-popover label')).find(l => l.textContent?.includes('年报财务分析'));
+  if (skillLabel) {{
+    const cb = skillLabel.querySelector('input[type="checkbox"]');
+    if (cb && !cb.checked) {{ cb.click(); await sleep(200); }}
+  }}
   const group = document.querySelector('[aria-label="智能体模式"]');
   const btn = group ? Array.from(group.querySelectorAll('button')).find(b => b.textContent?.trim() === modeLabel) : null;
   if (btn) {{ btn.click(); await sleep(modeLabel === '快速' ? 1500 : 300); }}
@@ -247,37 +315,47 @@ def _js_send(mode_label: str, query: str) -> str:
 
 def _ensure_login(page: CdpPage) -> None:
     """API 登录 + sessionStorage 注入，避免 React 受控表单在 CDP 下偶发失败。"""
-    req = urllib.request.Request(
-        "http://127.0.0.1:8000/api/auth/login",
-        data=json.dumps({"username": "finance_test", "password": "FinanceTest!2026"}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    token = str(data.get("token") or "")
-    if not data.get("ok") or not token:
-        raise RuntimeError(f"API 登录失败: {data}")
-    page.navigate(LOGIN_URL)
-    time.sleep(2.5)
-    tok_js = json.dumps(token)
+    global _SESSION_TOKEN
+    _SESSION_TOKEN = _fetch_auth_token()
+    page.navigate(LOGIN_URL, init_script=_page_init_script(_SESSION_TOKEN))
+    time.sleep(2.0)
     page.evaluate(
         f"""(() => {{
-  sessionStorage.setItem('orient_g_token', {tok_js});
-  window.location.href = '/';
+  sessionStorage.setItem('orient_g_token', {json.dumps(_SESSION_TOKEN)});
   return {{ ok: true }};
 }})()""",
-        timeout=20,
+        timeout=30,
     )
-    for _ in range(20):
-        time.sleep(0.5)
-        href = page.evaluate("location.href", timeout=10)
-        if isinstance(href, str) and "/login" not in href:
-            return
-    raise RuntimeError("token 注入后仍停留在登录页")
+    page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
+    time.sleep(4.0)
+    href = page.evaluate("location.href", timeout=30)
+    if isinstance(href, str) and "/login" in href:
+        raise RuntimeError("token 注入后仍停留在登录页")
 
 
-def _poll_until_done(page: CdpPage, mode: str) -> dict[str, Any]:
+def _safe_evaluate(
+    page: CdpPage,
+    expression: str,
+    *,
+    cdp_base: str,
+    await_promise: bool = True,
+    timeout: float = POLL_EVAL_TIMEOUT_S,
+) -> tuple[CdpPage, Any]:
+    try:
+        return page, page.evaluate(expression, await_promise=await_promise, timeout=timeout)
+    except (TimeoutError, RuntimeError, OSError, websocket.WebSocketException) as exc:
+        print(json.dumps({"cdp_reconnect": str(exc)[:160]}, ensure_ascii=False), flush=True)
+        try:
+            page.reconnect()
+            return page, page.evaluate(expression, await_promise=await_promise, timeout=timeout)
+        except Exception as exc2:
+            if cdp_base:
+                page = CdpPage.connect(cdp_base)
+                return page, page.evaluate(expression, await_promise=await_promise, timeout=timeout)
+            raise exc2 from exc
+
+
+def _poll_until_done(page: CdpPage, mode: str, *, cdp_base: str) -> tuple[CdpPage, dict[str, Any]]:
     poll_js = _as_iife(page.load_js_function("finance_matrix_browser_poll_state.js"))
     max_ms = WAIT_CITATIONS_MS[mode]
     interval_s = POLL_INTERVAL_MS / 1000.0
@@ -287,21 +365,68 @@ def _poll_until_done(page: CdpPage, mode: str) -> dict[str, Any]:
     t0 = time.monotonic()
     last: dict[str, Any] = {}
     idle_streak = 0
+    hermes_stuck_since: float | None = None
+    poll_n = 0
+    eval_fail_streak = 0
 
     while (time.monotonic() - t0) * 1000 < max_ms:
-        last = page.evaluate(poll_js, await_promise=False, timeout=30) or {}
-        if not isinstance(last, dict):
-            last = {"streamDone": False, "streamFail": True}
+        poll_n += 1
+        try:
+            page, polled = _safe_evaluate(page, poll_js, cdp_base=cdp_base, await_promise=False)
+            eval_fail_streak = 0
+        except Exception as exc:
+            eval_fail_streak += 1
+            print(
+                json.dumps(
+                    {"poll_eval_fail": poll_n, "streak": eval_fail_streak, "err": str(exc)[:120]},
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            if eval_fail_streak >= 3:
+                fallback = last if isinstance(last, dict) else {}
+                last = {"streamFail": True, "poll_eval_dead": True, "extract": fallback.get("extract") or {}}
+                return page, last
+            time.sleep(interval_s)
+            continue
+        last = polled if isinstance(polled, dict) else {"streamDone": False, "streamFail": True}
+        if poll_n == 1 or poll_n % 4 == 0:
+            ext = last.get("extract") or {}
+            print(
+                json.dumps(
+                    {
+                        "poll": poll_n,
+                        "streamDone": last.get("streamDone"),
+                        "loading": last.get("loading"),
+                        "hermesStillRunning": last.get("hermesStillRunning"),
+                        "citations": last.get("citations"),
+                        "len": ext.get("len"),
+                        "elapsed_s": int(time.monotonic() - t0),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
         if last.get("streamFail"):
-            return last
+            return page, last
         if last.get("agentIdleNoReply"):
             idle_streak += 1
             if idle_streak >= 3 and (time.monotonic() - t0) >= 45:
                 last["streamFail"] = True
                 last["lost_session"] = True
-                return last
+                return page, last
         else:
             idle_streak = 0
+        if last.get("hermesStillRunning") or last.get("loading"):
+            if hermes_stuck_since is None:
+                hermes_stuck_since = time.monotonic()
+            elif (time.monotonic() - hermes_stuck_since) * 1000 >= HERMES_STALL_MS:
+                ext = last.get("extract") or {}
+                if int(last.get("citations") or 0) > 0 and int(ext.get("len") or 0) >= 200:
+                    last["streamDone"] = True
+                    last["hermes_stall_salvage"] = True
+        else:
+            hermes_stuck_since = None
         ext = last.get("extract") or {}
         cur_len = int(ext.get("len") or 0)
         if last.get("streamDone"):
@@ -311,22 +436,22 @@ def _poll_until_done(page: CdpPage, mode: str) -> dict[str, Any]:
                 stable = 0
             last_len = cur_len
             if stable >= stable_need:
-                return last
+                return page, last
         else:
             stable = 0
             last_len = cur_len
         time.sleep(interval_s)
     last["streamFail"] = last.get("streamFail") or not last.get("streamDone")
     last["timeout"] = True
-    return last
+    return page, last
 
 
-def _extract(page: CdpPage) -> dict[str, Any]:
+def _extract(page: CdpPage, *, cdp_base: str) -> tuple[CdpPage, dict[str, Any]]:
     ext_js = _as_iife(page.load_js_function("finance_matrix_browser_extract_row.js"))
-    row = page.evaluate(ext_js, await_promise=False, timeout=30)
+    page, row = _safe_evaluate(page, ext_js, cdp_base=cdp_base, await_promise=False)
     if not isinstance(row, dict):
         raise RuntimeError(f"extract 返回异常: {row!r}")
-    return row
+    return page, row
 
 
 def _append_row(
@@ -372,25 +497,87 @@ def _write_blocked(case: tuple[str, str, str, str], poll: dict[str, Any], result
     )
 
 
-def _run_case_once(page: CdpPage, case: tuple[str, str, str, str]) -> dict[str, Any]:
+def _open_fresh_cdp_tab(cdp_base: str) -> str | None:
+    """每案换新 tab 并返回 ws URL；sessionStorage 须靠 init_script 重新注入。"""
+    url = AGENT_URL.replace(" ", "%20")
+    try:
+        req = urllib.request.Request(
+            f"{cdp_base.rstrip('/')}/json/new?{url}",
+            method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            target = json.loads(resp.read().decode("utf-8"))
+        ws = str(target.get("webSocketDebuggerUrl") or "")
+        if ws:
+            time.sleep(1.5)
+            return ws
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        pass
+    time.sleep(1.0)
+    return None
+
+
+def _prune_stale_tabs(cdp_base: str, *, max_tabs: int = 4) -> None:
+    """关闭多余 CDP tab，减轻长批次内存与僵死。"""
+    try:
+        targets = _http_get_json(f"{cdp_base.rstrip('/')}/json/list")
+        pages = [t for t in targets if t.get("type") == "page" and t.get("id")]
+        if len(pages) <= max_tabs:
+            return
+        for t in pages[: max(0, len(pages) - max_tabs)]:
+            tid = str(t.get("id") or "")
+            if not tid:
+                continue
+            try:
+                urllib.request.urlopen(f"{cdp_base.rstrip('/')}/json/close/{tid}", timeout=5)
+            except (urllib.error.URLError, TimeoutError, OSError):
+                pass
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        pass
+
+
+def _connect_case_page(cdp_base: str) -> CdpPage:
+    _prune_stale_tabs(cdp_base)
+    ws_url = _open_fresh_cdp_tab(cdp_base)
+    if ws_url:
+        return CdpPage(ws_url, cdp_base=cdp_base)
+    return CdpPage.connect(cdp_base)
+
+
+def _run_case_once(page: CdpPage, case: tuple[str, str, str, str], *, cdp_base: str) -> tuple[CdpPage, dict[str, Any]]:
     cat, subj, mode, query = case
     mode_label = MODE_LABEL[mode]
     page.reset_console()
-    page.navigate(AGENT_URL, init_script=INIT_SCRIPT)
+    init = _page_init_script(_SESSION_TOKEN)
+    page.navigate(AGENT_URL, init_script=init)
     time.sleep(2)
-    sent = page.evaluate(_js_send(mode_label, query), timeout=60)
+    page, sent = _safe_evaluate(page, _js_send(mode_label, query), cdp_base=cdp_base, timeout=60)
     if not isinstance(sent, dict) or not sent.get("ok"):
-        return {"ok": False, "stage": "send", "detail": sent, "poll": {}}
-    poll = _poll_until_done(page, mode)
-    extract = _extract(page)
-    merged = {**poll, **extract}
+        return page, {"ok": False, "stage": "send", "detail": sent, "poll": {}}
+    page, poll = _poll_until_done(page, mode, cdp_base=cdp_base)
+    page, ext_row = _extract(page, cdp_base=cdp_base)
+    poll_ex = poll.get("extract") if isinstance(poll.get("extract"), dict) else {}
+    ext_ex = ext_row.get("extract") if isinstance(ext_row.get("extract"), dict) else {}
+    poll_tier = str(poll.get("tier_line") or "")
+    ext_tier = str(ext_row.get("tier_line") or "")
+    tier_line = poll_tier if "完成：Tier" in poll_tier else (ext_tier or poll_tier)
+    citations = max(int(poll.get("citations") or 0), int(ext_row.get("citations") or 0))
+    merged = {
+        **poll,
+        **{k: v for k, v in ext_row.items() if k != "extract"},
+        "tier_line": tier_line,
+        "citations": citations,
+        "extract": {**poll_ex, **ext_ex},
+    }
     depth_err = page.console_depth_error()
     notes = f"cdp-unattended; console_depth={depth_err}"
     if poll.get("timeout"):
         notes += "; poll_timeout"
+    if poll.get("hermes_stall_salvage"):
+        notes += "; hermes_stall_salvage"
     append = _append_row(merged, notes=notes, console_depth=depth_err, case=case)
     ok = bool(append.get("ok"))
-    return {
+    return page, {
         "ok": ok,
         "poll": merged,
         "append": append,
@@ -410,6 +597,10 @@ def _retriable(result: dict[str, Any]) -> bool:
         extract = poll.get("extract") or {}
         if int(extract.get("len") or 0) < 200:
             return True
+    if result.get("stage") == "validate":
+        extract = poll.get("extract") or {}
+        if poll.get("streamDone") and int(extract.get("len") or 0) >= 200:
+            return False
     if not result.get("ok"):
         extract = poll.get("extract") or {}
         tier_line = str(poll.get("tier_line") or "")
@@ -424,7 +615,13 @@ def _retriable(result: dict[str, Any]) -> bool:
     return False
 
 
-def run_case(page: CdpPage, case: tuple[str, str, str, str], *, case_retries: int = 2) -> dict[str, Any]:
+def run_case(
+    page: CdpPage,
+    case: tuple[str, str, str, str],
+    *,
+    case_retries: int = 2,
+    cdp_base: str = "",
+) -> tuple[CdpPage, dict[str, Any]]:
     cat, subj, mode, query = case
     print(f"\n=== {cat}/{subj}/{mode} ===", flush=True)
     last: dict[str, Any] = {"ok": False}
@@ -437,9 +634,14 @@ def run_case(page: CdpPage, case: tuple[str, str, str, str], *, case_retries: in
                 ),
                 flush=True,
             )
-            page.navigate(AGENT_URL, init_script=INIT_SCRIPT)
+            try:
+                page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
+            except (TimeoutError, RuntimeError, OSError, websocket.WebSocketException):
+                if cdp_base:
+                    page = _connect_case_page(cdp_base)
+                page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
             time.sleep(3)
-        last = _run_case_once(page, case)
+        page, last = _run_case_once(page, case, cdp_base=cdp_base)
         if last.get("ok"):
             break
         if attempt < case_retries and _retriable(last):
@@ -457,7 +659,7 @@ def run_case(page: CdpPage, case: tuple[str, str, str, str], *, case_retries: in
         flush=True,
     )
     time.sleep(COOLDOWN_MS / 1000.0)
-    return last
+    return page, last
 
 
 def _parse_only_keys(raw_list: list[str] | None) -> set[str]:
@@ -503,11 +705,14 @@ def main() -> None:
         return
 
     _preflight_backend()
-    ws_url = _pick_page_target(args.cdp)
-    page = CdpPage(ws_url)
+    global _SESSION_TOKEN
+    if not args.skip_login:
+        page = CdpPage.connect(args.cdp)
+        _ensure_login(page)
+    else:
+        _SESSION_TOKEN = _fetch_auth_token()
+        page = CdpPage.connect(args.cdp)
     try:
-        if not args.skip_login:
-            _ensure_login(page)
         passed = 0
         failed = 0
         done_keys: set[str] = set()
@@ -519,17 +724,42 @@ def main() -> None:
                     if f"{c[0]}::{c[1]}::{c[2]}" not in done_keys
                 ]
             else:
-                pending = retry_pending()
+                pending = [
+                    c
+                    for c in retry_pending()
+                    if f"{c[0]}::{c[1]}::{c[2]}" not in done_keys
+                ]
             if not pending:
                 break
             case = pending[0]
             case_key = f"{case[0]}::{case[1]}::{case[2]}"
             try:
-                result = run_case(page, case, case_retries=max(0, args.case_retries))
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                page = _connect_case_page(args.cdp)
+                if _SESSION_TOKEN:
+                    page.navigate(LOGIN_URL, init_script=_page_init_script(_SESSION_TOKEN))
+                    page.evaluate(
+                        f"sessionStorage.setItem('orient_g_token', {json.dumps(_SESSION_TOKEN)});",
+                        await_promise=False,
+                        timeout=20,
+                    )
+                page, result = run_case(page, case, case_retries=max(0, args.case_retries), cdp_base=args.cdp)
             except Exception as e:
                 result = {"ok": False, "stage": "exception", "detail": str(e)}
                 _write_blocked(case, {}, result)
                 print(f"BLOCKED: {e}", flush=True)
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                try:
+                    page = CdpPage.connect(args.cdp)
+                    time.sleep(1.0)
+                except Exception:
+                    pass
                 done_keys.add(case_key)
                 if not args.continue_on_fail:
                     print(

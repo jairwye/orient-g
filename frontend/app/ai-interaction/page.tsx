@@ -2,7 +2,7 @@
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { getAuthHeaders } from "../lib/auth";
+import { getAuthHeaders, hasAuthToken, isSessionExpiredHttpStatus, redirectToLogin } from "../lib/auth";
 import { parseContentDispositionFilename } from "../lib/downloadFilename";
 import { KnowledgeWorkspacePanel } from "../components/KnowledgeWorkspacePanel";
 import { PdfPackagesPanel } from "../knowledge/components/PdfPackagesPanel";
@@ -93,6 +93,9 @@ import {
   SKILL_CONFIGS_LS_KEY,
   TOOL_CONFIGS_LS_KEY,
   WF_DATA_PARSE_EXCEL_ID,
+  WF_COMPETITOR_FINANCE_ID,
+  COMPETITOR_FINANCE_FOLDER_ID,
+  FINANCE_ANNUAL_REPORT_SKILL_ID,
   WORKFLOW_CONFIGS_LS_KEY,
 } from "./constants";
 
@@ -978,6 +981,14 @@ export default function AiInteractionPage() {
       trigger_hint: "工作流「电子表数据解析」默认勾选；走 /api/data-parse/chat 时随 enabled_skills 生效。",
       example: "根据当前上传表格，列出各工作表用途与主要风险（勿编造具体数值）。",
     },
+    {
+      id: FINANCE_ANNUAL_REPORT_SKILL_ID,
+      label: "年报财务分析（竞品 KB）",
+      description:
+        "按 A 股/新三板/港股/SEC 披露制度检索年报证据；对比时按科目类型（资产负债表/利润表/现金流）路由，非默认利润表。",
+      trigger_hint: "勾选后须选择知识库文件夹（如竞品财报25）；工作流「竞品财报分析」默认勾选。",
+      example: "华清飞扬 2024、2025 应收账款期末余额对比",
+    },
   ];
   const ALL_TOOLS: ToolConfig[] = [
     { id: "tool.docling.convert", label: "Docling（文档解析/转换）", description: "在对话中引用 ud_xxx 并提到“docling/解析”时触发（最小闭环）。" },
@@ -1020,6 +1031,16 @@ export default function AiInteractionPage() {
         "skill.data_parse.xlsx.v1",
       ],
       default_enabled_tool_ids: ["tool.data_parse.read_metrics", "tool.data_parse.template_render"],
+    },
+    {
+      id: WF_COMPETITOR_FINANCE_ID,
+      label: "竞品财报分析",
+      description:
+        "针对七家竞品年报 KB：自动勾选财报 Skill、切换智能体视图，并默认选中「竞品财报25」文件夹。",
+      start_hint:
+        "请先确认左侧知识库范围已包含竞品财报文件夹；未选范围时发送将提示先选 KB。建议使用智能体标准/深度模式。",
+      example_prompt: "华清飞扬 2024、2025 应收账款期末余额对比，并说明两期变动。",
+      default_enabled_skill_ids: [FINANCE_ANNUAL_REPORT_SKILL_ID],
     },
   ];
   /** 与规划文档 `规划/1.2.2.f_数据解析设计.md` 第五节 prompt.* 表一致 */
@@ -1092,10 +1113,17 @@ export default function AiInteractionPage() {
     setEnabledPromptIds([...(wf.default_enabled_prompt_ids ?? [])]);
     setEnabledSkills([...(wf.default_enabled_skill_ids ?? [])]);
     setEnabledTools([...(wf.default_enabled_tool_ids ?? [])]);
-    // 切换工作流时移除电子表附件，进入新工作流的「等待上传 / 重新绑定」态
-    setComposerAttachments((prev) => prev.filter((a) => a.kind !== "excel_parse"));
-    setDataParseSessionId(null);
-    excelParseSidRef.current = null;
+    if (wf.id === WF_COMPETITOR_FINANCE_ID) {
+      setActiveLeftView("agent");
+      setSelectedFolderIds((prev) =>
+        prev.includes(COMPETITOR_FINANCE_FOLDER_ID) ? prev : [COMPETITOR_FINANCE_FOLDER_ID, ...prev],
+      );
+    } else {
+      // 切换工作流时移除电子表附件，进入新工作流的「等待上传 / 重新绑定」态
+      setComposerAttachments((prev) => prev.filter((a) => a.kind !== "excel_parse"));
+      setDataParseSessionId(null);
+      excelParseSidRef.current = null;
+    }
     const prompt = (wf.example_prompt || "").trim();
     if (prompt) setChatInput((prev) => (prev ? `${prev}\n${prompt}` : prompt));
     setWorkflowOpen(false);
@@ -1304,6 +1332,30 @@ export default function AiInteractionPage() {
   const handleAgentAsk = async () => {
     const q = chatInput.trim();
     if (!q || agentLoading || composerUploading) return;
+    if (!hasAuthToken()) {
+      redirectToLogin(true);
+      return;
+    }
+    if (
+      activeWorkflowId === WF_COMPETITOR_FINANCE_ID &&
+      !selectedFolderIds.length &&
+      !selectedCollectionIds.length &&
+      !selectedTableIds.length &&
+      !composerAttachments.some((a) => a.kind === "kb_doc" && a.docId)
+    ) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: q },
+        {
+          role: "assistant",
+          content:
+            "当前为「竞品财报分析」工作流：请先在左侧知识库范围中选择「竞品财报25」文件夹（或附带具体年报文档）后再提问。",
+          citations: [],
+        },
+      ]);
+      setChatInput("");
+      return;
+    }
     setAgentLoading(true);
     setChatInput("");
     const runId =
@@ -1352,7 +1404,7 @@ export default function AiInteractionPage() {
         "Content-Type": "application/json",
         "X-Agent-Run-Id": runId,
       };
-      const tryStream = async (): Promise<boolean> => {
+      const tryStream = async (): Promise<"ok" | "auth" | "fail"> => {
         const res = await fetch("/api/agent/chat/stream", {
           method: "POST",
           credentials: "include",
@@ -1362,6 +1414,10 @@ export default function AiInteractionPage() {
         });
         const ct = res.headers.get("content-type") || "";
         if (!res.ok || !ct.includes("text/event-stream") || !res.body) {
+          if (isSessionExpiredHttpStatus(res.status)) {
+            redirectToLogin(true);
+            return "auth";
+          }
           if (!res.ok) {
             const errBody = (await res.json().catch(() => ({}))) as { detail?: string };
             const msg =
@@ -1378,7 +1434,7 @@ export default function AiInteractionPage() {
               return copy;
             });
           }
-          return false;
+          return "fail";
         }
 
         const reader = res.body.getReader();
@@ -1627,7 +1683,7 @@ export default function AiInteractionPage() {
               if (evt.type === "error") {
                 if (evt.code === "cancelled") {
                   appendAgentStreamStatus(evt.message || "已停止");
-                  return true;
+                  return "ok";
                 }
                 const errMsg = evt.message || "Hermes 流式错误";
                 appendAgentStreamStatus(errMsg);
@@ -1725,14 +1781,14 @@ export default function AiInteractionPage() {
           }
           return copy;
         });
-        return true;
+        return "ok";
       };
 
-      const streamed = await tryStream().catch((err) => {
-        if (err instanceof Error && err.name === "AbortError") return true;
-        return false;
+      const streamResult = await tryStream().catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") return "ok" as const;
+        return "fail" as const;
       });
-      if (streamed) return;
+      if (streamResult === "ok" || streamResult === "auth") return;
 
       appendAgentStreamStatus("流式连接失败，未回退阻塞请求（避免 300s 超时）");
       setMessages((prev) => {

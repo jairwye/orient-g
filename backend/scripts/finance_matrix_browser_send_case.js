@@ -11,6 +11,21 @@ async (modeLabel, query) => {
     nav.click();
     await sleep(400);
   }
+  const skillBtn = Array.from(document.querySelectorAll("button")).find(
+    (b) => b.getAttribute("title") === "技能",
+  );
+  if (skillBtn && !document.getElementById("ai-skills-popover")) {
+    skillBtn.click();
+    await sleep(400);
+  }
+  const skillLabel = Array.from(
+    document.querySelectorAll("#ai-skills-popover label"),
+  ).find((l) => l.textContent?.includes("年报财务分析"));
+  if (skillLabel) {
+    const cb = skillLabel.querySelector('input[type="checkbox"]');
+    if (cb && !cb.checked) cb.click();
+    await sleep(200);
+  }
   const ta = document.querySelector("textarea");
   if (!ta) return { ok: false, err: "no textarea" };
   const setter = Object.getOwnPropertyDescriptor(

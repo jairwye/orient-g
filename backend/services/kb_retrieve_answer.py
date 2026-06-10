@@ -24,6 +24,7 @@ def retrieve_and_answer(
     multi_query: bool | None = None,
     resolved_scope: dict[str, Any] | None = None,
     prefetch_tier: str | None = None,
+    enabled_skills: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     返回 (检索结果, tool_calls)。
@@ -40,4 +41,5 @@ def retrieve_and_answer(
         multi_query=use_multi,
         resolved_scope=resolved_scope,
         prefetch_tier=prefetch_tier,
+        enabled_skills=enabled_skills,
     )

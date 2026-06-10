@@ -1,0 +1,217 @@
+# 披露制度与实体映射（skill.finance.annual_report.v1）
+# 运行时：resolve_regime(entity) → regime_id → statement_names / narrative_sections / query_aliases
+# 竞品财报25 以 entities 为准；hk_main / sec_us 供未来 KB 扩展，当前池内无对应上市公司。
+
+version: 1
+default_regime: cn_sz_main
+fallback_regime_order:
+  - cn_sz_main
+  - cn_neeq
+  - hk_main
+  - sec_us
+
+# ---------- 当前竞品池（主） ----------
+entities:
+  # A 股 · 深圳证券交易所
+  三七互娱:
+    regime: cn_sz_main
+    ticker: "002555.SZ"
+    aliases: [三七, 三七互娱, 37互娱]
+    notes: 原中小板，现并入深主板体系
+  完美世界:
+    regime: cn_sz_main
+    ticker: "002624.SZ"
+    aliases: [完美, 完美世界]
+  掌趣科技:
+    regime: cn_sz_main
+    ticker: "300315.SZ"
+    aliases: [掌趣, 掌趣科技]
+    board: chinext
+    notes: 深交所创业板；年报体例与 cn_sz_main 同构，检索 alias 已含
+
+  # 新三板 NEEQ
+  华清飞扬:
+    regime: cn_neeq
+    ticker: "834195.NQ"
+    aliases: [华清, 华清飞扬]
+  绿岸网络:
+    regime: cn_neeq
+    ticker: "430229.NQ"
+    aliases: [绿岸, 绿岸网络]
+  塔人网络:
+    regime: cn_neeq
+    ticker: "837014.NQ"
+    aliases: [塔人, 塔人网络]
+  像素软件:
+    regime: cn_neeq
+    ticker: "836333.NQ"
+    aliases: [像素, 像素软件]
+
+# ---------- 制度定义 ----------
+regimes:
+  cn_sz_main:
+    label: A股·深交所（主板/创业板）
+    languages: [zh]
+    statement_names:
+      - 合并资产负债表
+      - 合并利润表
+      - 合并现金流量表
+      - 母公司资产负债表
+      - 母公司利润表
+      - 母公司现金流量表
+    summary_sections:
+      - 主要会计数据
+      - 主要财务指标
+      - 公司简介和主要财务指标
+    narrative_sections:
+      - 经营情况讨论与分析
+      - 管理层讨论与分析
+      - 董事会报告
+      - 财务报表项目重大变动说明
+      - 项目重大变动说明
+    period_tokens:
+      - 年末
+      - 期末
+      - 报告期
+      - "2024年"
+      - "2025年"
+      - "2024年末"
+      - "2025年末"
+    default_scope: merged
+    evidence_priority:
+      balance_compare: [statement_table, summary_table, note, narrative_change]
+      pnl_compare: [statement_table, summary_table, fee_note, narrative_change]
+      cf_compare: [statement_table, summary_table, narrative_change]
+    query_aliases:
+      balance_sheet: [合并资产负债表, 资产负债表]
+      income_statement: [合并利润表, 利润表]
+      cash_flow: [合并现金流量表, 现金流量表]
+
+  cn_neeq:
+    label: 新三板·年度报告
+    languages: [zh]
+    statement_names:
+      - 合并资产负债表
+      - 资产负债表
+      - 合并利润表
+      - 利润表
+      - 合并现金流量表
+      - 现金流量表
+    summary_sections:
+      - 主要会计数据
+      - 主要财务指标
+      - 财务概要
+    narrative_sections:
+      - 经营情况讨论与分析
+      - 管理层讨论与分析
+      - 财务报表项目重大变动说明
+      - 项目重大变动说明
+      - 董事会报告
+    period_tokens:
+      - 年末
+      - 期末
+      - 报告期
+      - "2024年"
+      - "2025年"
+    default_scope: merged
+    notes: |
+      新三板年报附注常短于 A 股；余额类问题更依赖主表与主要会计数据，勿假设必有长附注分项表。
+    evidence_priority:
+      balance_compare: [statement_table, summary_table, note, narrative_change]
+      pnl_compare: [statement_table, summary_table, fee_note, narrative_change]
+      cf_compare: [statement_table, summary_table, narrative_change]
+    query_aliases:
+      balance_sheet: [合并资产负债表, 资产负债表]
+      income_statement: [合并利润表, 利润表]
+      cash_flow: [合并现金流量表, 现金流量表]
+
+  hk_main:
+    label: 港股·联交所（主板/GEM，预留）
+    languages: [zh, en]
+    statement_names:
+      - 综合财务状况表
+      - 综合损益表
+      - 综合现金流量表
+      - 合并资产负债表
+      - 合并利润表
+      - 合并现金流量表
+      - Consolidated Statement of Financial Position
+      - Consolidated Statement of Profit or Loss
+      - Consolidated Statement of Cash Flows
+    summary_sections:
+      - 财务摘要
+      - 五年业绩摘要
+      - 主要财务比率
+      - Financial Highlights
+    narrative_sections:
+      - 管理层讨论及分析
+      - Management Discussion and Analysis
+      - 董事会报告
+      - Directors' Report
+    period_tokens:
+      - 于十二月三十一日
+      - "2024年12月31日"
+      - "2025年12月31日"
+      - 年末
+      - as at 31 December
+      - FY2024
+      - FY2025
+    default_scope: consolidated
+    notes: |
+      港股 PDF 常中英并列；检索须同时覆盖中文科目与英文行名（见 subject_aliases 英文列）。
+    evidence_priority:
+      balance_compare: [statement_table, summary_table, note, narrative_change]
+      pnl_compare: [statement_table, summary_table, narrative_change]
+      cf_compare: [statement_table, summary_table, narrative_change]
+    query_aliases:
+      balance_sheet: [综合财务状况表, 合并资产负债表, Consolidated Statement of Financial Position]
+      income_statement: [综合损益表, 合并利润表, Consolidated Statement of Profit or Loss]
+      cash_flow: [综合现金流量表, 合并现金流量表, Consolidated Statement of Cash Flows]
+
+  sec_us:
+    label: 美国SEC·10-K/10-Q（预留）
+    languages: [en]
+    statement_names:
+      - Consolidated Balance Sheets
+      - Consolidated Statements of Operations
+      - Consolidated Statements of Income
+      - Consolidated Statements of Cash Flows
+      - Consolidated Statements of Comprehensive Income
+    summary_sections:
+      - Selected Financial Data
+      - Summary of Financial Information
+    narrative_sections:
+      - Management's Discussion and Analysis
+      - MD&A
+      - Item 7
+      - Item 2
+    filing_types:
+      - 10-K
+      - 10-Q
+      - 20-F
+    period_tokens:
+      - FY2024
+      - FY2025
+      - "as of December 31"
+      - fiscal year ended
+    default_scope: consolidated
+    notes: |
+      Orient-G 仍仅使用 KB 内已入库 PDF/Markdown；本制度用于未来入库美股竞品时的检索 alias，禁止运行时访问 EDGAR。
+    evidence_priority:
+      balance_compare: [statement_table, item_8, summary_table, md_and_a]
+      pnl_compare: [statement_table, item_8, summary_table, md_and_a]
+      cf_compare: [statement_table, item_8, summary_table, md_and_a]
+    query_aliases:
+      balance_sheet: [Consolidated Balance Sheets, Balance Sheets, Item 8]
+      income_statement: [Consolidated Statements of Operations, Income Statement, Item 8]
+      cash_flow: [Consolidated Statements of Cash Flows, Cash Flows, Item 8]
+
+# 证据位点类型说明（各 regime 的 evidence_priority 值）
+evidence_slot_types:
+  statement_table: 报表主表行（科目 + 至少两期金额）
+  summary_table: 主要会计数据 / Financial Highlights 等摘要
+  note: 财务报表附注分项
+  fee_note: 期间费用/成本附注明细
+  narrative_change: 变动说明（仅率/原因，不可替代 statement_table 余额）
+  item_8: SEC Item 8 财务报表节
+  md_and_a: MD&A / 管理层讨论（叙事，不可替代主表余额）

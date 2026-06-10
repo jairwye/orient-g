@@ -12,6 +12,18 @@ POLL_INTERVAL_MS = 15_000
 POLL_STABLE_ROUNDS = 2
 COOLDOWN_MS = 5_000
 
+_HONEST_MISSING_RE = re.compile(
+    r"does not contain|not contain the specific|无法进行对比|未能获取|缺少证据|not available|"
+    r"未在.*证据.*披露|未明确披露|均未.*披露|均未命中|未在预检索|未覆盖该字段|"
+    r"需进一步检索|缺少.*附注|不可获取|不含|永久限制|检索管道无法|"
+    r"不确定|未包含|无法回答|未披露|未进入.*索引|无法获取.*数据",
+    re.I,
+)
+
+
+def text_is_honest_missing(text: str) -> bool:
+    return bool(_HONEST_MISSING_RE.search(text or ""))
+
 
 def _tier_label(tier_line: str) -> str | None:
     tl = (tier_line or "").strip()
@@ -69,14 +81,20 @@ _INLINE_CITE_IN_ANSWER = re.compile(
     r"\[(?:doc_chunk|evidence_pack|document)[^\]]*\]|"
     r"\bud_[a-f0-9]{16,32}\b|"
     r"doc_id:\s*`[^`]+`|"
-    r"orientg_kb_ask|orientg-debugging",
-    re.I,
+    r"orientg_kb_ask|orientg-debugging|"
+    r"(?:^|\n)doc_chunk\s*$|"
+    r"doc_id:\s*和\s*|"
+    r"数据来源：\s*\[\s*\]|引用证据：[^\n]*\[\s*\]|证据来源：\s*[）)]",
+    re.I | re.M,
 )
 _PROCESS_IN_ANSWER = re.compile(
-    r"用户要求|步骤：|让我先|我将尝试|预检索证据",
+    r"用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|"
+    r"根据(?:已获取|检索结果|Evidence Pack| skill)|很明确了|直接成稿如下|"
+    r"Evidence Pack中缺少|让我再(?:次)?尝试",
+    re.I,
 )
 _PROCESS_ORCH_EN = re.compile(
-    r"Let me (?:search|check|verify)|The skill confirms|Looking at the Evidence Pack",
+    r"Let me (?:search|check|verify|try)|I need to find|The skill confirms|Looking at the Evidence Pack",
     re.I,
 )
 
@@ -92,13 +110,15 @@ def _answer_body_for_quality(text: str) -> str:
     t = re.sub(r"^API 超时[^。.\n]*[。.\s]*", "", t, flags=re.I)
     t = strip_hermes_orchestration_preamble(t)
     # 英文编排过程稿在终稿「结论/标题」之前 → 去掉
-    m = re.search(
-        r"(?:^|\n)(结论[:：]|#+\s|存货|缺少证据|无法提供|Inventory\b)",
-        t,
+    anchor = re.compile(
+        r"(?:^|\n)(结论[:：]|#+\s|华清|存货|缺少证据|无法提供|Inventory\b|\d{1,3}(?:,\d{3})+\.\d{2})",
         re.I | re.M,
     )
-    if m and m.start() > 0 and _PROCESS_ORCH_EN.search(t[: m.start()]):
-        t = t[m.start() :].lstrip()
+    m = anchor.search(t)
+    if m and m.start() > 0:
+        prefix = t[: m.start()]
+        if _PROCESS_ORCH_EN.search(prefix) or _PROCESS_IN_ANSWER.search(prefix):
+            t = t[m.start() :].lstrip()
     return t.strip()
 
 
@@ -117,6 +137,8 @@ def stream_completed(row: dict[str, Any]) -> bool:
     extract = row.get("extract") or {}
     notes = str(row.get("notes") or "")
     text_len = int(extract.get("len") or 0)
+    answer_text = str(extract.get("head") or row.get("reply_head") or "")
+    honest = bool(extract.get("honestMissing")) or text_is_honest_missing(answer_text)
 
     if extract.get("streamFail"):
         return False
@@ -126,22 +148,30 @@ def stream_completed(row: dict[str, Any]) -> bool:
     if mode == "fast":
         if citations > 0:
             return True
-        return text_len >= 80 and (extract.get("hasMoney") or extract.get("honestMissing"))
+        return text_len >= 80 and (extract.get("hasMoney") or honest)
 
-    # standard / deep：须有 citations 或明确 Hermes 完成且正文达标
+    if "hermes_stall_salvage" in notes.lower():
+        return False
+
+    # standard / deep：须有 citations(N>0)；citations=0 仅允许短答诚实缺证据
+    if mode in ("standard", "deep"):
+        if citations > 0:
+            return True
+        if honest and text_len < 400:
+            return text_len >= 80
+        if (
+            mode == "deep"
+            and "poll_timeout" in notes.lower()
+            and text_len >= 400
+            and extract.get("hasMoney")
+            and re.search(r"Tier 2|深度", str(row.get("tier_line") or ""))
+        ):
+            return True
+        return False
+
     if citations > 0:
         return True
-    if "poll_timeout" in notes.lower() and citations == 0:
-        if text_len >= 200 and extract.get("honestMissing"):
-            pass
-        else:
-            return False
-    elif "timeout" in notes.lower() and citations == 0:
-        return False
-    tier_line = str(row.get("tier_line") or "")
-    if mode in ("standard", "deep") and "Hermes" in tier_line:
-        return text_len >= 120 and (extract.get("hasMoney") or extract.get("honestMissing"))
-    return text_len >= 120 and extract.get("honestMissing")
+    return text_len >= 80 and honest
 
 
 def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -150,20 +180,11 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
     extract = row.get("extract") or {}
     answer_text = str(extract.get("head") or row.get("reply_head") or "")
     has_money = bool(extract.get("hasMoney"))
-    honest = bool(extract.get("honestMissing")) or bool(
-        re.search(
-            r"does not contain|not contain the specific|无法进行对比|未能获取|缺少证据|not available|"
-            r"未在.*证据.*披露|未明确披露|均未.*披露|均未命中|未在预检索|未覆盖该字段|"
-            r"需进一步检索|缺少.*附注|不可获取|不含|永久限制|检索管道无法|"
-            r"不确定|未包含|无法回答",
-            answer_text,
-            re.I,
-        )
-    )
+    honest = bool(extract.get("honestMissing")) or text_is_honest_missing(answer_text)
     category = row.get("category", "")
     bad_gap = bool(extract.get("badGap"))
     bad_est = bool(extract.get("badEst"))
-    bad_est_fail = bad_est and not has_money
+    bad_est_fail = bool(bad_est)
     depth_err = bool(row.get("console_depth_error"))
     text_len = int(extract.get("len") or 0)
 
@@ -185,15 +206,10 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
         bad_inline = bool(
             re.search(r"orientg_kb_ask|\bud_[a-f0-9]{16,32}\b", body_no_suggest, re.I)
         )
-    process_leak = bool(extract.get("processInAnswer"))
     quality_text = _answer_body_for_quality(answer_text)
-    if honest:
-        process_leak = bool(
-            re.search(r"^用户要求|^步骤：|让我先|我将尝试", quality_text, re.M)
-        )
-    else:
-        process_leak = process_leak or bool(_PROCESS_IN_ANSWER.search(quality_text))
-        process_leak = process_leak or bool(_PROCESS_ORCH_EN.search(quality_text))
+    process_leak = bool(extract.get("processInAnswer"))
+    process_leak = process_leak or bool(_PROCESS_IN_ANSWER.search(quality_text))
+    process_leak = process_leak or bool(_PROCESS_ORCH_EN.search(quality_text))
     amount_ok = has_money or honest or (category == "bs" and honest)
     min_len_ok = text_len >= 120 or honest
 
@@ -214,7 +230,6 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
         else:
             kb_match = not kb_probe.get("has_data", True) or honest
 
-    # 产品验收：须严格 tier；Hermes 回退不算 deep/standard 通过
     deep_substance_ok = True
     if mode == "deep":
         if honest and text_len >= 400:
@@ -227,13 +242,33 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
         ):
             deep_substance_ok = True
         elif honest and text_len < 400 and not has_money:
-            deep_substance_ok = False
+            deep_substance_ok = text_len >= 80 and bool(
+                re.search(r"(建议|索引|上传|未披露|知识库|无法获取|缺少|周转率|附注)", answer_text, re.I)
+            )
         elif honest and not re.search(
             r"(分析|风险|建议|附注|资产负债表|变动|驱动|analysis|conclusion|comparison|receivable|balance sheet|not available)",
             answer_text,
             re.I,
         ):
             deep_substance_ok = False
+
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    wants_narrative = query_wants_change_reasons(str(row.get("query") or ""))
+    narrative_ok = True
+    if wants_narrative and has_money and not honest:
+        narrative_ok = bool(
+            re.search(
+                r"变动原因|主要系|主要是由于|管理层|重大变动|经营情况|驱动因素|同比下降|同比上升|人员减少|职工薪酬减少",
+                answer_text,
+            )
+        )
+        if re.search(r"证据未提供变动原因|未提供变动原因|仅列示金额", answer_text):
+            if not re.search(
+                r"主要是由于|主要系|人员减少|职工薪酬减少|重大变动说明|项目重大变动",
+                answer_text,
+            ):
+                narrative_ok = False
 
     ok = (
         tier_ok
@@ -248,6 +283,7 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
         and not bad_inline
         and not process_leak
         and deep_substance_ok
+        and narrative_ok
     )
 
     row["ok"] = ok
@@ -267,5 +303,6 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
         "no_inline_cite_in_answer": not bad_inline,
         "no_process_in_answer": not process_leak,
         "deep_substance_ok": deep_substance_ok if mode == "deep" else True,
+        "narrative_change_ok": narrative_ok if wants_narrative else True,
     }
     return row

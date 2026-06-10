@@ -4,6 +4,7 @@
     { "id": "skill.project_accounting_table.v1" },
     { "id": "skill.data_parse.interpret.v1" },
     { "id": "skill.data_parse.playbook.v1" },
-    { "id": "skill.data_parse.xlsx.v1" }
+    { "id": "skill.data_parse.xlsx.v1" },
+    { "id": "skill.finance.annual_report.v1" }
   ]
 }

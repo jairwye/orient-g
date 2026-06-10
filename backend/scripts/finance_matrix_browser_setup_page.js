@@ -26,7 +26,25 @@ async (folderId) => {
     }
     const hasFolder = (cap.folder_ids || []).includes(folderId);
     if (group && hasFolder) {
-      return { ok: true, hasMode: true, cap: JSON.stringify(cap) };
+      const enableFn = async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const SKILL_LABEL = "年报财务分析";
+        const btn = Array.from(document.querySelectorAll("button")).find(
+          (b) => b.getAttribute("title") === "技能",
+        );
+        if (btn && !document.getElementById("ai-skills-popover")) btn.click();
+        await sleep(400);
+        const target = Array.from(
+          document.querySelectorAll("#ai-skills-popover label"),
+        ).find((l) => l.textContent?.includes(SKILL_LABEL));
+        if (target) {
+          const cb = target.querySelector('input[type="checkbox"]');
+          if (cb && !cb.checked) cb.click();
+        }
+        return { skillChecked: !!target?.querySelector("input")?.checked };
+      };
+      const skill = await enableFn();
+      return { ok: true, hasMode: true, cap: JSON.stringify(cap), skill };
     }
     const nav = Array.from(document.querySelectorAll("nav button")).find(
       (b) => b.textContent?.trim() === "智能体",

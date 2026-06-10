@@ -100,14 +100,28 @@ def hermes_orientg_context_extras(
     tier: PrefetchTier,
     evidence_pack: dict[str, Any] | None,
     user_query: str = "",
+    enabled_skills: list[str] | None = None,
 ) -> dict[str, Any]:
     from backend.services.agent_kb_supplemental import plan_supplemental_queries
     from backend.services.kb_retrieval_plan import query_wants_analyst_report
+    from backend.services.finance_annual_report_profile import (
+        finance_annual_report_skill_enabled,
+        plan_retrieval_queries_finance,
+        supplemental_prefers_gap_driven,
+    )
 
     gaps = [str(g).strip() for g in ((evidence_pack or {}).get("gaps") or []) if str(g).strip()]
+    finance_on = finance_annual_report_skill_enabled(enabled_skills) or bool(
+        (evidence_pack or {}).get("finance_meta")
+    )
 
     if tier == "lite" and gaps:
-        suggested = plan_supplemental_queries(user_query, evidence_pack=evidence_pack, max_queries=3)
+        suggested = plan_supplemental_queries(
+            user_query,
+            evidence_pack=evidence_pack,
+            max_queries=3,
+            enabled_skills=enabled_skills,
+        )
         extras: dict[str, Any] = {
             "orientg_evidence_gaps": gaps[:5],
             "orientg_kb_ask_required": True,
@@ -131,14 +145,29 @@ def hermes_orientg_context_extras(
 
         tt = infer_task_type(user_query)
         ent = detect_entity(user_query)
-        narrative_qs = plan_retrieval_queries(
-            user_query,
-            tt,
-            entity=ent,
-            max_queries=6,
-            prefetch_tier="full",
-        )
-        narrative_qs = [q for q in narrative_qs if any(k in q for k in ("经营", "管理层", "市场及推广", "主营业务", "销售费用", "附注"))]
+        gap_driven = supplemental_prefers_gap_driven(enabled_skills) or finance_on
+        if finance_on and finance_annual_report_skill_enabled(enabled_skills):
+            narrative_qs = plan_retrieval_queries_finance(
+                user_query,
+                tt,
+                entity=ent,
+                max_queries=6,
+                prefetch_tier="full",
+            )
+        else:
+            narrative_qs = plan_retrieval_queries(
+                user_query,
+                tt,
+                entity=ent,
+                max_queries=6,
+                prefetch_tier="full",
+            )
+            if not gap_driven:
+                narrative_qs = [
+                    q
+                    for q in narrative_qs
+                    if any(k in q for k in ("经营", "管理层", "市场及推广", "主营业务", "销售费用", "附注"))
+                ]
         extras: dict[str, Any] = {
             "orientg_tool_reminder": (
                 "深度编排：成稿前须 orientg_kb_ask 拉取附注分项与经营叙事（query 与预检索不同）。"
@@ -168,7 +197,12 @@ def hermes_orientg_context_extras(
         if extras.get("orientg_kb_ask_required") or extras.get("orientg_kb_ask_suggested"):
             return extras
         if gaps:
-            suggested = plan_supplemental_queries(user_query, evidence_pack=evidence_pack, max_queries=3)
+            suggested = plan_supplemental_queries(
+                user_query,
+                evidence_pack=evidence_pack,
+                max_queries=3,
+                enabled_skills=enabled_skills,
+            )
             extras["orientg_kb_ask_required"] = True
             extras["orientg_kb_ask_min_calls_before_final_answer"] = 1
             if suggested:

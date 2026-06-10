@@ -38,6 +38,7 @@ def _top_citations_for_llm(
     entity_scope_relaxed: bool = False,
     doc_folder_labels: dict[str, str] | None = None,
     multi_company_scope: bool = False,
+    finance_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """大文件夹检索会返回很多条；按混合分 + 实体/财务关键词重排后取前几条。"""
     if not citations:
@@ -55,7 +56,7 @@ def _top_citations_for_llm(
         query_wants_fee_breakdown,
     )
 
-    terms = _expand_retrieval_terms(_tokenize_query(user_query), user_query)
+    terms = _expand_retrieval_terms(_tokenize_query(user_query), user_query, finance_context)
     ents = _entity_terms_from_query(user_query)
     tid = (tenant_id or "").strip() or "tenant1"
     q_join = (user_query or "").replace(" ", "")
@@ -91,6 +92,7 @@ def _top_citations_for_llm(
                     terms,
                     user_query,
                     entity_scope_relaxed=entity_scope_relaxed,
+                    finance_context=finance_context,
                 )
             )
             if wants_compare or wants_fee:
@@ -157,6 +159,7 @@ def build_prefetch_evidence_excerpts(
     excerpt_cap: int = 4000,
     max_chunks_per_doc: int = 1,
     doc_folder_labels: dict[str, str] | None = None,
+    finance_context: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """Top-N chunk 节选，供 Hermes system 注入，减少重复 orientg_kb_ask。"""
     from backend.services.ai_interaction_llm import (
@@ -175,6 +178,7 @@ def build_prefetch_evidence_excerpts(
         max_chunks_per_doc=max_chunks_per_doc,
         doc_folder_labels=labels,
         multi_company_scope=len(set(labels.values())) > 1 if labels else False,
+        finance_context=finance_context,
     )
     compare_focus = _query_wants_financial_compare(user_query)
     out: list[dict[str, str]] = []
@@ -247,6 +251,7 @@ def prefetch_kb_context(
     attached_doc_ids: list[str] | None = None,
     limit_to_attached: bool | None = None,
     agent_mode: str = "standard",
+    enabled_skills: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any] | None, list[dict[str, Any]]]:
     """
     返回 (带预检索 system 的 messages, ask 结果, tool_calls 片段)。
@@ -289,6 +294,7 @@ def prefetch_kb_context(
             "limit_to_attached": bool(lim),
         },
         prefetch_tier=tier,
+        enabled_skills=enabled_skills,
     )
     cites = ask_res.get("citations") or []
     evidence_pack = ask_res.get("evidence_pack")
@@ -308,6 +314,13 @@ def prefetch_kb_context(
     pack_labels = {}
     if isinstance(evidence_pack, dict) and isinstance(evidence_pack.get("doc_folder_labels"), dict):
         pack_labels = evidence_pack.get("doc_folder_labels") or {}
+    finance_ctx = None
+    if isinstance(evidence_pack, dict) and evidence_pack.get("finance_meta"):
+        finance_ctx = evidence_pack.get("finance_meta")
+    else:
+        from backend.services.finance_annual_report_profile import build_finance_retrieval_context
+
+        finance_ctx = build_finance_retrieval_context(enabled_skills, query)
     excerpts = build_prefetch_evidence_excerpts(
         cites,
         query,
@@ -317,6 +330,7 @@ def prefetch_kb_context(
         excerpt_cap=ex_cap,
         max_chunks_per_doc=ex_per_doc,
         doc_folder_labels=pack_labels,
+        finance_context=finance_ctx if isinstance(finance_ctx, dict) else None,
     )
     from backend.services.evidence_pack import pack_summary_for_sse
 
@@ -398,6 +412,11 @@ def synthesize_kb_reply(
     relax_entity = bool(pack.get("entity_scope_relaxed"))
     doc_labels = pack.get("doc_folder_labels") if isinstance(pack.get("doc_folder_labels"), dict) else {}
     multi_co = bool(pack.get("multi_company_scope"))
+    finance_ctx = pack.get("finance_meta") if isinstance(pack.get("finance_meta"), dict) else None
+    if not finance_ctx:
+        from backend.services.finance_annual_report_profile import build_finance_retrieval_context
+
+        finance_ctx = build_finance_retrieval_context(enabled_skills, user_query)
     max_per_doc = 2 if task_type == "breakdown" else 1
     default_limit = 12 if multi_co else (10 if task_type in ("breakdown", "compare") else 5)
     cite_lim = int(cite_limit) if cite_limit is not None else default_limit
@@ -411,6 +430,7 @@ def synthesize_kb_reply(
         entity_scope_relaxed=relax_entity,
         doc_folder_labels=doc_labels,
         multi_company_scope=multi_co,
+        finance_context=finance_ctx if isinstance(finance_ctx, dict) else None,
     )
     if prefetch_result.get("denied"):
         return {

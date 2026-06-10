@@ -78,6 +78,7 @@ def _build_messages(
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
     evidence_pack: dict[str, Any] | None = None,
+    enabled_skills: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """在 system 中注入 Orient-G 上下文（Hermes 侧 MCP 仍须在 ~/.hermes 配置 orientg）。"""
     ctx = {
@@ -131,6 +132,7 @@ def _build_messages(
                 tier=tier,
                 evidence_pack=evidence_pack,
                 user_query=user_q,
+                enabled_skills=enabled_skills,
             )
         )
         ctx["orientg_stream_reasoning"] = bool(settings.hermes_stream_reasoning)
@@ -275,6 +277,7 @@ def _build_payload(
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
     evidence_pack: dict[str, Any] | None = None,
+    enabled_skills: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "model": (settings.hermes_model or "hermes-agent").strip() or "hermes-agent",
@@ -289,6 +292,7 @@ def _build_payload(
             orientg_route=orientg_route,
             orientg_kb_ask_budget=orientg_kb_ask_budget,
             evidence_pack=evidence_pack,
+            enabled_skills=enabled_skills,
         ),
         "stream": stream,
         # Hermes Gateway：显式开启 hermes.tool.progress SSE（见官方 API Server 文档）
@@ -842,6 +846,7 @@ def run_agent_chat(
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
     evidence_pack: dict[str, Any] | None = None,
+    enabled_skills: list[str] | None = None,
 ) -> dict[str, Any]:
     if not settings.hermes_configured:
         raise HermesDisabledError("Hermes Agent 未启用（HERMES_ENABLED / HERMES_BASE_URL）")
@@ -870,6 +875,7 @@ def run_agent_chat(
         orientg_route=orientg_route,
         orientg_kb_ask_budget=orientg_kb_ask_budget,
         evidence_pack=evidence_pack,
+        enabled_skills=enabled_skills,
     )
 
     timeout = max(30, int(settings.hermes_request_timeout_s or 300))
@@ -919,6 +925,7 @@ def stream_agent_chat_runs(
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
     evidence_pack: dict[str, Any] | None = None,
+    enabled_skills: list[str] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """经 POST /v1/runs + GET .../events 流式（路线第三步）。"""
     from backend.services.agent_run_registry import bind_hermes_run, is_cancelled
@@ -950,6 +957,7 @@ def stream_agent_chat_runs(
         orientg_route=orientg_route,
         orientg_kb_ask_budget=orientg_kb_ask_budget,
         evidence_pack=evidence_pack,
+        enabled_skills=enabled_skills,
     )
     model = (settings.hermes_model or "hermes-agent").strip() or "hermes-agent"
     runs_body = messages_to_hermes_runs_body(built, model=model, session_id=session_key)
@@ -1176,6 +1184,7 @@ def stream_agent_chat(
     orientg_route: str | None = None,
     orientg_kb_ask_budget: int | None = None,
     evidence_pack: dict[str, Any] | None = None,
+    enabled_skills: list[str] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """
     产出 SSE 事件 dict：
@@ -1212,6 +1221,7 @@ def stream_agent_chat(
                 orientg_route=orientg_route,
                 orientg_kb_ask_budget=orientg_kb_ask_budget,
                 evidence_pack=evidence_pack,
+                enabled_skills=enabled_skills,
             )
             return
         if (orientg_route or "").strip().lower() == "hermes_full":
@@ -1247,6 +1257,7 @@ def stream_agent_chat(
         orientg_route=orientg_route,
         orientg_kb_ask_budget=orientg_kb_ask_budget,
         evidence_pack=evidence_pack,
+        enabled_skills=enabled_skills,
     )
 
     read_timeout = max(60, int(settings.hermes_request_timeout_s or 600))

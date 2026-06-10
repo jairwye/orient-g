@@ -90,36 +90,8 @@ export function resolveDocsForActiveKb(input) {
     return toFolderDetailDocRows(privateRootDocs);
   }
 
-  const folderKindById = new Map();
-  for (const f of folders || []) {
-    folderKindById.set(String(f.folder_id || ""), String(f.kind || KB_KIND_PRIVATE).trim() || KB_KIND_PRIVATE);
-  }
-
-  const out = [];
-  for (const d of myDocs || []) {
-    const docId = String(d.doc_id || "").trim();
-    if (!docId) continue;
-    const status = String(d.status || "");
-    if (!docIsActive(status) && !docIsRunning({ status })) continue;
-    const fids = Array.isArray(d.folder_ids) ? d.folder_ids : [];
-    const inKind = fids.some((fid) => (folderKindById.get(String(fid)) || KB_KIND_PRIVATE) === kind);
-    if (!inKind) continue;
-    out.push({
-      doc_id: docId,
-      title: String(d.title || ""),
-      original_filename: d.original_filename,
-      size_bytes: d.size_bytes,
-      status: d.status,
-      last_error: d.last_error ?? null,
-      created_at: d.created_at ?? null,
-    });
-  }
-  out.sort((a, b) => {
-    const ta = Date.parse(String(a.created_at || "")) || 0;
-    const tb = Date.parse(String(b.created_at || "")) || 0;
-    return tb - ta;
-  });
-  return out;
+  // 知识库根级：非私人库仅展示文件夹，文档需进入具体文件夹查看
+  return [];
 }
 
 export function isPrivateKbRootSelection(selectionKind, activeKbKind) {

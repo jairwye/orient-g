@@ -128,10 +128,8 @@ def ai_interaction_chat(request: Request, body: ChatBody):
                 folder_doc_ids.extend(collect_subtree_doc_ids(tenant_id, fid))
             folder_doc_ids = list(dict.fromkeys(folder_doc_ids))
         except Exception as e:
-            _logger.warning("KB_SCOPE_DEBUG folder expansion failed: %s", e)
-            pass
+            _logger.warning("KB folder scope expansion failed: %s", e)
 
-    # DEBUG: log after folder expansion
     # 去重
     seen = set()
     selected_collection_ids = [x for x in selected_collection_ids if not (x in seen or seen.add(x))]

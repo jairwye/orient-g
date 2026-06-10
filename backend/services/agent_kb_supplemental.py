@@ -367,17 +367,11 @@ def prefetch_defers_hermes_draft_to_process(
     prefetch_result: dict[str, Any] | None,
 ) -> bool:
     """
-    breakdown/compare 且预检索成功：Hermes 流式正文先进执行过程，终稿由 done/补检索决定。
-    避免「先显示 Hermes 初稿、补检索后又替换」的主气泡闪烁。
+    Tier 1/2：Hermes 流式正文（delta/thinking）一律写入执行过程，主气泡仅展示终稿
+    （done / replace_reply / salvage / 本地回退）。与 task_type、预检索是否成功无关。
     """
     route = agent_route.value if isinstance(agent_route, AgentRoute) else str(agent_route)
-    if route not in (AgentRoute.hermes_lite.value, AgentRoute.hermes_full.value):
-        return False
-    pack = (prefetch_result or {}).get("evidence_pack") or {}
-    # 仅 breakdown 过程稿进「执行过程」；compare（如两年末余额对比）须 Hermes 正文进主气泡，避免 hermes_empty 回退
-    if str(pack.get("task_type") or "") != TaskType.breakdown.value:
-        return False
-    return bool((prefetch_result or {}).get("ok"))
+    return route in (AgentRoute.hermes_lite.value, AgentRoute.hermes_full.value)
 
 
 def needs_hermes_supplemental(
@@ -426,6 +420,27 @@ _NARRATIVE_SUPPLEMENTAL_KW = (
 )
 
 
+def needs_fast_path_narrative_supplemental(
+    *,
+    prefetch_result: dict[str, Any] | None,
+    user_query: str,
+    enabled_skills: list[str] | None,
+) -> bool:
+    """Tier 0 快速路径：pack 已标 narrative 缺项时，合成前自动补检索。"""
+    from backend.services.finance_annual_report_profile import finance_annual_report_skill_enabled
+    from backend.services.kb_retrieval_plan import query_wants_change_reasons
+
+    if not finance_annual_report_skill_enabled(enabled_skills):
+        return False
+    if not query_wants_change_reasons(user_query):
+        return False
+    pack = (prefetch_result or {}).get("evidence_pack") or {}
+    if str(pack.get("task_type") or "") != TaskType.compare.value:
+        return False
+    gaps = [str(g) for g in (pack.get("gaps") or [])]
+    return any("变动原因" in g or "重大变动" in g for g in gaps)
+
+
 def supplemental_max_queries_for_route(agent_route: AgentRoute | str) -> int:
     route = agent_route.value if isinstance(agent_route, AgentRoute) else str(agent_route)
     if route == AgentRoute.hermes_full.value:
@@ -439,9 +454,15 @@ def plan_supplemental_queries(
     evidence_pack: dict[str, Any] | None,
     max_queries: int = 5,
     prefetch_tier: str = "lite",
+    enabled_skills: list[str] | None = None,
 ) -> list[str]:
     """基于 task_type + 用户问句生成补检索 query（与预检索 plan 同源，跳过已用 query）。"""
     from backend.services.kb_retrieval_plan import TaskType, detect_entity, infer_task_type, plan_retrieval_queries
+    from backend.services.finance_annual_report_profile import (
+        finance_annual_report_skill_enabled,
+        plan_retrieval_queries_finance,
+        supplemental_prefers_gap_driven,
+    )
 
     q = (user_query or "").strip()
     if not q:
@@ -457,14 +478,27 @@ def plan_supplemental_queries(
     tier = (prefetch_tier or "lite").strip().lower()
     if tier not in ("lite", "full"):
         tier = "lite"
-    candidates = plan_retrieval_queries(
-        q,
-        tt,
-        entity=ent,
-        max_queries=max(max_queries + len(used), 8),
-        prefetch_tier=tier,
+    finance_on = finance_annual_report_skill_enabled(enabled_skills) or bool(
+        (pack.get("finance_meta") or {}).get("regime_id")
     )
-    if tier == "full":
+    if finance_on and finance_annual_report_skill_enabled(enabled_skills):
+        candidates = plan_retrieval_queries_finance(
+            q,
+            tt,
+            entity=ent,
+            max_queries=max(max_queries + len(used), 8),
+            prefetch_tier=tier,
+        )
+    else:
+        candidates = plan_retrieval_queries(
+            q,
+            tt,
+            entity=ent,
+            max_queries=max(max_queries + len(used), 8),
+            prefetch_tier=tier,
+        )
+    gap_driven = supplemental_prefers_gap_driven(enabled_skills) or bool(pack.get("finance_meta"))
+    if tier == "full" and not gap_driven:
         candidates = [
             c
             for c in candidates
@@ -491,6 +525,7 @@ def run_supplemental_kb_asks(
     fixtures: dict[str, Any],
     max_queries: int = 5,
     prefetch_tier: str = "lite",
+    enabled_skills: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """执行补检索；返回 (merged_prefetch, tool_calls)。无新 query 时 (None, [])。"""
     pack = prefetch_result.get("evidence_pack") or {}
@@ -499,6 +534,7 @@ def run_supplemental_kb_asks(
         evidence_pack=pack,
         max_queries=max_queries,
         prefetch_tier=prefetch_tier,
+        enabled_skills=enabled_skills,
     )
     if not queries:
         return None, []
@@ -522,6 +558,10 @@ def run_supplemental_kb_asks(
     if prefetch_result.get("reply"):
         reply_parts.append(str(prefetch_result.get("reply")))
 
+    from backend.services.finance_annual_report_profile import build_finance_retrieval_context
+
+    finance_ctx = build_finance_retrieval_context(enabled_skills, user_query)
+
     for sub_q in queries:
         res = ask_knowledge(
             user_token,
@@ -531,6 +571,7 @@ def run_supplemental_kb_asks(
             fixtures=fixtures,
             attached_doc_ids=attached or None,
             limit_to_attached=bool(lim),
+            finance_retrieval_context=finance_ctx,
         )
         status = "ok" if not res.get("denied") else "denied"
         cites = list(res.get("citations") or [])
@@ -560,6 +601,7 @@ def run_supplemental_kb_asks(
         reply_parts=reply_parts,
         tenant_id=tenant_id,
         fixtures=fixtures,
+        finance_meta=finance_ctx or pack.get("finance_meta"),
     )
     merged = {
         **prefetch_result,
@@ -612,6 +654,7 @@ def iter_supplemental_revision_events(
         fixtures=fixtures,
         max_queries=max_q,
         prefetch_tier=tier,
+        enabled_skills=enabled_skills,
     )
     for tc in sup_tools:
         q = str(tc.get("query") or "")[:60]

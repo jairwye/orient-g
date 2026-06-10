@@ -82,17 +82,12 @@ async function proxy(
     cache: "no-store",
   };
   if (method !== "GET" && method !== "HEAD") {
-    const contentType = request.headers.get("content-type") || "";
-    if (contentType.toLowerCase().includes("multipart/form-data")) {
-      // Next/Undici 在某些环境下转发 multipart 流会出现 fetch failed，这里改为 buffer 转发更稳
+    if (request.body) {
+      // Node fetch + duplex 流式转发 JSON 等小 body 时，若后端快速返回 401 会触发 fetch failed，
+      // 前端误报「后端不可用」；统一 buffer 转发（multipart 亦同）。
       const ab = await request.arrayBuffer();
       init.body = Buffer.from(ab);
       headers.delete("content-length");
-      // multipart/form-data 的 boundary 必须随 body 一起正确生成；
-      // 原请求头中的 content-type 包含 boundary，保留它即可让后端正确解析
-    } else if (request.body) {
-      init.body = request.body;
-      (init as RequestInit & { duplex?: string }).duplex = "half"; // Node fetch 要求流式 body 时设置
     }
   }
   try {

@@ -301,25 +301,44 @@ def test_plan_supplemental_full_prefers_narrative_and_caps():
         )
 
 
-def test_prefetch_defers_hermes_draft_for_breakdown_only():
+def test_plan_supplemental_finance_full_skips_narrative_filter():
+    pack = {
+        "task_type": "compare",
+        "retrieval_queries": ["华清飞扬 应收账款 2024 2025 对比"],
+        "finance_meta": {"active": True, "subject_type": "balance_sheet"},
+        "gaps": ["证据中缺少资产负债表科目行"],
+    }
+    qs = plan_supplemental_queries(
+        "华清飞扬 2024 2025 应收账款期末余额对比",
+        evidence_pack=pack,
+        max_queries=4,
+        prefetch_tier="full",
+        enabled_skills=["skill.finance.annual_report.v1"],
+    )
+    assert qs
+    assert any("应收" in q or "资产负债" in q or "合并" in q for q in qs)
+
+
+def test_prefetch_defers_hermes_draft_for_all_tier12():
+    """Tier 1/2 不论 breakdown/compare/lookup，过程稿均 defer 到执行过程。"""
     assert prefetch_defers_hermes_draft_to_process(
         agent_route=AgentRoute.hermes_lite,
         prefetch_result=PREFETCH_BREAKDOWN,
     )
-    assert not prefetch_defers_hermes_draft_to_process(
+    assert prefetch_defers_hermes_draft_to_process(
         agent_route=AgentRoute.hermes_lite,
         prefetch_result={
             "ok": True,
             "evidence_pack": {"task_type": "compare"},
         },
     )
+    assert prefetch_defers_hermes_draft_to_process(
+        agent_route=AgentRoute.hermes_full,
+        prefetch_result={"ok": False, "evidence_pack": {"task_type": "lookup"}},
+    )
     assert not prefetch_defers_hermes_draft_to_process(
         agent_route=AgentRoute.fast,
         prefetch_result=PREFETCH_BREAKDOWN,
-    )
-    assert not prefetch_defers_hermes_draft_to_process(
-        agent_route=AgentRoute.hermes_lite,
-        prefetch_result={"ok": True, "evidence_pack": {"task_type": "lookup"}},
     )
 
 
@@ -349,6 +368,28 @@ def test_hermes_kb_ask_count_from_tool_calls_fallback():
             ]
         }
     ) == 1
+
+
+def test_needs_fast_path_narrative_supplemental_on_finance_gap():
+    from backend.services.agent_kb_supplemental import needs_fast_path_narrative_supplemental
+
+    skill = ["skill.finance.annual_report.v1"]
+    prefetch = {
+        "ok": True,
+        "evidence_pack": {
+            "task_type": "compare",
+            "gaps": ["未命中营业收入等科目的变动原因/重大变动说明（仅有金额不够）"],
+        },
+    }
+    q = "华清2025年与2024年营业收入对比及变动说明"
+    assert needs_fast_path_narrative_supplemental(
+        prefetch_result=prefetch, user_query=q, enabled_skills=skill
+    )
+    assert not needs_fast_path_narrative_supplemental(
+        prefetch_result={"ok": True, "evidence_pack": {"task_type": "compare", "gaps": []}},
+        user_query=q,
+        enabled_skills=skill,
+    )
 
 
 @patch("backend.services.agent_kb_supplemental.ask_knowledge")

@@ -219,8 +219,16 @@ def statement_scope_score_delta(txt: str, query: str) -> float:
     return 0.0
 
 
-def _expand_retrieval_terms(terms: list[str], query: str) -> list[str]:
+def _expand_retrieval_terms(
+    terms: list[str],
+    query: str,
+    finance_context: dict[str, Any] | None = None,
+) -> list[str]:
     """财务问句：扩展同义检索词（如 营收→营业收入、利润表）。"""
+    if finance_context and finance_context.get("active"):
+        from backend.services.finance_annual_report_profile import expand_retrieval_terms_finance
+
+        return expand_retrieval_terms_finance(terms, query, finance_context)
     q = (query or "").strip()
     out = list(terms or [])
     q_join = q.replace(" ", "")
@@ -286,6 +294,7 @@ def _score_chunk_for_retrieval(
     query: str,
     *,
     entity_scope_relaxed: bool = False,
+    finance_context: dict[str, Any] | None = None,
 ) -> int:
     """关键词侧 chunk 评分：财务指标优先于实体词频堆砌。"""
     txt_lower = (txt or "").lower()
@@ -378,6 +387,18 @@ def _score_chunk_for_retrieval(
             score += 40
 
     asks_pl = any(x in q_lower for x in ("损益", "对比", "比较", "利润表"))
+    finance_bs = bool(
+        finance_context
+        and finance_context.get("active")
+        and finance_context.get("subject_type") == "balance_sheet"
+    )
+    finance_cf = bool(
+        finance_context
+        and finance_context.get("active")
+        and finance_context.get("subject_type") == "cash_flow"
+    )
+    if finance_bs or finance_cf:
+        asks_pl = False
     asks_fee_breakdown = query_wants_fee_breakdown(query)
     if asks_pl and not asks_fee_breakdown:
         if any(k in txt_lower for k in ("利润表", "合并利润表", "营业收入", "净利润")):
@@ -397,6 +418,11 @@ def _score_chunk_for_retrieval(
 
     if query_wants_change_reasons(query) and is_fee_change_reason_chunk(txt or ""):
         score += 200
+
+    if finance_context and finance_context.get("active"):
+        from backend.services.finance_annual_report_profile import finance_chunk_score_delta
+
+        score += finance_chunk_score_delta(txt or "", query, finance_context)
 
     return score
 
@@ -467,6 +493,7 @@ def _hybrid_retrieve(
     *,
     k: int = 20,
     entity_scope_relaxed: bool = False,
+    finance_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     混合检索：向量语义搜索 + 关键词精确匹配 → 加权综合评分 + 上下文 re-rank。
@@ -494,6 +521,7 @@ def _hybrid_retrieve(
         query=query,
         limit=k * 2,
         entity_scope_relaxed=entity_scope_relaxed,
+        finance_context=finance_context,
     )
 
     # 3) 合并去重：key = (doc_id, chunk_id)
@@ -561,6 +589,7 @@ def _retrieve_uploaded_doc_chunks(
     query: str,
     limit: int = 20,
     entity_scope_relaxed: bool = False,
+    finance_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     增强关键词检索：先用 jieba 分词提取检索词条，再用 PG ILIKE 做多词 OR 匹配，
@@ -573,7 +602,7 @@ def _retrieve_uploaded_doc_chunks(
     q = _normalize_query(query)
     if not q:
         return []
-    terms = _expand_retrieval_terms(_tokenize_query(q), q)
+    terms = _expand_retrieval_terms(_tokenize_query(q), q, finance_context)
     if not terms:
         terms = [q[:80]]  # 兜底：用原始查询前 80 字符
 
@@ -602,7 +631,13 @@ def _retrieve_uploaded_doc_chunks(
         chid = str(r[1])
         seq = int(r[2] or 0)
         txt = str(r[3] or "")
-        score = _score_chunk_for_retrieval(txt, terms, q, entity_scope_relaxed=entity_scope_relaxed)
+        score = _score_chunk_for_retrieval(
+            txt,
+            terms,
+            q,
+            entity_scope_relaxed=entity_scope_relaxed,
+            finance_context=finance_context,
+        )
         if score > 0:
             scored.append((score, did, chid, seq))
 
@@ -656,11 +691,12 @@ def _retrieve_fixture_doc_chunks(
     doc_assignments: dict[str, set[str]],
     query: str,
     limit: int = 3,
+    finance_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     q = _normalize_query(query)
     if not q:
         return []
-    terms = _expand_retrieval_terms(_tokenize_query(q), q)
+    terms = _expand_retrieval_terms(_tokenize_query(q), q, finance_context)
     scored: list[tuple[int, dict[str, Any]]] = []
     for d in documents:
         did = str(d.get("doc_id") or "").strip()
@@ -676,7 +712,12 @@ def _retrieve_fixture_doc_chunks(
         for s in d.get("sections") or []:
             for ch in s.get("chunks") or []:
                 ch_text = str(ch.get("text") or "")
-                score = _score_chunk_for_retrieval(ch_text, terms, q)
+                score = _score_chunk_for_retrieval(
+                    ch_text,
+                    terms,
+                    q,
+                    finance_context=finance_context,
+                )
                 if score <= 0:
                     continue
                 scored.append(
@@ -794,6 +835,7 @@ def ask_knowledge(
     attached_doc_ids: Optional[list[str]] = None,
     limit_to_attached: bool = False,
     entity_scope_relaxed: bool | None = None,
+    finance_retrieval_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fixtures = fixtures or load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
@@ -901,6 +943,7 @@ def ask_knowledge(
             candidate_doc_ids=cand_doc_ids,
             k=20,
             entity_scope_relaxed=relax_entity,
+            finance_context=finance_retrieval_context,
         )
         if hybrid_hits:
             used_vector = any(h.get("hybrid_score", 0) > 0 and h.get("vec_sim", 0) > 0 for h in hybrid_hits)
@@ -920,6 +963,7 @@ def ask_knowledge(
             doc_assignments=doc_assignments,
             query=q,
             limit=10,
+            finance_context=finance_retrieval_context,
         )
         for h in fixture_hits:
             used_keyword = True

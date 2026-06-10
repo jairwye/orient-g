@@ -32,6 +32,7 @@ def retrieve_kb_evidence_pack(
     multi_query: bool | None = None,
     resolved_scope: dict[str, Any] | None = None,
     prefetch_tier: str | None = None,
+    enabled_skills: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     返回 (prefetch 兼容结果, tool_calls)。
@@ -69,11 +70,31 @@ def retrieve_kb_evidence_pack(
     )
     task_type = infer_task_type(q)
     entity = detect_entity(q)
-    queries = (
-        plan_retrieval_queries(q, task_type, entity=entity, prefetch_tier=prefetch_tier)
-        if use_multi
-        else [q]
+    from backend.services.finance_annual_report_profile import (
+        build_finance_retrieval_context,
+        finance_annual_report_skill_enabled,
+        plan_retrieval_queries_finance,
     )
+
+    finance_ctx = build_finance_retrieval_context(enabled_skills, q, entity=entity)
+    if finance_ctx and finance_annual_report_skill_enabled(enabled_skills):
+        queries = (
+            plan_retrieval_queries_finance(
+                q,
+                task_type,
+                entity=entity,
+                max_queries=8,
+                prefetch_tier=prefetch_tier,
+            )
+            if use_multi
+            else [q]
+        )
+    else:
+        queries = (
+            plan_retrieval_queries(q, task_type, entity=entity, prefetch_tier=prefetch_tier)
+            if use_multi
+            else [q]
+        )
 
     tool_calls: list[dict[str, Any]] = []
     cite_lists: list[list[dict[str, Any]]] = []
@@ -90,6 +111,7 @@ def retrieve_kb_evidence_pack(
             attached_doc_ids=attached or None,
             limit_to_attached=bool(lim),
             entity_scope_relaxed=relax_entity,
+            finance_retrieval_context=finance_ctx,
         )
         if res.get("denied"):
             reason = str(res.get("deny_reason") or res.get("reason") or "denied")
@@ -156,6 +178,7 @@ def retrieve_kb_evidence_pack(
         fixtures=fixtures,
         doc_folder_labels=doc_labels,
         multi_company_scope=multi_co,
+        finance_meta=finance_ctx,
     )
     if relax_entity:
         pack = {**pack, "entity_scope_relaxed": True}

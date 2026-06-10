@@ -60,7 +60,7 @@ test("resolveDocsForActiveKb: folder selection uses folder docs only", () => {
   assert.deepEqual(rows, folderDocs);
 });
 
-test("resolveDocsForActiveKb: DeptPublic kb aggregates by folder kind", () => {
+test("resolveDocsForActiveKb: DeptPublic kb root shows no docs (enter folder to view)", () => {
   const myDocs = [
     { doc_id: "d1", title: "a", folder_ids: ["f_dept"], status: "active", created_at: "2026-01-02" },
     { doc_id: "d2", title: "b", folder_ids: ["f_contract"], status: "active", created_at: "2026-01-03" },
@@ -74,5 +74,5 @@ test("resolveDocsForActiveKb: DeptPublic kb aggregates by folder kind", () => {
       { folder_id: "f_contract", kind: "Private" },
     ],
   });
-  assert.deepEqual(rows.map((r) => r.doc_id), ["d1"]);
+  assert.deepEqual(rows, []);
 });

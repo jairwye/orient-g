@@ -51,6 +51,19 @@ def test_finalize_fast_path_reply_strips_inline_ud_ids():
     assert "8,851,536.62" in out
 
 
+def test_finalize_strips_empty_evidence_source_and_estimate():
+    raw = (
+        "结论：货币资金108,701,484.08元（证据来源： ）。\n"
+        "减少约8,684万元。\n"
+        "项目\t2025年末\t2024年末\n"
+        "货币资金\t108,701,484.08\t195,579,545.37"
+    )
+    out = finalize_fast_path_reply(raw, user_query="华清2025年末与2024年末货币资金对比")
+    assert "证据来源" not in out or "（ ）" not in out
+    assert "约8,684万" not in out
+    assert "108,701,484.08" in out
+
+
 @patch("backend.services.agent_kb_prefetch.synthesize_kb_reply")
 def test_stream_fast_path_finalizes_reply(mock_synth):
     ud = "ud_0401544fb6f7425092db1d9f7a970917"

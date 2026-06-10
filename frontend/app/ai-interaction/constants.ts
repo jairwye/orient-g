@@ -5,5 +5,9 @@ export const TOOL_CONFIGS_LS_KEY = "orientg.ai_interaction.tool_configs.v1";
 export const WORKFLOW_CONFIGS_LS_KEY = "orientg.ai_interaction.workflow_configs.v1";
 export const PROMPT_CONFIGS_LS_KEY = "orientg.ai_interaction.prompt_configs.v1";
 export const WF_DATA_PARSE_EXCEL_ID = "wf.data_parse.excel.v1";
+export const WF_COMPETITOR_FINANCE_ID = "wf.competitor_finance_reports.v1";
+/** 竞品财报25 文件夹（七家年报 KB） */
+export const COMPETITOR_FINANCE_FOLDER_ID = "f_6f3638e4513f492c9610ddb5dda77c20";
+export const FINANCE_ANNUAL_REPORT_SKILL_ID = "skill.finance.annual_report.v1";
 export const BIG_PDF_SIZE_MB = 15;
 export const BIG_PDF_PAGES = 60;

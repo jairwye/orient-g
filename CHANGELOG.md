@@ -13,8 +13,12 @@
 - **规制目录 `specs/`**：API 契约迁至 `specs/api/api-contract.md`；Agent KB Router 计划与 UI spec 入库。
 - **Alembic**：`kb_folders.parent_folder_id`；`kb_tasks` worker 租约/心跳/去重列与索引。
 
+- **Agent Skill**：`skill.finance.annual_report.v1`（竞品财报年报检索/对比）；`finance_annual_report_profile` 缓存与 Tier 0 narrative 补检索。
+- **浏览器矩阵验收**：CDP runner 每案 token 注入、validate 收紧（citations/过程稿/inline cite）；规制 §13 复测提示词。
+
 ### Changed
 
+- **登录与鉴权**：JWT 过期（401）跳转 `/login?expired=1`；AuthGuard 标签页获焦复检；Next API 代理 JSON body 改为 buffer 转发（修复密码错误误报 502「后端不可用」）。
 - Hermes 流式：Runs/chat 双路径 `HermesRunsLoopGuard`；error 时 salvage 过程稿（`hermes_salvaged`）；Tier 1 pack 充分时跳过 supplemental；Tier 0 终稿统一 `finalize_agent_reply`。
 - AI 互动页：Agent 流式期间防抖 session 持久化（修复 Maximum update depth）；Markdown 规范化拆至 `markdownNormalize.ts`。
 - 用户可见文案：「AI互动」统一为 **「AI内网」**（路由 `/ai-interaction`、API 不变）；侧栏/知识库/合同/BigPDF 等引用 `frontend/app/lib/ui_labels.ts`。

@@ -122,7 +122,7 @@ chatContentInnerClass, chatMessagesStackClass, chatScrollToBottomBtnClass
 | 顶栏 | `headerBar`：`border-blue-900/45` + `bg-blue-950/30`；标题 `headerTitle`；说明 `headerDesc`（zinc 次级文案） |
 | 模式切换 | 快速 / 标准 / 深度；容器 `modeGroup`；选中 `modeActive`，未选 `modeIdle`；请求体 `agent_mode` |
 | 流式状态（助手气泡内） | 左边线 `streamStatusBorder`；文案 `text-zinc-500`；**不用**顶栏独立状态区 |
-| 执行过程（Hermes） | 可折叠 `AgentTracePanel`（`w-full`，与正文同宽）；`status` / `tool` / `thinking` / `meta`；Agent 助手行 `assistantMessageRowClass(true)` 占满 `max-w-3xl` 内容列 |
+| 执行过程（Hermes） | 可折叠 `AgentTracePanel`（`w-full`，与正文同宽）；`status` / `tool` / `thinking` / `meta`；**Tier 1/2 过程稿完整在此，主气泡仅终稿**（`done`/`replace_reply`）；Agent 助手行 `assistantMessageRowClass(true)` 占满 `max-w-3xl` 内容列 |
 | 侧栏 Agent 入口 | 激活时 Bot 图标 `icon` |
 
 详见 [`specs/ui/1.2.3-agent-page.md`](1.2.3-agent-page.md)。

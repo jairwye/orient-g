@@ -124,4 +124,4 @@ pytest tests/test_agent_finance_acceptance_matrix.py::test_live_finance_mcp_smok
 - 终稿含 **结论 + 分项对比表**，且 **不得** 出现「证据中未提供可核查的分项金额」与表并存
 - 正文 **不得** 含「约3570万元」类估算（表内精确金额除外）
 - 浏览器控制台 **无** `Maximum update depth exceeded`
-- 过程稿在「执行过程」中，主气泡为补检索修订后的终稿
+- 过程稿在「执行过程」中，主气泡**仅**展示终稿（`done` / `replace_reply`）；**compare 与 breakdown 均适用**

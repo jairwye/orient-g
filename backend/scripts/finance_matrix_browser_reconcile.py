@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "backend" / "tests" / "reports" / "finance_matrix_browser_report.json"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from finance_matrix_browser_validate import validate_row  # noqa: E402
 

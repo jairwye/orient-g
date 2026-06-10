@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { getAuthHeaders, setAuthToken } from "../lib/auth";
+import { getAuthHeaders, isSessionExpiredHttpStatus, redirectToLogin, setAuthToken } from "../lib/auth";
 import { AuthContext } from "../contexts/AuthContext";
 import DashboardLayout from "./DashboardLayout";
 
@@ -83,6 +83,10 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
             setTimeout(() => run(true), 600);
             return;
           } else {
+            if (isSessionExpiredHttpStatus(me.status)) {
+              redirectToLogin(true);
+              return;
+            }
             setAuthenticated(false);
             setIsAdmin(false);
             setViewBusinessDashboard(false);
@@ -110,6 +114,33 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     run();
     return () => {
       cancelled = true;
+    };
+  }, [pathname]);
+
+  /** 标签页从后台切回或窗口获焦时复检登录态，避免长时间停留同页 JWT 过期仍显示已登录 */
+  useEffect(() => {
+    if (pathname === LOGIN_PATH || pathname === CHANGE_PASSWORD_PATH) return;
+    const recheck = () => {
+      if (document.visibilityState !== "visible") return;
+      fetch("/api/auth/me", { credentials: "include", headers: getAuthHeaders() })
+        .then(async (r) => {
+          const meData = await r.json().catch(() => ({}));
+          if (r.ok && meData.token) {
+            setAuthToken(meData.token);
+            return;
+          }
+          if (isSessionExpiredHttpStatus(r.status)) {
+            redirectToLogin(true);
+            return;
+          }
+        })
+        .catch(() => undefined);
+    };
+    document.addEventListener("visibilitychange", recheck);
+    window.addEventListener("focus", recheck);
+    return () => {
+      document.removeEventListener("visibilitychange", recheck);
+      window.removeEventListener("focus", recheck);
     };
   }, [pathname]);
 

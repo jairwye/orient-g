@@ -65,6 +65,7 @@ def build_evidence_pack(
     max_facets: int = 8,
     doc_folder_labels: dict[str, str] | None = None,
     multi_company_scope: bool = False,
+    finance_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """chunk_texts: 可选预加载 \"doc_id:chunk_id\" -> text。"""
     from backend.services.agent_kb_prefetch import _top_citations_for_llm
@@ -136,10 +137,17 @@ def build_evidence_pack(
         )
 
     evidence_text = "\n".join(str(f.get("excerpt") or "") for f in facets)
-    gaps = _compute_gaps(tt, user_query, all_hits, len(citations or []), evidence_text=evidence_text)
-    score = _coverage_score(tt, len(citations or []), len(facets), all_hits, gaps)
+    gaps = _compute_gaps(
+        tt,
+        user_query,
+        all_hits,
+        len(citations or []),
+        evidence_text=evidence_text,
+        finance_meta=finance_meta,
+    )
+    score = _coverage_score(tt, len(citations or []), len(facets), all_hits, gaps, finance_meta=finance_meta)
 
-    return {
+    out_pack = {
         "version": _PACK_VERSION,
         "task_type": tt,
         "user_query": (user_query or "")[:800],
@@ -150,6 +158,13 @@ def build_evidence_pack(
         "citations": list(citations or []),
         "reply": " ".join(p for p in (reply_parts or []) if p).strip(),
     }
+    if finance_meta and finance_meta.get("active"):
+        out_pack["finance_meta"] = {
+            "regime_id": finance_meta.get("regime_id"),
+            "subject_type": finance_meta.get("subject_type"),
+            "entity": finance_meta.get("entity"),
+        }
+    return out_pack
 
 
 _REASON_GAP_KWS = (
@@ -179,12 +194,24 @@ def _compute_gaps(
     cite_count: int,
     *,
     evidence_text: str = "",
+    finance_meta: dict[str, Any] | None = None,
 ) -> list[str]:
     gaps: list[str] = []
     qj = (user_query or "").replace(" ", "")
     if cite_count == 0:
         gaps.append("检索未命中任何文档片段")
         return gaps
+    if finance_meta and finance_meta.get("active"):
+        from backend.services.finance_annual_report_profile import finance_pack_gaps
+
+        gaps.extend(
+            finance_pack_gaps(
+                user_query,
+                task_type,
+                evidence_text=evidence_text,
+                finance_meta=finance_meta,
+            )
+        )
     if task_type == TaskType.breakdown.value:
         if any(x in qj for x in ("成本", "费用", "明细", "分解", "拆解")):
             if "销售费用" not in hits and "管理费用" not in hits:
@@ -192,7 +219,12 @@ def _compute_gaps(
             if "营业成本" not in hits and "成本" in qj:
                 gaps.append("未命中营业成本相关片段")
     if task_type == TaskType.compare.value:
-        if "营业收入" not in hits and not any(k in hits for k in ("利润表", "合并利润表")):
+        skip_pl_gap = bool(
+            finance_meta
+            and finance_meta.get("active")
+            and finance_meta.get("subject_type") in ("balance_sheet", "cash_flow")
+        )
+        if not skip_pl_gap and "营业收入" not in hits and not any(k in hits for k in ("利润表", "合并利润表")):
             blob = (evidence_text or "").replace(" ", "")
             if "营业收入" not in blob and "合并利润表" not in blob:
                 gaps.append("未命中合并利润表或营业收入字段")
@@ -210,6 +242,7 @@ def _coverage_score(
     facet_count: int,
     hits: set[str],
     gaps: list[str],
+    finance_meta: dict[str, Any] | None = None,
 ) -> float:
     if cite_count == 0:
         return 0.0
@@ -220,7 +253,12 @@ def _coverage_score(
         fee_hits = sum(1 for k in ("销售费用", "管理费用", "营业成本") if k in hits)
         base += min(0.3, fee_hits * 0.1)
     elif task_type == TaskType.compare.value:
-        if "营业收入" in hits or "合并利润表" in hits:
+        st = str((finance_meta or {}).get("subject_type") or "")
+        if st == "balance_sheet":
+            base += 0.1
+        elif st == "cash_flow":
+            base += 0.1
+        elif "营业收入" in hits or "合并利润表" in hits:
             base += 0.2
     elif task_type == TaskType.fact.value:
         base += 0.15 if facet_count >= 1 else 0.0

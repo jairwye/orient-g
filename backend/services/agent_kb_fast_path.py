@@ -186,13 +186,22 @@ def stream_kb_fast_path_events(
     model: str | None = None,
     hermes_session_id: str | None = None,
     run_id: str | None = None,
+    user_token: str | None = None,
+    kb_scope: dict[str, list[str]] | None = None,
+    attached_doc_ids: list[str] | None = None,
 ) -> Iterator[dict[str, Any]]:
     from backend.services.agent_kb_prefetch import synthesize_kb_reply
     from backend.services.agent_kb_router import AgentRoute, route_to_agent_tier
+    from backend.services.agent_kb_supplemental import (
+        needs_fast_path_narrative_supplemental,
+        run_supplemental_kb_asks,
+    )
     from backend.services.agent_run_registry import is_cancelled
     from backend.services.evidence_pack import pack_summary_for_sse
 
-    pack = (prefetch_result or {}).get("evidence_pack")
+    working_prefetch = dict(prefetch_result or {})
+    tool_calls = list(prefetch_tool_calls or [])
+    pack = working_prefetch.get("evidence_pack")
     yield {
         "type": "status",
         "message": fast_path_status_message(),
@@ -201,6 +210,49 @@ def stream_kb_fast_path_events(
         "agent_tier": route_to_agent_tier(AgentRoute.fast),
         "evidence_pack": pack_summary_for_sse(pack if isinstance(pack, dict) else None),
     }
+    if (
+        user_token
+        and kb_scope is not None
+        and needs_fast_path_narrative_supplemental(
+            prefetch_result=working_prefetch,
+            user_query=user_query,
+            enabled_skills=enabled_skills,
+        )
+    ):
+        yield {
+            "type": "status",
+            "message": "快速路径：检测到变动说明缺项，正在补检索 narrative 证据…",
+            "step": "fast_supplemental_kb",
+        }
+        merged, sup_tools = run_supplemental_kb_asks(
+            user_token=user_token,
+            user_query=user_query,
+            prefetch_result=working_prefetch,
+            kb_scope=kb_scope,
+            attached_doc_ids=attached_doc_ids,
+            fixtures=fixtures,
+            max_queries=3,
+            prefetch_tier="local",
+            enabled_skills=enabled_skills,
+        )
+        if merged:
+            working_prefetch = merged
+            tool_calls.extend(sup_tools)
+            for tc in sup_tools:
+                q = str(tc.get("query") or "")[:60]
+                yield {
+                    "type": "tool_call",
+                    "name": "orientg_kb_ask",
+                    "status": tc.get("status") or "ok",
+                    "message": f"补检索：{q}" if q else "补检索：orientg_kb_ask",
+                }
+            pack = working_prefetch.get("evidence_pack")
+            yield {
+                "type": "status",
+                "message": "narrative 补检索完成，继续本地综合…",
+                "step": "fast_supplemental_done",
+                "evidence_pack": pack_summary_for_sse(pack if isinstance(pack, dict) else None),
+            }
     yield {
         "type": "status",
         "message": "快速路径：Orient-G 本地 LLM 综合中（未调用 Hermes Gateway）…",
@@ -216,7 +268,7 @@ def stream_kb_fast_path_events(
     synth = synthesize_kb_reply(
         tenant_id=tenant_id,
         user_query=user_query,
-        prefetch_result=prefetch_result,
+        prefetch_result=working_prefetch,
         fixtures=fixtures,
         enabled_skills=enabled_skills,
         model=model,
@@ -234,7 +286,7 @@ def stream_kb_fast_path_events(
     }
     for piece in chunk_text_for_stream(reply):
         yield {"type": "delta", "content": piece}
-    pack = (prefetch_result or {}).get("evidence_pack")
+    pack = (working_prefetch or {}).get("evidence_pack")
     from backend.services.evidence_pack import pack_summary_for_sse
 
     yield {
@@ -243,9 +295,10 @@ def stream_kb_fast_path_events(
         "reply": reply,
         "tenant_id": tenant_id,
         "citations": synth.get("citations") or [],
-        "tool_calls": prefetch_tool_calls,
+        "tool_calls": tool_calls,
         "kb_prefetch": True,
         "kb_fast_path": True,
+        "kb_supplemental": bool(working_prefetch.get("kb_supplemental")),
         "agent_route": "fast",
         "agent_tier": 0,
         "evidence_pack": pack_summary_for_sse(pack),

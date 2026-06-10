@@ -27,8 +27,9 @@ import {
   resolveDocsForActiveKb,
   toFolderDetailDocRows,
 } from "./lib/kb_docs_for_panel.js";
-import { FileText, Search } from "lucide-react";
+import { FileText, Folder, Search } from "lucide-react";
 import { KbBrowseTree } from "./components/KbBrowseTree";
+import { folderChildrenOf, folderTreeBadgeCount, kbKindRootFolders } from "./lib/kb_tree_model";
 
 type MyDoc = {
   doc_id: string;
@@ -430,6 +431,47 @@ export default function KnowledgePage({
       return blob.includes(q);
     });
   }, [docsForActiveKb, kbGlobalSearch]);
+
+  const panelFolders = useMemo((): FolderItem[] => {
+    const q = kbGlobalSearch.trim().toLowerCase();
+    const filterAndSort = (items: FolderItem[]) => {
+      const sorted = [...items].sort((a, b) =>
+        String(a.name || "").localeCompare(String(b.name || ""), "zh"),
+      );
+      if (!q) return sorted;
+      return sorted.filter((f) => {
+        const blob = `${f.name || ""} ${f.folder_id || ""}`.toLowerCase();
+        return blob.includes(q);
+      });
+    };
+
+    if (selection.kind === "folder" && activeFolderId) {
+      const fromDetail = (safeFolderDetail?.subfolders || []) as FolderItem[];
+      const base =
+        fromDetail.length > 0
+          ? fromDetail
+          : folderChildrenOf(folders, activeFolderId);
+      const enriched = base.map((sf) => {
+        const hit = folders.find((x) => x.folder_id === sf.folder_id);
+        return hit ? { ...hit, ...sf, name: sf.name || hit.name } : sf;
+      });
+      return filterAndSort(enriched);
+    }
+
+    if (selection.kind === "kb") {
+      const kind = (activeKbKind || KB_KIND_PRIVATE).trim() || KB_KIND_PRIVATE;
+      return filterAndSort(kbKindRootFolders(folders, kind) as FolderItem[]);
+    }
+
+    return [];
+  }, [
+    selection.kind,
+    activeFolderId,
+    activeKbKind,
+    safeFolderDetail?.subfolders,
+    folders,
+    kbGlobalSearch,
+  ]);
 
   const toggleBulkDoc = useCallback((docId: string, source_folder_id: string | null) => {
     const did = (docId || "").trim();
@@ -1406,7 +1448,7 @@ export default function KnowledgePage({
             </div>
           ) : null}
 
-          {folderDetail || activeFolderId ? (
+          {selection.kind === "kb" || activeFolderId ? (
             <div className="relative min-h-[8rem]">
               {folderLoading && activeFolderId ? (
                 <div className="pointer-events-none absolute right-1 top-0 z-20 rounded border border-zinc-800/80 bg-zinc-950/95 px-2 py-0.5 text-xs text-zinc-400">
@@ -1415,22 +1457,20 @@ export default function KnowledgePage({
               ) : null}
               {activeFolderId && !safeFolderDetail ? (
                 <div className="rounded-lg border border-zinc-800 bg-zinc-950/30 py-12 text-center text-sm text-zinc-500">正在加载文件夹…</div>
-              ) : !safeFolderDetail ? null : (
+              ) : (
             <div className="overflow-x-auto overflow-y-visible">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="min-w-0 truncate text-base font-medium text-zinc-200">
                   {selection.kind === "folder"
                     ? folderViewHeading({
                         folderName:
-                          safeFolderDetail.folder?.name ||
+                          safeFolderDetail?.folder?.name ||
                           folderNameById.get(activeFolderId || "") ||
                           activeFolderId ||
                           "",
                         folderId: activeFolderId || "",
                       })
-                    : isPrivateKbRootView
-                      ? "未归档文档"
-                      : "文档"}
+                    : kbKindLabelById.get(activeKbKind) || activeKbKind}
                 </div>
                 {selection.kind === "folder" && activeFolderId && folderForActions ? (
                   <div className="relative" data-kb-menu-root="1">
@@ -1720,9 +1760,39 @@ export default function KnowledgePage({
                     })}
                   </tbody>
                 </table>
-              ) : (
+              ) : null}
+
+              {panelFolders.length ? (
+                <div className="space-y-1">
+                  {panelFolders.map((sf) => {
+                    const badge = folderTreeBadgeCount(sf, folders);
+                    const kid = (sf.kind || activeKbKind || KB_KIND_PRIVATE) as string;
+                    return (
+                      <button
+                        key={sf.folder_id}
+                        type="button"
+                        onClick={() => {
+                          userHasInteractedRef.current = true;
+                          setSelection({ kind: "folder", kb_kind: kid, folder_id: sf.folder_id });
+                        }}
+                        className="flex w-full min-w-0 items-center gap-2 rounded-md border border-zinc-800/80 bg-zinc-950/30 px-3 py-2 text-left text-sm text-zinc-200 transition-colors hover:border-zinc-700 hover:bg-zinc-900/50"
+                      >
+                        <Folder className="h-4 w-4 shrink-0 text-zinc-500" />
+                        <span className="min-w-0 flex-1 truncate">{sf.name || sf.folder_id}</span>
+                        {badge > 0 ? (
+                          <span className="shrink-0 rounded bg-zinc-900/80 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+                            {badge}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {!docsFilteredForTable.length && !panelFolders.length ? (
                 <div className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-4 text-base text-zinc-400">暂无文档。</div>
-              )}
+              ) : null}
 
             </div>
               )}
