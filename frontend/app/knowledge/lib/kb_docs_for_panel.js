@@ -70,6 +70,7 @@ export function toFolderDetailDocRows(docs) {
  *   docIsActive?: (status?: string) => boolean;
  *   docIsRunning?: (d: { status?: string }) => boolean;
  * }} input
+ * @note `privateRootDocs` 由调用方预先计算（如 `pickPrivateRootDocs`）；其余字段保留兼容旧调用，本函数不再读取。
  */
 export function resolveDocsForActiveKb(input) {
   const {
@@ -77,10 +78,6 @@ export function resolveDocsForActiveKb(input) {
     activeKbKind,
     folderDocs = [],
     privateRootDocs = [],
-    myDocs = [],
-    folders = [],
-    docIsActive = (s) => String(s || "").toLowerCase() === "active",
-    docIsRunning = () => false,
   } = input;
 
   if (selectionKind === "folder") return folderDocs || [];
