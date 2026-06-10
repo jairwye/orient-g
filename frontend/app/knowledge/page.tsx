@@ -451,9 +451,14 @@ export default function KnowledgePage({
         fromDetail.length > 0
           ? fromDetail
           : folderChildrenOf(folders, activeFolderId);
-      const enriched = base.map((sf) => {
+      const enriched = base.map((sf): FolderItem => {
         const hit = folders.find((x) => x.folder_id === sf.folder_id);
-        return hit ? { ...hit, ...sf, name: sf.name || hit.name } : sf;
+        const merged = hit ? { ...hit, ...sf, name: sf.name || hit.name } : sf;
+        return {
+          ...merged,
+          folder_id: String(merged.folder_id || ""),
+          name: String(merged.name || ""),
+        };
       });
       return filterAndSort(enriched);
     }
