@@ -160,13 +160,20 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       router.replace("/ai-interaction");
       return;
     }
+    if (
+      (pathname === "/competitor" || pathname.startsWith("/competitor/")) &&
+      !viewBusinessDashboard
+    ) {
+      router.replace("/ai-interaction");
+      return;
+    }
     // 非管理员不可进入管理后台（仅管理员可见入口，直接输入 URL 也须拦截）
     if (pathname.startsWith("/admin") && !isAdmin) {
       router.replace("/ai-interaction");
       return;
     }
     // 非管理员不可进入财务后台（含自定义路径，规划 2.a：仅管理员可进）
-    if ((pathname === financePath || pathname === "/finance") && !isAdmin) {
+    if (pathname === financePath && !isAdmin) {
       router.replace("/ai-interaction");
       return;
     }
@@ -206,15 +213,23 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     if (pathname === "/" && !viewBusinessDashboard) {
       return unauthorizedRedirect;
     }
+    if (
+      (pathname === "/competitor" || pathname.startsWith("/competitor/")) &&
+      !viewBusinessDashboard
+    ) {
+      return unauthorizedRedirect;
+    }
     if (pathname.startsWith("/admin") && !isAdmin) {
       return unauthorizedRedirect;
     }
-    if ((pathname === financePath || pathname === "/finance") && !isAdmin) {
+    if (pathname === financePath && !isAdmin) {
       return unauthorizedRedirect;
     }
   }
   return (
-    <AuthContext.Provider value={{ is_admin: isAdmin, view_business_dashboard: viewBusinessDashboard }}>
+    <AuthContext.Provider
+      value={{ is_admin: isAdmin, view_business_dashboard: viewBusinessDashboard, finance_path: financePath }}
+    >
       <DashboardLayout>{children}</DashboardLayout>
     </AuthContext.Provider>
   );

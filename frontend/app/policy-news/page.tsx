@@ -83,32 +83,34 @@ export default function PolicyNewsPage() {
 
   return (
     <div className="p-6 md:p-8">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-            新闻政策
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            按分类查看：业界观点、游戏新闻、AI资讯；数据来自自建RSS列表。
-          </p>
-        </div>
-        <div className="flex shrink-0 overflow-hidden rounded-lg border border-zinc-600">
-          {CATEGORIES.map((c, i) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setCategory(c)}
-              className={`px-4 py-2 text-sm font-medium transition-all ${
-                i === 0 ? "rounded-l-md" : i === CATEGORIES.length - 1 ? "rounded-r-md" : ""
-              } ${
-                category === c
-                  ? "bg-[#2563eb]/35 text-white"
-                  : "bg-zinc-800/80 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-              }`}
-            >
-              {CATEGORY_LABELS[c]}
-            </button>
-          ))}
+      <div className="sticky top-0 z-20 -mx-6 -mt-6 mb-6 border-b border-zinc-800/80 bg-zinc-950/95 px-6 pb-4 pt-6 backdrop-blur-sm md:-mx-8 md:-mt-8 md:px-8 md:pt-8">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
+              新闻政策
+            </h1>
+            <p className="mt-1 text-sm text-zinc-500">
+              按分类查看：业界观点、游戏新闻、AI资讯；数据来自自建RSS列表。
+            </p>
+          </div>
+          <div className="flex shrink-0 overflow-hidden rounded-lg border border-zinc-600">
+            {CATEGORIES.map((c, i) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setCategory(c)}
+                className={`px-4 py-2 text-sm font-medium transition-all ${
+                  i === 0 ? "rounded-l-md" : i === CATEGORIES.length - 1 ? "rounded-r-md" : ""
+                } ${
+                  category === c
+                    ? "bg-[#2563eb]/35 text-white"
+                    : "bg-zinc-800/80 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+                }`}
+              >
+                {CATEGORY_LABELS[c]}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

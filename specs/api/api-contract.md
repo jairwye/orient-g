@@ -131,7 +131,7 @@
 **经营数据标准结构（契约）**
 
 - 前端与接口以**固定 JSON 形状**为准，与数据来源（Excel / DB）解耦；后端解析或存储时只负责将数据源**映射**到该结构。
-- **概览** `GET /api/business/overview` 的响应即为此结构（类型与字段稳定，便于前端与 ECharts 使用）：
+- **概览** `GET /api/business/overview` 的响应即为此结构（类型与字段稳定，便于前端与 Recharts 使用）：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -182,21 +182,88 @@
 
 ---
 
-## 4. 竞品财报摘要
+## 4. 竞品财报（1.2.3.c）
 
-- **路径**：`GET /api/competitor/summary`
-- **响应**：首页展示竞品财报入口或最近更新摘要。
+> 权限：**读** `_require_view_business_dashboard`（管理层 / 财务部 / 管理员）；**上传** `_require_admin`。详见 [`features/1.2.3.c-竞品财报可视化.md`](../features/1.2.3.c-竞品财报可视化.md) §1.5、§5。
+
+### 4.1 上传（管理员）
+
+- **路径**：`POST /api/competitor/admin/upload`
+- **请求**：`multipart/form-data`，字段 `file`（`.md`，UTF-8）
+- **成功响应**：
 
 ```json
 {
-  "updatedAt": "2025-03-01",
-  "items": [
-    { "name": "竞品 A", "summary": "简要说明", "link": "/competitor/1" }
-  ]
+  "ok": true,
+  "meta": { "title": "行业财报汇析 — 2025年", "uploaded_at": "2026-06-08T12:00:00Z", "uploaded_by": "admin" },
+  "warnings": ["sec-01-2 row 3: split dual value …"],
+  "sections_parsed": 10
 }
 ```
 
-- **说明**：由员工 X 实现。
+- **错误**：400 解析阻断；403 非管理员；413 文件过大
+
+### 4.2 读取 Snapshot（`view_business_dashboard`）
+
+- **路径**：`GET /api/competitor/report`
+- **响应**：`CompetitorReportSnapshot`；无数据时 `404` + `{ "detail": "no_report" }`
+
+**`CompetitorReportSnapshot` 形状（v1，字段稳定）：**
+
+```typescript
+type CompetitorReportSnapshot = {
+  version: 1;
+  meta: {
+    title: string;
+    period: string;              // 如 "2025"
+    currency_unit: "万元";
+    company_count: number;
+    source_filename: string;
+    uploaded_at: string;           // ISO 8601
+    uploaded_by: string;
+    parser_version: string;
+  };
+  companies: Array<{
+    id: string;                    // 稳定 slug，如 "yycq" | "37"
+    label: string;                 // 显示名，如「游艺春秋」
+    short?: string;                // 如 "YYCQ"
+    color?: string;                // 可选；缺省走 UI 色板
+  }>;
+  sections: Array<{
+    id: string;                    // sec-01 … sec-10
+    title: string;
+    blocks: Array<
+      | {
+          kind: "table";
+          anchor: string;          // 如 sec-01-2
+          headers: string[];
+          rows: Record<string, string | number | null>[];
+        }
+      | { kind: "narrative"; anchor?: string; markdown: string }
+      | { kind: "kv"; anchor: string; items: Record<string, string> }
+    >;
+  }>;
+  warnings: string[];
+};
+```
+
+### 4.3 摘要 / 探活
+
+- **路径**：`GET /api/competitor/summary`
+- **响应**：
+
+```json
+{
+  "updatedAt": "2026-06-08T12:00:00Z",
+  "title": "行业财报汇析 — 2025年",
+  "company_count": 8,
+  "has_report": true
+}
+```
+
+- **路径**：`GET /api/competitor/report/meta` — 仅 `meta` + `warnings` 字段
+
+- **说明**：展示路由固定 `/competitor`；数据存 `{upload_dir}/competitor/report.snapshot.json`；与 `finance_path` 无关。
 
 ---
 

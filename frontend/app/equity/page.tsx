@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getAuthHeaders } from "../lib/auth";
+import { useAuth } from "../contexts/AuthContext";
 import { useEquitySnapshotName } from "../lib/equitySnapshot";
 import chinaGeoJsonLocal from "china-geojson/src/geojson/china.json";
 
@@ -223,6 +224,7 @@ function buildMapPointsFromGeoRows(
 const EQUITY_MAP_DEFAULT_SCALE = 1.485;
 
 export default function EquityEntryPage() {
+  const { finance_path: financePath } = useAuth();
   const { snapshotName, setSnapshotName } = useEquitySnapshotName("");
   const router = useRouter();
   const [entities, setEntities] = useState<EntityGeoItem[]>([]);
@@ -810,7 +812,7 @@ export default function EquityEntryPage() {
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">股权全景</h1>
           <p className="mt-1 text-sm text-zinc-500">
             选择 snapshot 后进入工作台与图谱；CSV 在页尾下载。资料包上传请在{" "}
-            <Link href="/finance" className="text-zinc-300 underline underline-offset-2 hover:text-white">
+            <Link href={financePath} className="text-zinc-300 underline underline-offset-2 hover:text-white">
               财务后台
             </Link>{" "}
             完成。

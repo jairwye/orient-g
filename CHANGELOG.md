@@ -15,6 +15,7 @@
 
 - **Agent Skill**：`skill.finance.annual_report.v1`（竞品财报年报检索/对比）；`finance_annual_report_profile` 缓存与 Tier 0 narrative 补检索。
 - **浏览器矩阵验收**：CDP runner 每案 token 注入、validate 收紧（citations/过程稿/inline cite）；规制 §13 复测提示词。
+- **竞品财报可视化（1.2.3.c）**：MD 蓝本确定性解析 → Snapshot 文件存储；`GET/POST /api/competitor/*`；10 屏 scroll-snap Recharts 页；财务后台第四块上传；`middleware.ts` 支持自定义 `finance_path`；生产默认关闭 fixture 回退。
 
 ### Changed
 

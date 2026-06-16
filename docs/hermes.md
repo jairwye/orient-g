@@ -92,6 +92,37 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 装好后**新开终端**：`hermes --version`、`hermes doctor`。  
 若 `uv` 安装 Python 报「拒绝访问」，可用 winget 安装 Python 3.11 后在仓库目录用 `py -3.11 -m venv` 完成依赖安装（见官方 [Windows Native](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native)）。
 
+### 2.2.1 Windows 本机 `hermes update` 前提
+
+Hermes 为 git clone 安装，`hermes update` 第一步会调用 **`git`**。若 PowerShell 中 `where git` 无输出，会直接报 **`FileNotFoundError: [WinError 2]`**（与是否在 orient-g `.venv` 内执行无关）。
+
+**一次性：Git 进 PATH**
+
+- 将 `C:\Program Files\Git\bin` 加入用户环境变量 `Path`（或每次临时：`$env:Path = "C:\Program Files\Git\bin;" + $env:Path`）
+- 新开终端验证：`where.exe git`、`git --version`
+
+**每次 update 推荐流程**（本机 SSRDog / 系统代理时，`git fetch` 还需显式代理 env，系统代理不会自动传给子进程）：
+
+```powershell
+hermes gateway stop
+
+$env:HTTP_PROXY  = "http://127.0.0.1:9567"   # 按本机 SSRDog/Clash 实际端口改
+$env:HTTPS_PROXY = "http://127.0.0.1:9567"
+
+hermes update -y
+hermes gateway run   # 需要 Gateway 时再开
+```
+
+**常见后续错误：**
+
+| 现象 | 处理 |
+|------|------|
+| `Connection was reset` / `unable to access` GitHub | 确认 SSRDog 已开，并设置上表 `HTTP_PROXY` / `HTTPS_PROXY` |
+| `hermes.exe` 被占用 WinError 32 | update 前 `hermes gateway stop`，关闭其它 `hermes` 进程 |
+| `Failed to initialize OpenAI client: No module named 'pydantic_core._pydantic_core'` | **先 `deactivate` 退出 orient-g `.venv`** 再 `hermes gateway run`；Hermes 为 Python 3.11，混用项目 3.10 venv 会注入错误 wheel |
+
+update 后确认 `%USERPROFILE%\.hermes\config.yaml` 中 `mcp_servers.orientg` 仍指向本项目；项目 `.venv` 需含 `mcp`（见 [`backend/requirements-base.txt`](../backend/requirements-base.txt)）。
+
 ### 2.3 MCP：`config.yaml`
 
 在 `%USERPROFILE%\.hermes\config.yaml` 顶层增加 `mcp_servers`（路径改成你的项目根与 `.venv`）：
@@ -141,6 +172,8 @@ LLM 若在 `config.yaml` 的 `model:` 段已配好，可不再重复写 `OPENAI_
 启动 Gateway：
 
 ```powershell
+# 勿在 orient-g .venv 激活状态下启动（见 §9「pydantic_core」）
+deactivate   # 若提示符前有 (.venv)
 hermes gateway start
 curl http://127.0.0.1:8642/health
 ```
@@ -465,6 +498,9 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 | 深度模式 GPU 飙高 / 掉线？ | 深度链路过长：**预检索** + **Hermes Runs（多轮 MCP + 推理）** + 可能 **Orient-G 补检索 + 本地重综合**（同一张卡连续占满）。点 **停止** 会 cancel run 并跳过补检索；仍占用时请等 Gateway 收尾或重启 `hermes gateway` |
 | 推理有字但无工具、很快结束？ | 查 Gateway/LLM 日志 `reasoning-budget` 是否耗尽；或模型未调用 MCP；`thinking_chars>0` 且 `tool_progress_events=0` 多为 budget/策略问题 |
 | Windows 仍走 mock | 设 `HERMES_DEV_MOCK=false` 且 `HERMES_ENABLED=true` |
+| Gateway 报 `pydantic_core._pydantic_core` / Agent task failed 后 Gateway 停 | 在 orient-g 目录且 **`.venv` 已激活** 时启动 Gateway 会触发 Hermes Windows 路径补丁误用 3.10 包；**`deactivate` 后重启**；MCP 仍可在 `config.yaml` 里写 orient-g `.venv` 的 `python.exe` |
+| `No user allowlists configured` | 仅影响 Telegram/Discord 等 IM 平台；**API Server（`/agent`）不受影响**；若要 IM 开放访问可在 `~/.hermes/.env` 设 `GATEWAY_ALLOW_ALL_USERS=true` |
+| `~/AppData/Local/hermes/.env file missing`（`hermes doctor`） | 从 [`docker/hermes/dotenv.hermes.gateway.example`](../docker/hermes/dotenv.hermes.gateway.example) 复制到 `%USERPROFILE%\.hermes\.env`，设 `API_SERVER_KEY` 并与项目 `.env` 的 `HERMES_INTERNAL_TOKEN` 一致 |
 | Hermes error 后答案变短/变「缺少证据」？ | 查 `done.hermes_salvaged`；若为 true 表示 salvage 过程稿；若为 `hermes_fallback` 才是本地 synth |
 | `hermes_run_forbidden_loop` / `hermes_run_wall_timeout` | Runs 或 chat/completions 循环护栏主动收束；可重试或换「快速」Tier 0 |
 | 标准模式 pack 已够仍走 Hermes？ | **标准=固定 Tier 1**；pack 够时跳过**补检索**，不跳过 Hermes 编排本身 |

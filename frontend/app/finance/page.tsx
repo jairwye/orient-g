@@ -31,6 +31,11 @@ export default function FinanceAdminPage() {
   const [pathSaving, setPathSaving] = useState(false);
   const [pathMessage, setPathMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  const [competitorUploading, setCompetitorUploading] = useState(false);
+  const [competitorMessage, setCompetitorMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [competitorWarnings, setCompetitorWarnings] = useState<string[]>([]);
+  const competitorFileRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     fetch("/api/settings", { credentials: "include", headers: getAuthHeaders() })
       .then((r) => (r.ok ? r.json() : { finance_path: DEFAULT_FINANCE_PATH }))
@@ -99,6 +104,43 @@ export default function FinanceAdminPage() {
       setBundleImportError(String(e instanceof Error ? e.message : e));
     } finally {
       setBundleImporting(false);
+    }
+  };
+
+  const handleCompetitorUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setCompetitorMessage(null);
+    setCompetitorWarnings([]);
+    setCompetitorUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/competitor/admin/upload", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg =
+          (typeof data.detail === "string" ? data.detail : undefined) ??
+          (Array.isArray(data.detail) ? data.detail[0]?.msg : undefined);
+        throw new Error(msg ?? "上传失败");
+      }
+      setCompetitorWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setCompetitorMessage({
+        type: "success",
+        text: `已解析 ${data.sections_parsed ?? 10} 屏，侧栏「竞品财报」已更新。`,
+      });
+    } catch (err) {
+      setCompetitorMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "上传失败",
+      });
+    } finally {
+      setCompetitorUploading(false);
     }
   };
 
@@ -270,6 +312,52 @@ export default function FinanceAdminPage() {
             导入完成：entities={bundleImportResult.inserted?.entities ?? "—"} targets={bundleImportResult.inserted?.targets ?? "—"} edges=
             {bundleImportResult.inserted?.edges ?? "—"}（新增主体 {bundleImportResult.inserted?.created_entities ?? "—"}）
           </p>
+        )}
+      </div>
+
+      {/* 4. 上传竞品财报汇析 MD */}
+      <div className="mb-6 max-w-2xl rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
+        <h2 className="mb-3 text-sm font-medium text-zinc-300">上传竞品财报汇析（Markdown）</h2>
+        <p className="mb-3 text-xs text-zinc-500">
+          上传后将解析为侧栏「竞品财报」分析页数据；与当前财务后台 URL 路径无关。
+        </p>
+        <input
+          ref={competitorFileRef}
+          type="file"
+          accept=".md,text/markdown"
+          className="hidden"
+          onChange={handleCompetitorUpload}
+          disabled={competitorUploading}
+        />
+        <button
+          type="button"
+          onClick={() => competitorFileRef.current?.click()}
+          disabled={competitorUploading}
+          className="rounded-md border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+        >
+          {competitorUploading ? "上传解析中…" : "选择并上传 .md"}
+        </button>
+        {competitorMessage && (
+          <p className={`mt-3 text-sm ${competitorMessage.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
+            {competitorMessage.text}
+          </p>
+        )}
+        {competitorMessage?.type === "success" && (
+          <p className="mt-2">
+            <Link href="/competitor" className="text-sm text-blue-400 hover:text-blue-300">
+              打开竞品财报页 →
+            </Link>
+          </p>
+        )}
+        {competitorWarnings.length > 0 && (
+          <ul className="mt-3 max-h-32 overflow-y-auto text-xs text-amber-400/90">
+            {competitorWarnings.slice(0, 20).map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+            {competitorWarnings.length > 20 && (
+              <li>…另有 {competitorWarnings.length - 20} 条告警</li>
+            )}
+          </ul>
         )}
       </div>
 

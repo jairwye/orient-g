@@ -162,6 +162,15 @@ class Settings(BaseSettings):
     # True：带 kb_scope 的 /api/agent/chat/stream 须带 X-Agent-Run-Id（防 Hermes loopback 重放）
     agent_require_run_id: bool = False
 
+    # 竞品财报：无 upload Snapshot 时回退到仓库内 YYCQ 蓝本 fixture（None=按 app_env：dev 开、production 关）
+    competitor_fixture_fallback: bool | None = None
+
+    @property
+    def effective_competitor_fixture_fallback(self) -> bool:
+        if self.competitor_fixture_fallback is not None:
+            return bool(self.competitor_fixture_fallback)
+        return self.app_env != "production"
+
     @property
     def effective_kb_multi_query(self) -> bool:
         if self.kb_multi_query is not None:

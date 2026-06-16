@@ -3,7 +3,7 @@
 
 设计思路（与看板等模块一致）：
 - 先定「标准结构」：GET /api/business/overview 的响应形状固定（stats、profitTrend、flowCompare、
-  profitCompare），见 specs/api/api-contract.md「经营数据标准结构」。前端与 ECharts 只依赖该结构。
+  profitCompare），见 specs/api/api-contract.md「经营数据标准结构」。前端与 Recharts 只依赖该结构。
 - 解析层只做「数据源 → 标准结构」的映射：本模块当前数据源为 uploads/business.xlsx，_parse_excel
   按 specs/api/api-contract 中的「Excel 映射规则」将单张表区块内容填到上述四块；若日后改为 DB 或多表 Excel，
   仅调整映射逻辑即可，标准结构不变。

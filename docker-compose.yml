@@ -94,6 +94,7 @@ services:
       HERMES_INTERNAL_TOKEN: ${HERMES_INTERNAL_TOKEN:-}
       HERMES_MODEL: ${HERMES_MODEL:-hermes-agent}
       HERMES_DEV_MOCK: ${HERMES_DEV_MOCK:-false}
+      COMPETITOR_FIXTURE_FALLBACK: ${COMPETITOR_FIXTURE_FALLBACK:-false}
     volumes:
       - uploads_data:/app/uploads
     depends_on:
