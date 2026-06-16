@@ -12,10 +12,12 @@ COMPETITOR_SUBDIR = "competitor"
 RAW_FILENAME = "report.md"
 SNAPSHOT_FILENAME = "report.snapshot.json"
 
-# 由 uploads/行业财报汇析-2025年_数据文档_YYCQ版.md 解析生成，供无上传数据时 UI 开发/预览
-FIXTURE_SNAPSHOT_PATH = (
-    Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "competitor_report_yycq.snapshot.json"
+# 本地开发 fixture：由 competitor_report_minimal.md 按需解析（不提交大体积 snapshot 产物）
+FIXTURE_MD_PATH = (
+    Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "competitor_report_minimal.md"
 )
+
+_fixture_cache: dict[str, Any] | None = None
 
 
 def competitor_dir() -> Path:
@@ -40,12 +42,30 @@ def _read_snapshot_file(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _load_dev_fixture() -> dict[str, Any] | None:
+    global _fixture_cache
+    if _fixture_cache is not None:
+        return _fixture_cache
+    if not FIXTURE_MD_PATH.is_file():
+        return None
+    from backend.services.competitor_report_parser import parse_markdown
+
+    text = FIXTURE_MD_PATH.read_text(encoding="utf-8")
+    snap, _ = parse_markdown(
+        text,
+        source_filename=FIXTURE_MD_PATH.name,
+        uploaded_by="fixture",
+    )
+    _fixture_cache = snap
+    return snap
+
+
 def load_snapshot() -> dict[str, Any] | None:
     uploaded = _read_snapshot_file(snapshot_path())
     if uploaded is not None:
         return uploaded
     if settings.effective_competitor_fixture_fallback:
-        return _read_snapshot_file(FIXTURE_SNAPSHOT_PATH)
+        return _load_dev_fixture()
     return None
 
 
@@ -53,7 +73,7 @@ def is_fixture_snapshot() -> bool:
     """当前 load_snapshot 是否来自仓库 fixture（无实际上传）。"""
     if snapshot_path().is_file():
         return False
-    return settings.effective_competitor_fixture_fallback and FIXTURE_SNAPSHOT_PATH.is_file()
+    return settings.effective_competitor_fixture_fallback and FIXTURE_MD_PATH.is_file()
 
 
 def snapshot_for_api() -> dict[str, Any] | None:

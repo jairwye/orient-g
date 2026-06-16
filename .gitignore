@@ -135,6 +135,10 @@ backend/tests/reports/queue_next.json
 backend/tests/reports/*.log
 backend/tests/reports/*.out
 backend/tests/reports/live_*
+
+# 竞品财报：本地由蓝本生成的 snapshot 产物（不入库；开发 fallback 用 minimal.md）
+backend/tests/fixtures/competitor_report_yycq.snapshot.json
+backend/tests/fixtures/competitor_report_yycq.md
 backend/scripts/finance_matrix_browser_queue.json
 backend/scripts/_browser_row_tmp*
 backend/scripts/_*
