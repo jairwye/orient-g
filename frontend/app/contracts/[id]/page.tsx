@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { PageDevInProgressNotice } from "../../components/PageDevInProgressNotice";
 import { getAuthHeaders } from "../../lib/auth";
 
 type ContractDetail = {
@@ -57,6 +58,9 @@ export default function ContractDetailPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">合同详情</h1>
         <p className="mt-1 text-sm text-zinc-500">本版仅做最小可追溯信息，字段后续细化。</p>
+        <div className="mt-3 max-w-3xl">
+          <PageDevInProgressNotice />
+        </div>
       </div>
 
       <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">

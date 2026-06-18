@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -28,7 +28,9 @@ import {
 } from "../lib/competitor_chart_colors";
 import { CL, FK } from "../lib/field_keys";
 import { formatPctPoints, parseNum } from "../lib/format";
+import { CHART_CAROUSEL_START_DELAY_MS } from "../lib/carousel_timing";
 import { subTitleForSnap } from "../lib/navigation";
+import { useSnapFocused } from "../lib/use_snap_focused";
 import { getTable } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
 
@@ -224,6 +226,35 @@ function buildMarginChangeRows(rows: ProductRow[], snapshot: SectionProps["snaps
   return result.sort((a, b) => a.company.localeCompare(b.company, "zh-CN") || b.change - a.change);
 }
 
+function RevenueChartCarousel({
+  slides,
+  carouselHeight,
+  chartHeightPx,
+}: {
+  slides: ChartCarouselSlide[];
+  carouselHeight: string;
+  chartHeightPx: number;
+}) {
+  const focused = useSnapFocused("sec-05-a");
+  const [activationKey, setActivationKey] = useState(0);
+
+  useEffect(() => {
+    if (focused) setActivationKey((k) => k + 1);
+  }, [focused]);
+
+  return (
+    <ChartCarousel
+      slides={slides}
+      autoStartDelayMs={CHART_CAROUSEL_START_DELAY_MS}
+      dotsPosition="bottom"
+      height={carouselHeight}
+      chartHeightPx={chartHeightPx}
+      activated={focused}
+      activationKey={activationKey}
+    />
+  );
+}
+
 export function Sec05Revenue({ snapshot }: SectionProps) {
   const sec05 = snapshot.sections.find((s) => s.id === "sec-05");
   const product = getTable(snapshot, "sec-05-1");
@@ -242,9 +273,9 @@ export function Sec05Revenue({ snapshot }: SectionProps) {
   );
 
   const rowCount = Math.max(marginRows.length, marginChangeRows.length, mixData.length, 1);
-  const chartHeightPx = Math.max(360, rowCount * 28 + 48);
-  const carouselHeightPx = chartHeightPx + 100;
-  const carouselHeight = `h-[min(${carouselHeightPx}px,72vh)]`;
+  const chartHeightPx = Math.max(320, rowCount * 26 + 44);
+  const carouselHeightPx = chartHeightPx + 88;
+  const carouselHeight = `h-[min(${carouselHeightPx}px,64vh)]`;
   const marginYAxisWidth = 168;
 
   const slides: ChartCarouselSlide[] = [
@@ -370,12 +401,9 @@ export function Sec05Revenue({ snapshot }: SectionProps) {
           title: subTitleForSnap("sec-05-a"),
           content: (
             <>
-              <ChartCarousel
+              <RevenueChartCarousel
                 slides={slides}
-                autoMs={8000}
-                autoStartDelayMs={3000}
-                hideArrows
-                height={carouselHeight}
+                carouselHeight={carouselHeight}
                 chartHeightPx={chartHeightPx}
               />
               <div className="mt-3 text-sm leading-relaxed text-zinc-400">

@@ -147,6 +147,20 @@ body {
 .competitor-scroll-hint-nudge {
   animation: competitor-scroll-nudge 1.8s ease-in-out infinite;
 }
+@keyframes competitor-scroll-nudge-y {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translateY(5px);
+    opacity: 1;
+  }
+}
+.competitor-scroll-hint-nudge-y {
+  animation: competitor-scroll-nudge-y 1.55s ease-in-out infinite;
+}
 
 /* AI内网：对话区滚动条（细、半透明，避免与深色底冲突） */
 .chat-panel-scroll {

@@ -4,7 +4,7 @@
  */
 import { COMPANY_COLS, colToLabel } from "./companies";
 import { FK, FK_AMOUNT_CHANGE, FK_CF_ITEM, FK_CHANGE, FK_METRIC, CL } from "./field_keys";
-import { parseNum, round2, toPercentPoints } from "./format";
+import { cfProfitRatioToPercentPoints, parseNum, round2, toPercentPoints } from "./format";
 import { getTable } from "./selectors";
 import type { CompetitorReportSnapshot, TableBlock } from "./types";
 
@@ -119,8 +119,8 @@ export function parseCashQualityPoints(snapshot: CompetitorReportSnapshot): Cash
   const cf = getTable(snapshot, "sec-08-2");
   if (!cf) return [];
   const profitRow = cf.rows.find((r) => String(r[FK.metric] ?? "").includes("\u51c0\u5229\u6da6"));
-  const ocfRow = cf.rows.find((r) => String(r[FK.metric] ?? "").includes("\u7ecf\u8425CF"));
-  const ratioRow = cf.rows.find((r) => String(r[FK.metric] ?? "").includes("\u7ecf\u8425CF/\u51c0\u5229"));
+  const ocfRow = cf.rows.find((r) => /经营.*(CF|现金流)/.test(String(r[FK.metric] ?? "")));
+  const ratioRow = cf.rows.find((r) => /经营.*(CF|现金流)\/净利/.test(String(r[FK.metric] ?? "")));
 
   return COMPANY_COLS.map((col) => {
     const profit = profitRow ? parseNum(profitRow[col]) : null;
@@ -131,7 +131,7 @@ export function parseCashQualityPoints(snapshot: CompetitorReportSnapshot): Cash
     let ratioPct = 0;
     if (ratioRow) {
       const raw = parseNum(ratioRow[col]);
-      if (raw != null) ratioPct = toPercentPoints(raw);
+      if (raw != null) ratioPct = cfProfitRatioToPercentPoints(raw);
     } else if (p !== 0) {
       ratioPct = (o / p) * 100;
     }
@@ -907,79 +907,6 @@ export function deriveProductsInsights(snapshot: CompetitorReportSnapshot): Anal
       headline: `\u6e38\u827a\u6625\u79cb\u8fd0\u8425\u4ea7\u54c1 ${yycq > 0 ? "多 SKU" : "见表"}`,
       detail: "\u84dd\u672c\uff1a7 \u6b3e IP \u53cc\u7aef\u5747\u8861\uff0c\u4f46\u5728\u7814\u4ec5 1 \u9879\u2014\u7ba1\u7ebf\u5355\u8584",
       tone: yycq >= 5 ? "neutral" : "warning",
-    },
-  ];
-}
-
-/** sec-10-1：风险评分 */
-export function deriveRiskInsights(snapshot: CompetitorReportSnapshot): AnalystInsight[] {
-  const risk = getTable(snapshot, "sec-10-1");
-  if (!risk?.rows.length) return [];
-  const cfRow = risk.rows.find((r) => String(r[FK.riskDim] ?? "").includes("\u73b0\u91d1\u6d41\u8d28\u91cf"));
-  const insights: AnalystInsight[] = [];
-  if (cfRow) {
-    for (const col of COMPANY_COLS) {
-      const v = String(cfRow[col] ?? "");
-      if (v.includes("\u865a\u9ad8") || v.includes("\u5dee")) {
-        insights.push({
-          label: "\u73b0\u91d1\u6d41\u98ce\u9669",
-          headline: `${companyName(col)} \u73b0\u91d1\u6d41\u8d28\u91cf\u8bc4\u7ea7\u201c${v}\u201d`,
-          detail: "\u4e0e sec-08 CF/\u51c0\u5229\u6bd4\u7387\u4ea4\u53c9\u9a8c\u8bc1",
-          tone: "warning",
-        });
-        break;
-      }
-    }
-  }
-  const arRow = risk.rows.find((r) => String(r[FK.riskDim] ?? "").includes("\u5e94\u6536\u574f\u8d26"));
-  if (arRow) {
-    for (const col of COMPANY_COLS) {
-      const v = String(arRow[col] ?? "");
-      if (v.includes("\u9ad8")) {
-        insights.push({
-          label: "\u5e94\u6536\u98ce\u9669",
-          headline: `${companyName(col)} \u5e94\u6536\u574f\u8d26\u8bc4\u7ea7\u201c${v}\u201d`,
-          detail: "\u8054\u7cfb sec-09-8 \u8d26\u9f84\u7ed3\u6784",
-          tone: "negative",
-        });
-        break;
-      }
-    }
-  }
-  return insights.slice(0, 3);
-}
-
-/** sec-10-2：研发资本化 */
-export function deriveRndCapInsights(snapshot: CompetitorReportSnapshot): AnalystInsight[] {
-  const rnd = getTable(snapshot, "sec-10-2");
-  if (!rnd?.rows.length) return [];
-  const danger = rnd.rows.find((r) => String(r["\u5065\u5eb7\u8bc4\u7ea7"] ?? "").includes("\u5371\u9669"));
-  if (!danger) return [];
-  return [
-    {
-      label: "\u8d44\u672c\u5316\u98ce\u9669",
-      headline: `${String(danger[FK.company] ?? "")} \u7814\u53d1\u8d44\u672c\u5316\u7387 ${toPercentPoints(parseNum(danger["\u8d44\u672c\u5316\u7387"]) ?? 0).toFixed(1)}%`,
-      detail: "\u84dd\u672c\uff1a\u7814\u53d1\u652f\u51fa 96.99% \u8d44\u672c\u5316\u5bfc\u81f4 CF/\u51c0\u5229\u865a\u9ad8",
-      tone: "negative",
-    },
-  ];
-}
-
-/** sec-10-3：子公司贡献 */
-export function deriveSubsidiaryInsights(snapshot: CompetitorReportSnapshot): AnalystInsight[] {
-  const sub = getTable(snapshot, "sec-10-3");
-  if (!sub?.rows.length) return [];
-  const over100 = sub.rows.find((r) => {
-    const pct = parseNum(r["\u5360\u5408\u5e76\u51c0\u5229%"]);
-    return pct != null && pct > 1;
-  });
-  if (!over100) return [];
-  return [
-    {
-      label: "\u5408\u5e76\u5c42\u9762",
-      headline: `${String(over100["\u96c6\u56e2"] ?? "")} \u6838\u5fc3\u5b50\u516c\u53f8\u8d21\u732e\u51c0\u5229 >100%`,
-      detail: String(over100["\u5907\u6ce8"] ?? "\u5176\u4ed6\u4e1a\u52a1\u62d6\u7d2f"),
-      tone: "neutral",
     },
   ];
 }

@@ -195,12 +195,17 @@
 ```json
 {
   "ok": true,
-  "meta": { "title": "行业财报汇析 — 2025年", "uploaded_at": "2026-06-08T12:00:00Z", "uploaded_by": "admin" },
+  "meta": { "title": "行业财报汇析 — 2025年", "uploaded_at": "2026-06-08T12:00:00Z", "uploaded_by": "admin", "source_filename": "行业财报汇析-2025年_数据文档_YYCQ版.md" },
   "warnings": ["sec-01-2 row 3: split dual value …"],
-  "sections_parsed": 10
+  "sections_parsed": 9,
+  "sec09_anchor_stats": {
+    "sec-09-10": { "table": 2, "narrative": 0 }
+  }
 }
 ```
 
+- **`sections_parsed`**：主章节数（`sec-01` … `sec-09`）；YYCQ 蓝本将原独立 `sec-10` 内容并入 `sec-09` 子锚点 `sec-09-10`～`sec-09-15`
+- **`sec09_anchor_stats`**：各 `sec-09-*` 锚点下 `table` / `narrative` 块计数，供财务后台上传诊断
 - **错误**：400 解析阻断；403 非管理员；413 文件过大
 
 ### 4.2 读取 Snapshot（`view_business_dashboard`）
@@ -230,7 +235,7 @@ type CompetitorReportSnapshot = {
     color?: string;                // 可选；缺省走 UI 色板
   }>;
   sections: Array<{
-    id: string;                    // sec-01 … sec-10
+    id: string;                    // sec-01 … sec-09（sec-09 含 sec-09-10～15 子锚点）
     title: string;
     blocks: Array<
       | {

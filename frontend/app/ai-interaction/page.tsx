@@ -41,6 +41,7 @@ import {
   AGENT_CHART_ACCENT_CLASS,
   BUSINESS_CHART_COLORS,
   CHART_POSITIVE_CLASS,
+  WORKFLOW_WIP_CLASS,
 } from "../lib/business_chart_colors";
 import AiInlineChart from "./AiInlineChart";
 import AiInlineTable from "./AiInlineTable";
@@ -98,6 +99,7 @@ import {
   FINANCE_ANNUAL_REPORT_SKILL_ID,
   WORKFLOW_CONFIGS_LS_KEY,
 } from "./constants";
+import { resolveQuickWorkflowPicks, type ResolvedQuickWorkflowPick } from "./workflowQuickPicks";
 
 /** 内置工作流与 localStorage 合并：新条目插入，同 id 以本地覆盖字段 */
 function mergeConfigById<T extends { id: string }>(builtins: T[], saved: T[] | null | undefined): T[] {
@@ -1138,6 +1140,38 @@ export default function AiInteractionPage() {
     // 不主动清空 enabled_*：避免用户误触后丢失已勾选能力；仅解除“工作流门禁/路由”。
     setWorkflowOpen(false);
   }, []);
+
+  const quickWorkflowPicks = useMemo(
+    () => resolveQuickWorkflowPicks(workflowConfigs),
+    [workflowConfigs],
+  );
+
+  const handleQuickWorkflowPick = useCallback(
+    (it: ResolvedQuickWorkflowPick, options?: { toggleIfActive?: boolean }) => {
+      const full = workflowConfigs.find((w) => w.id === it.key);
+      if (full) {
+        if (options?.toggleIfActive && activeWorkflowId === full.id) {
+          deactivateWorkflow();
+        } else {
+          applyWorkflow(full);
+        }
+        return;
+      }
+      setActiveWorkflowId(null);
+      setDataParseSessionId(null);
+      setEnabledPromptIds([]);
+      setEnabledTools([]);
+      if (it.key === "wf.project_accounting_table.quick") {
+        setEnabledSkills(["skill.project_accounting_table.v1"]);
+      } else {
+        setEnabledSkills([]);
+      }
+      const p = (it.prompt || "").trim();
+      if (p) setChatInput((prev) => (prev ? `${prev}\n${p}` : p));
+      if (it.subtitle) setStartAreaHint(it.subtitle);
+    },
+    [workflowConfigs, activeWorkflowId, applyWorkflow, deactivateWorkflow],
+  );
 
   const buildPromptAddon = useCallback(() => {
     const parts: string[] = [];
@@ -3085,56 +3119,32 @@ export default function AiInteractionPage() {
             <div className="mx-auto mt-6 w-full max-w-4xl">
               <div className="text-xs text-zinc-500">常用工作流</div>
               <div className="mt-3 space-y-1">
-                {[
-                  ...workflowConfigs.slice(0, 3).map((wf) => ({
-                    key: wf.id,
-                    title: wf.label,
-                    subtitle: (wf.start_hint || wf.description || "").trim(),
-                    prompt: wf.example_prompt || "",
-                  })),
-                  {
-                    key: "wf.project_accounting_table.quick",
-                    title: "一键生成项目核算表",
-                    subtitle: "根据你提供的项目与期间，生成项目核算表结果（占位）。",
-                    prompt: "请一键生成项目核算表：项目=，期间=YYYY-MM",
-                  },
-                  {
-                    key: "wf.contracts_ledger.write",
-                    title: "写入合同台账",
-                    subtitle: "把当前对话/文本整理为合同台账记录并写入（占位）。",
-                    prompt: "写入合同台账：请从以下信息生成台账记录并写入：",
-                  },
-                ].map((it) => (
+                {quickWorkflowPicks.map((it) => (
                   <button
                     key={it.key}
                     type="button"
-                    onClick={() => {
-                      const full = workflowConfigs.find((w) => w.id === it.key);
-                      if (full) {
-                        if (activeWorkflowId === full.id) {
-                          deactivateWorkflow();
-                        } else {
-                          applyWorkflow(full);
-                        }
-                        return;
-                      }
-                      setActiveWorkflowId(null);
-                      setDataParseSessionId(null);
-                      setEnabledPromptIds([]);
-                      setEnabledTools([]);
-                      if (it.key === "wf.project_accounting_table.quick") {
-                        setEnabledSkills(["skill.project_accounting_table.v1"]);
-                      } else {
-                        setEnabledSkills([]);
-                      }
-                      const p = (it.prompt || "").trim();
-                      if (p) setChatInput((prev) => (prev ? `${prev}\n${p}` : p));
-                      if (it.subtitle) setStartAreaHint(it.subtitle);
-                    }}
-                    className="group w-full rounded-xl bg-transparent px-4 py-2.5 text-left hover:bg-zinc-900/20"
+                    onClick={() => handleQuickWorkflowPick(it, { toggleIfActive: true })}
+                    className={[
+                      "group w-full rounded-xl px-4 py-2.5 text-left",
+                      it.wip ? WORKFLOW_WIP_CLASS.listRowBorder : "bg-transparent hover:bg-zinc-900/20",
+                    ].join(" ")}
                   >
-                    <div className="text-sm font-medium text-zinc-200 group-hover:text-zinc-100">{it.title}</div>
-                    {it.subtitle ? <div className="mt-1 text-xs text-zinc-500 line-clamp-2">{it.subtitle}</div> : null}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div
+                        className={[
+                          "text-sm font-medium group-hover:text-zinc-100",
+                          it.wip ? WORKFLOW_WIP_CLASS.listTitle : "text-zinc-200",
+                        ].join(" ")}
+                      >
+                        {it.title}
+                      </div>
+                      {it.wip ? (
+                        <span className={WORKFLOW_WIP_CLASS.badge}>开发中</span>
+                      ) : null}
+                    </div>
+                    {it.subtitle ? (
+                      <div className="mt-1 text-xs text-zinc-500 line-clamp-2">{it.subtitle}</div>
+                    ) : null}
                   </button>
                 ))}
                 <button
@@ -3811,52 +3821,21 @@ export default function AiInteractionPage() {
                   <div className="shrink-0 pb-3 pt-2">
                     <div className={chatContentInnerClass}>
                     <div className="flex items-center gap-1.5 overflow-x-auto pb-3">
-                      {[
-                        ...workflowConfigs.slice(0, 3).map((wf) => ({
-                          key: wf.id,
-                          label: wf.label,
-                          subtitle: (wf.start_hint || wf.description || "").trim(),
-                          prompt: wf.example_prompt || "",
-                        })),
-                        {
-                          key: "wf.project_accounting_table.quick",
-                          label: "一键生成项目核算表",
-                          subtitle: "根据你提供的项目与期间，生成项目核算表结果（占位）。",
-                          prompt: "请一键生成项目核算表：项目=，期间=YYYY-MM",
-                        },
-                        {
-                          key: "wf.contracts_ledger.write",
-                          label: "写入合同台账",
-                          subtitle: "把当前对话/文本整理为合同台账记录并写入（占位）。",
-                          prompt: "写入合同台账：请从以下信息生成台账记录并写入：",
-                        },
-                      ].map((it) => (
+                      {quickWorkflowPicks.map((it) => (
                         <button
                           key={it.key}
                           type="button"
-                          onClick={() => {
-                            const full = workflowConfigs.find((w) => w.id === it.key);
-                            if (full) {
-                              applyWorkflow(full);
-                              return;
-                            }
-                            setActiveWorkflowId(null);
-                            setDataParseSessionId(null);
-                            setEnabledPromptIds([]);
-                            setEnabledTools([]);
-                            if (it.key === "wf.project_accounting_table.quick") {
-                              setEnabledSkills(["skill.project_accounting_table.v1"]);
-                            } else {
-                              setEnabledSkills([]);
-                            }
-                            const p = (it.prompt || "").trim();
-                            if (p) setChatInput((prev) => (prev ? `${prev}\n${p}` : p));
-                            if (it.subtitle) setStartAreaHint(it.subtitle);
-                          }}
-                          className="shrink-0 rounded-full bg-transparent px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-900/20"
-                          title={it.subtitle || it.label}
+                          onClick={() => handleQuickWorkflowPick(it)}
+                          className={[
+                            "inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs hover:bg-zinc-900/20",
+                            it.wip ? WORKFLOW_WIP_CLASS.chipBorder : "bg-transparent text-zinc-200",
+                          ].join(" ")}
+                          title={it.wip ? `${it.subtitle || it.title}（开发中）` : it.subtitle || it.title}
                         >
-                          {it.label}
+                          <span>{it.title}</span>
+                          {it.wip ? (
+                            <span className={WORKFLOW_WIP_CLASS.chipBadge}>开发中</span>
+                          ) : null}
                         </button>
                       ))}
                       <button

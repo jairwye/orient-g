@@ -15,9 +15,11 @@
 
 - **Agent Skill**：`skill.finance.annual_report.v1`（竞品财报年报检索/对比）；`finance_annual_report_profile` 缓存与 Tier 0 narrative 补检索。
 - **浏览器矩阵验收**：CDP runner 每案 token 注入、validate 收紧（citations/过程稿/inline cite）；规制 §13 复测提示词。
-- **竞品财报可视化（1.2.3.c）**：MD 蓝本确定性解析 → Snapshot 文件存储；`GET/POST /api/competitor/*`；10 屏 scroll-snap Recharts 页；财务后台第四块上传；`middleware.ts` 支持自定义 `finance_path`；生产默认关闭 fixture 回退（dev 用 `competitor_report_minimal.md`）。
+- **竞品财报 sec-09 深化（1.2.3.c）**：蓝本对齐为 **9 章**（`sec-01`～`sec-09`）；解析器 `||` 合并单元格容错、`sec-09-10`～`15` 诊断；上传响应 `sec09_anchor_stats`；sec-09 Explorer/TopicSubject 组件；AI 内网 `workflowQuickPicks`。
 
 ### Changed
+
+- **竞品财报模型**：原独立 `sec-10` 并入 `sec-09` 子锚点；删除 `Sec10Risk` 屏；API/spec 同步为 9 章。
 
 - **登录与鉴权**：JWT 过期（401）跳转 `/login?expired=1`；AuthGuard 标签页获焦复检；Next API 代理 JSON body 改为 buffer 转发（修复密码错误误报 502「后端不可用」）。
 - Hermes 流式：Runs/chat 双路径 `HermesRunsLoopGuard`；error 时 salvage 过程稿（`hermes_salvaged`）；Tier 1 pack 充分时跳过 supplemental；Tier 0 终稿统一 `finalize_agent_reply`。

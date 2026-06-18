@@ -7,7 +7,11 @@ from fastapi.responses import JSONResponse
 
 from backend.config import settings
 from backend.routers.settings import _require_admin, _require_view_business_dashboard
-from backend.services.competitor_report_parser import CompetitorParseError, parse_markdown
+from backend.services.competitor_report_parser import (
+    CompetitorParseError,
+    collect_sec09_anchor_stats,
+    parse_markdown,
+)
 from backend.services.competitor_report_store import load_meta, save_snapshot, snapshot_for_api
 
 router = APIRouter()
@@ -56,15 +60,19 @@ async def competitor_admin_upload(request: Request, file: UploadFile = File(...)
 
     save_snapshot(raw, snapshot)
     meta = snapshot.get("meta") or {}
+    sec09_blocks = next((s.get("blocks") or [] for s in snapshot.get("sections") or [] if s.get("id") == "sec-09"), [])
+    sec09_anchor_stats = collect_sec09_anchor_stats(sec09_blocks)
     return {
         "ok": True,
         "meta": {
             "title": meta.get("title"),
             "uploaded_at": meta.get("uploaded_at"),
             "uploaded_by": meta.get("uploaded_by"),
+            "source_filename": meta.get("source_filename"),
         },
         "warnings": warnings,
         "sections_parsed": len(snapshot.get("sections") or []),
+        "sec09_anchor_stats": sec09_anchor_stats,
     }
 
 

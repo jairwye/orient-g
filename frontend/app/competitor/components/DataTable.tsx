@@ -16,8 +16,14 @@ type Props = {
     value: string | number | null,
     row?: Record<string, string | number | null>,
   ) => ReactNode;
-  /** 嵌入 ChartPanel 时去掉外层卡片与入场动效 */
+  /** 嵌入轮播面板时去掉外层卡片与入场动效 */
   embedded?: boolean;
+  /** 表格自然撑开，不出现内滚动条 */
+  flowContent?: boolean;
+  /** 长文本列自动换行（目的、备注等） */
+  wrapText?: boolean;
+  onRowClick?: (row: Record<string, string | number | null>, index: number) => void;
+  isRowSelected?: (row: Record<string, string | number | null>, index: number) => boolean;
 };
 
 export function DataTable({
@@ -31,18 +37,40 @@ export function DataTable({
   rowAccent,
   formatCell = formatTableCell,
   embedded = false,
+  flowContent = false,
+  wrapText = false,
+  onRowClick,
+  isRowSelected,
 }: Props) {
   if (!rows.length) return null;
 
+  const wrapCol = (h: string) => wrapText || /目的|备注|项目|名称|性质|方案|变动|公司名称|游戏名称|主要补助|拟达到|交易类型|备注/.test(h);
+
   const table = (
-    <div className={embedded ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50"}>
+    <div
+      className={
+        embedded
+          ? flowContent
+            ? ""
+            : "flex min-h-0 flex-1 flex-col overflow-hidden"
+          : "overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50"
+      }
+    >
       {(title || subtitle) && !embedded ? (
         <div className="border-b border-zinc-800 px-4 py-3 md:px-5">
           {title ? <h3 className="text-sm font-medium text-zinc-300">{title}</h3> : null}
           {subtitle ? <p className="mt-0.5 text-xs text-zinc-500">{subtitle}</p> : null}
         </div>
       ) : null}
-      <div className={embedded ? "min-h-0 flex-1 overflow-auto" : "overflow-x-auto"}>
+      <div
+        className={
+          embedded
+            ? flowContent
+              ? "overflow-visible"
+              : "min-h-0 flex-1 overflow-auto"
+            : "overflow-x-auto"
+        }
+      >
           <table
             className={
               "min-w-full text-left tabular-nums text-zinc-300 " +
@@ -62,18 +90,29 @@ export function DataTable({
               {rows.map((row, i) => {
                 const dim = highlightRow?.(row) === false;
                 const accent = rowAccent?.(row);
+                const selected = isRowSelected?.(row, i) ?? false;
+                const clickable = Boolean(onRowClick);
+                const stripe = !selected && i % 2 === 1;
                 return (
                   <tr
                     key={i}
+                    onClick={clickable ? () => onRowClick!(row, i) : undefined}
                     className={
-                      "border-b border-zinc-800/50 transition-opacity duration-300 last:border-0 " +
-                      (i % 2 === 1 ? "bg-white/[0.022]" : "") +
-                      (dim ? " opacity-20" : " opacity-100")
+                      "border-b border-zinc-800/50 transition-[opacity,background-color,font-weight,color] duration-300 last:border-0 " +
+                      (stripe ? " bg-white/[0.022]" : "") +
+                      (dim ? " opacity-20" : " opacity-100") +
+                      (clickable ? " cursor-pointer hover:bg-zinc-800/35" : "") +
+                      (selected ? " bg-blue-950/45 font-semibold text-zinc-100 hover:bg-blue-950/45" : "")
                     }
                     style={accent ? { boxShadow: `inset 3px 0 0 ${accent}` } : undefined}
                   >
                     {headers.map((h) => (
-                      <td key={h} className="whitespace-nowrap px-4 py-2.5 md:px-5">
+                      <td
+                        key={h}
+                        className={
+                          "px-4 py-2.5 md:px-5 " + (wrapCol(h) ? "max-w-[280px] whitespace-normal break-words align-top" : "whitespace-nowrap")
+                        }
+                      >
                         {formatCell(h, row[h], row)}
                       </td>
                     ))}

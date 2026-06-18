@@ -12,31 +12,61 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { AnalystInsightStrip } from "../components/AnalystInsightStrip";
 import { ChapterPanel } from "../components/ChapterPanel";
 import { ChartPanel } from "../components/ChartPanel";
 import { CompetitorChartTooltip, competitorBarTooltipProps } from "../components/CompetitorChartTooltip";
 import { DataTable } from "../components/DataTable";
-import { NarrativesFromSection } from "../components/NarrativeBlock";
+import { BlueprintAnalysisPanel } from "../components/BlueprintAnalysisPanel";
+import { Sec09CustomerExplorer } from "../components/Sec09CustomerExplorer";
+import { Sec09OperatingProductsExplorer } from "../components/Sec09OperatingProductsExplorer";
+import { Sec09RelatedPartyExplorer } from "../components/Sec09RelatedPartyExplorer";
+import { Sec09RndProjectExplorer } from "../components/Sec09RndProjectExplorer";
+import { GovSubsidyDetailPanel } from "../components/Sec09Blueprints";
+import { Sec09BlockStream } from "../components/Sec09BlockStream";
+import { SubjectAnalysisBoard } from "../components/SubjectAnalysisBoard";
+import { TopicSubjectBoard } from "../components/TopicSubjectBoard";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS, colorForCompany } from "../lib/competitor_chart_colors";
 import { COMPANY_COLS, colToLabel } from "../lib/companies";
-import {
-  acquisitionModel,
-  deriveArAgingInsights,
-  deriveCurrencyInsights,
-  deriveGovInsights,
-  deriveInvestmentInsights,
-  derivePipelineInsights,
-  deriveProductsInsights,
-  deriveRentInsights,
-  deriveRoiInsights,
-} from "../lib/finance_analysis";
 import { CL, FK, FK_METRIC } from "../lib/field_keys";
 import { formatDecimal2, formatPctPoints, parseNum, toPercentPoints } from "../lib/format";
 import { subTitleForSnap } from "../lib/navigation";
-import { getTable } from "../lib/selectors";
+import { buildSec09SubjectGroups } from "../lib/sec09_subject_analysis";
+import { buildTopicSubjectGroups } from "../lib/sec09_topic_subject_analysis";
+import { mergeRndProjectTable } from "../lib/sec09_table_transforms";
+import { getAnchorAnalysisMarkdown, getAnchorBlocks, getGovSubsidyDetailTable, getNarrativeMarkdown, getTable, getTables } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
+
+const SNAP_ANCHORS: Record<string, string> = {
+  "sec-09-a": "sec-09-1",
+  "sec-09-b": "sec-09-2",
+  "sec-09-c": "sec-09-3",
+  "sec-09-d": "sec-09-4",
+  "sec-09-e": "sec-09-5",
+  "sec-09-f": "sec-09-6",
+  "sec-09-g": "sec-09-7",
+  "sec-09-h": "sec-09-8",
+  "sec-09-i": "sec-09-9",
+  "sec-09-j": "sec-09-10",
+  "sec-09-k": "sec-09-11",
+  "sec-09-l": "sec-09-12",
+  "sec-09-m": "sec-09-13",
+  "sec-09-n": "sec-09-14",
+  "sec-09-o": "sec-09-15",
+};
+
+/** sec-09-j~o：蓝本 block 流屏，分析叙事单独抽取 */
+const SEC09_BLOCK_ANCHORS = new Set([
+  "sec-09-10",
+  "sec-09-11",
+  "sec-09-12",
+  "sec-09-13",
+  "sec-09-14",
+  "sec-09-15",
+]);
+
+const TOPIC_SUBJECT_ANCHORS = new Set(["sec-09-8", "sec-09-9", "sec-09-10", "sec-09-11"]);
+const BLUEPRINT_ANALYSIS_ANCHORS = new Set(["sec-09-13"]);
 
 function metricBars(
   table: ReturnType<typeof getTable>,
@@ -56,61 +86,89 @@ function metricBars(
     .sort((a, b) => b!.value - a!.value) as Array<{ name: string; value: number; fill: string }>;
 }
 
-function AnchorSlide({
-  insights,
-  table,
-  tableTitle,
-  narrativeAnchor,
-  blocks,
-  delayMs = 40,
-  chart,
-  dense,
+function AnalysisCards({
+  snapshot,
+  subjectGroups,
+  topicSubjectGroups,
+  blueprintAnalysis,
+  delayMs = 120,
 }: {
-  insights: ReturnType<typeof deriveRoiInsights>;
-  table?: ReturnType<typeof getTable>;
-  tableTitle?: string;
-  narrativeAnchor?: string;
-  blocks: SectionProps["snapshot"]["sections"][0]["blocks"];
+  snapshot: SectionProps["snapshot"];
+  subjectGroups?: ReturnType<typeof buildSec09SubjectGroups>;
+  topicSubjectGroups?: ReturnType<typeof buildTopicSubjectGroups>;
+  blueprintAnalysis?: string;
   delayMs?: number;
-  chart?: ReactNode;
-  dense?: boolean;
 }) {
   return (
-    <div className={dense ? "space-y-4 sm:space-y-5" : "space-y-5 sm:space-y-6"}>
-      <AnalystInsightStrip insights={insights} delayMs={delayMs} />
-      {table && table.rows.length > 0 ? (
-        <DataTable title={tableTitle} headers={table.headers} rows={table.rows} delayMs={delayMs + 20} compact />
+    <>
+      {topicSubjectGroups && topicSubjectGroups.length > 0 ? (
+        <TopicSubjectBoard groups={topicSubjectGroups} snapshot={snapshot} delayMs={delayMs} />
       ) : null}
-      {chart}
-      {narrativeAnchor ? (
-        <NarrativesFromSection blocks={blocks} anchor={narrativeAnchor} plain stripAnalysisPrefix />
+      {blueprintAnalysis ? <BlueprintAnalysisPanel markdown={blueprintAnalysis} delayMs={delayMs} /> : null}
+      {subjectGroups && subjectGroups.length > 0 ? (
+        <SubjectAnalysisBoard groups={subjectGroups} snapshot={snapshot} delayMs={delayMs + 20} />
       ) : null}
+    </>
+  );
+}
+
+function SectionSlide({
+  children,
+  snapshot,
+  subjectGroups,
+  topicSubjectGroups,
+  blueprintAnalysis,
+}: {
+  children: ReactNode;
+  snapshot: SectionProps["snapshot"];
+  subjectGroups?: ReturnType<typeof buildSec09SubjectGroups>;
+  topicSubjectGroups?: ReturnType<typeof buildTopicSubjectGroups>;
+  blueprintAnalysis?: string;
+}) {
+  return (
+    <div className="space-y-4 sm:space-y-5">
+      {children}
+      <AnalysisCards
+        snapshot={snapshot}
+        subjectGroups={subjectGroups}
+        topicSubjectGroups={topicSubjectGroups}
+        blueprintAnalysis={blueprintAnalysis}
+      />
     </div>
   );
 }
 
 export function Sec09Others({ snapshot }: SectionProps) {
-  const sec09 = snapshot.sections.find((s) => s.id === "sec-09");
-  const blocks = sec09?.blocks ?? [];
+  const analysisByAnchor = useMemo(() => {
+    const subject: Record<string, ReturnType<typeof buildSec09SubjectGroups>> = {};
+    const topicSubject: Record<string, ReturnType<typeof buildTopicSubjectGroups>> = {};
+    const blueprint: Record<string, string> = {};
+    for (const anchor of Object.values(SNAP_ANCHORS)) {
+      const md = SEC09_BLOCK_ANCHORS.has(anchor)
+        ? getAnchorAnalysisMarkdown(snapshot, anchor)
+        : getNarrativeMarkdown(snapshot, anchor);
+      if (!md) continue;
+      if (BLUEPRINT_ANALYSIS_ANCHORS.has(anchor)) {
+        blueprint[anchor] = md;
+      } else if (TOPIC_SUBJECT_ANCHORS.has(anchor)) {
+        topicSubject[anchor] = buildTopicSubjectGroups(md);
+      } else {
+        subject[anchor] = buildSec09SubjectGroups(md);
+      }
+    }
+    return { subject, topicSubject, blueprint };
+  }, [snapshot]);
 
   const rent = getTable(snapshot, "sec-09-1");
   const roi = getTable(snapshot, "sec-09-2");
-  const gov = getTable(snapshot, "sec-09-3");
+  const govTables = getTables(snapshot, "sec-09-3");
+  const govDetailTable = getGovSubsidyDetailTable(snapshot);
   const rndProjects = getTable(snapshot, "sec-09-4");
   const dividend = getTable(snapshot, "sec-09-5");
   const currency = getTable(snapshot, "sec-09-6");
   const investment = getTable(snapshot, "sec-09-7");
   const arAging = getTable(snapshot, "sec-09-8");
-  const products = getTable(snapshot, "sec-09-9");
-
-  const rentInsights = useMemo(() => deriveRentInsights(snapshot), [snapshot]);
-  const roiInsights = useMemo(() => deriveRoiInsights(snapshot), [snapshot]);
-  const govInsights = useMemo(() => deriveGovInsights(snapshot), [snapshot]);
-  const pipeInsights = useMemo(() => derivePipelineInsights(snapshot), [snapshot]);
-  const fxInsights = useMemo(() => deriveCurrencyInsights(snapshot), [snapshot]);
-  const invInsights = useMemo(() => deriveInvestmentInsights(snapshot), [snapshot]);
-  const arInsights = useMemo(() => deriveArAgingInsights(snapshot), [snapshot]);
-  const prodInsights = useMemo(() => deriveProductsInsights(snapshot), [snapshot]);
+  const productTables = getTables(snapshot, "sec-09-9");
 
   const roiData = useMemo(() => metricBars(roi, FK_METRIC.compositeRoi, snapshot), [roi, snapshot]);
   const rentData = useMemo(() => metricBars(rent, FK_METRIC.rentPerCap, snapshot), [rent, snapshot]);
@@ -125,7 +183,6 @@ export function Sec09Others({ snapshot }: SectionProps) {
       return {
         name: colToLabel(col),
         value: pct,
-        modelLabel: acquisitionModel(pct).label,
         fill: colorForCompany(col, snapshot),
       };
     }).filter(Boolean).sort((a, b) => b!.value - a!.value);
@@ -156,11 +213,17 @@ export function Sec09Others({ snapshot }: SectionProps) {
       .sort((a, b) => b!.value - a!.value);
   }, [arAging?.rows]);
 
+  const rndMerged = useMemo(
+    () => (rndProjects ? mergeRndProjectTable(rndProjects) : null),
+    [rndProjects],
+  );
   const chartH = Math.max(240, roiData.length * 36 + 56);
+  const productsSummary = productTables[0];
+  const productsDetail = productTables[1];
 
   const roiCharts = (
     <div className="mt-5 grid gap-5 lg:grid-cols-2 lg:gap-6">
-      <ChartPanel title={CL.compositeRoi} delayMs={100} height="h-auto min-h-[240px]">
+      <ChartPanel title={CL.compositeRoi} delayMs={60} height="h-auto min-h-[240px]">
         <div style={{ height: chartH }}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={roiData} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
@@ -177,7 +240,7 @@ export function Sec09Others({ snapshot }: SectionProps) {
           </ResponsiveContainer>
         </div>
       </ChartPanel>
-      <ChartPanel title={CL.adSalesShare} delayMs={140} height="h-auto min-h-[240px]">
+      <ChartPanel title={CL.adSalesShare} delayMs={80} height="h-auto min-h-[240px]">
         <div style={{ height: chartH }}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={adShareData} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
@@ -198,7 +261,7 @@ export function Sec09Others({ snapshot }: SectionProps) {
   );
 
   const rentChart = rentData.length > 0 && (
-    <ChartPanel title={CL.rentPerCap} delayMs={100} height="h-auto min-h-[240px]">
+    <ChartPanel title={CL.rentPerCap} delayMs={60} height="h-auto min-h-[240px]">
       <div style={{ height: chartH }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={rentData} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
@@ -218,7 +281,7 @@ export function Sec09Others({ snapshot }: SectionProps) {
   );
 
   const fxChart = fxMixData.length > 0 && (
-    <ChartPanel title={CL.currencyMix} delayMs={100} height="h-auto min-h-[240px]">
+    <ChartPanel title={CL.currencyMix} delayMs={60} height="h-auto min-h-[240px]">
       <div style={{ height: chartH }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={fxMixData} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
@@ -236,7 +299,7 @@ export function Sec09Others({ snapshot }: SectionProps) {
   );
 
   const arChart = arOver1y.length > 0 && (
-    <ChartPanel title={CL.arAgingStruct} delayMs={100} height="h-auto min-h-[220px]">
+    <ChartPanel title={CL.arOver1yShare} delayMs={60} height="h-auto min-h-[220px]">
       <div style={{ height: Math.max(200, arOver1y.length * 36 + 48) }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={arOver1y} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
@@ -251,6 +314,66 @@ export function Sec09Others({ snapshot }: SectionProps) {
     </ChartPanel>
   );
 
+  const subSlide = (
+    id: string,
+    content: ReactNode,
+    opts?: {
+      dense?: boolean;
+      subjectAnchor?: string;
+      topicSubjectAnchor?: string;
+      blueprintAnalysisAnchor?: string;
+    },
+  ) => ({
+    id,
+    title: subTitleForSnap(id),
+    subOnly: true as const,
+    dense: opts?.dense,
+    content: (
+      <SectionSlide
+        snapshot={snapshot}
+        subjectGroups={opts?.subjectAnchor ? analysisByAnchor.subject[opts.subjectAnchor] : undefined}
+        topicSubjectGroups={
+          opts?.topicSubjectAnchor ? analysisByAnchor.topicSubject[opts.topicSubjectAnchor] : undefined
+        }
+        blueprintAnalysis={
+          opts?.blueprintAnalysisAnchor ? analysisByAnchor.blueprint[opts.blueprintAnalysisAnchor] : undefined
+        }
+      >
+        {content}
+      </SectionSlide>
+    ),
+  });
+
+  const blockSlide = (
+    snapId: string,
+    defaultTitle: string,
+    opts?: { topicSubject?: boolean; hideLicenseColumn?: boolean },
+  ) => {
+    const anchor = SNAP_ANCHORS[snapId]!;
+    const blocks = getAnchorBlocks(snapshot, anchor);
+    const analysisMd = getAnchorAnalysisMarkdown(snapshot, anchor);
+    const useBlueprint = BLUEPRINT_ANALYSIS_ANCHORS.has(anchor);
+    return subSlide(
+      snapId,
+      blocks.length > 0 ? (
+        <Sec09BlockStream
+          blocks={blocks}
+          defaultTableTitle={defaultTitle}
+          wrapText
+          hideLicenseColumn={opts?.hideLicenseColumn}
+        />
+      ) : (
+        <p className="text-sm text-zinc-500">蓝本 {anchor} 暂无表格数据，请保存 MD 并在财务后台重新上传解析。</p>
+      ),
+      {
+        dense: true,
+        subjectAnchor: analysisMd && !opts?.topicSubject && !useBlueprint ? anchor : undefined,
+        topicSubjectAnchor: analysisMd && opts?.topicSubject ? anchor : undefined,
+        blueprintAnalysisAnchor: useBlueprint && analysisMd ? anchor : undefined,
+      },
+    );
+  };
+
   return (
     <ChapterPanel
       sectionId="sec-09"
@@ -258,114 +381,117 @@ export function Sec09Others({ snapshot }: SectionProps) {
         {
           id: "sec-09-a",
           title: subTitleForSnap("sec-09-a"),
+          dense: true,
           content: (
-            <AnchorSlide
-              insights={rentInsights}
-              table={rent}
-              tableTitle={CL.rentOffice}
-              narrativeAnchor="sec-09-1"
-              blocks={blocks}
-              chart={rentChart}
+            <SectionSlide snapshot={snapshot} subjectGroups={analysisByAnchor.subject["sec-09-1"]}>
+              {rent ? <DataTable title={CL.rentOffice} headers={rent.headers} rows={rent.rows} delayMs={40} compact /> : null}
+              {rentChart}
+            </SectionSlide>
+          ),
+        },
+        subSlide(
+          "sec-09-b",
+          <>
+            {roi ? <DataTable title={CL.roiAds} headers={roi.headers} rows={roi.rows} delayMs={40} compact /> : null}
+            {roiCharts}
+          </>,
+          { dense: true, subjectAnchor: "sec-09-2" },
+        ),
+        subSlide(
+          "sec-09-c",
+          <>
+            {govTables[0] ? (
+              <DataTable title={CL.govSubsidy} headers={govTables[0].headers} rows={govTables[0].rows} delayMs={40} compact />
+            ) : null}
+            <div className="mt-5 sm:mt-6">
+              <GovSubsidyDetailPanel table={govDetailTable} snapshot={snapshot} delayMs={60} />
+            </div>
+          </>,
+          { dense: true, subjectAnchor: "sec-09-3" },
+        ),
+        subSlide(
+          "sec-09-d",
+          rndMerged ? <Sec09RndProjectExplorer table={rndMerged} /> : null,
+          { dense: true, subjectAnchor: "sec-09-4" },
+        ),
+        subSlide(
+          "sec-09-e",
+          dividend ? (
+            <DataTable
+              title={CL.shareholderDiv}
+              headers={dividend.headers}
+              rows={dividend.rows}
+              delayMs={40}
+              compact
+              wrapText
             />
-          ),
-        },
-        {
-          id: "sec-09-b",
-          title: subTitleForSnap("sec-09-b"),
-          content: (
-            <AnchorSlide
-              insights={roiInsights}
-              table={roi}
-              tableTitle={CL.roiAds}
-              narrativeAnchor="sec-09-2"
-              blocks={blocks}
-              chart={roiCharts}
-            />
-          ),
-        },
-        {
-          id: "sec-09-c",
-          title: subTitleForSnap("sec-09-c"),
-          content: (
-            <AnchorSlide insights={govInsights} table={gov} tableTitle={CL.govSubsidy} narrativeAnchor="sec-09-3" blocks={blocks} />
-          ),
-        },
-        {
-          id: "sec-09-d",
-          title: subTitleForSnap("sec-09-d"),
-          content: (
-            <AnchorSlide
-              insights={pipeInsights}
-              table={rndProjects}
-              tableTitle={CL.rndPipeline}
-              narrativeAnchor="sec-09-4"
-              blocks={blocks}
-              dense
-            />
-          ),
-        },
-        {
-          id: "sec-09-e",
-          title: subTitleForSnap("sec-09-e"),
-          content: dividend ? (
-            <DataTable title={CL.shareholderDiv} headers={dividend.headers} rows={dividend.rows} delayMs={40} compact />
           ) : null,
-        },
-        {
-          id: "sec-09-f",
-          title: subTitleForSnap("sec-09-f"),
-          content: (
-            <AnchorSlide
-              insights={fxInsights}
-              table={currency}
-              tableTitle={CL.currencyMix}
-              narrativeAnchor="sec-09-6"
-              blocks={blocks}
-              chart={fxChart}
+          { dense: true },
+        ),
+        subSlide(
+          "sec-09-f",
+          <>
+            {currency ? <DataTable title={CL.currencyMix} headers={currency.headers} rows={currency.rows} delayMs={40} compact /> : null}
+            {fxChart}
+          </>,
+          { dense: true, subjectAnchor: "sec-09-6" },
+        ),
+        subSlide(
+          "sec-09-g",
+          investment ? (
+            <DataTable title={CL.investmentAlloc} headers={investment.headers} rows={investment.rows} delayMs={40} compact />
+          ) : null,
+          { dense: true, subjectAnchor: "sec-09-7" },
+        ),
+        subSlide(
+          "sec-09-h",
+          <>
+            {arAging ? <DataTable title={CL.arAgingStruct} headers={arAging.headers} rows={arAging.rows} delayMs={40} compact /> : null}
+            {arChart}
+          </>,
+          { dense: true, topicSubjectAnchor: "sec-09-8" },
+        ),
+        subSlide(
+          "sec-09-i",
+          productsSummary && productsDetail ? (
+            <Sec09OperatingProductsExplorer
+              summary={productsSummary}
+              detail={productsDetail}
+              snapshot={snapshot}
             />
-          ),
-        },
-        {
-          id: "sec-09-g",
-          title: subTitleForSnap("sec-09-g"),
-          content: (
-            <AnchorSlide
-              insights={invInsights}
-              table={investment}
-              tableTitle={CL.investmentAlloc}
-              narrativeAnchor="sec-09-7"
-              blocks={blocks}
-            />
-          ),
-        },
-        {
-          id: "sec-09-h",
-          title: subTitleForSnap("sec-09-h"),
-          content: (
-            <AnchorSlide
-              insights={arInsights}
-              table={arAging}
-              tableTitle={CL.arAgingStruct}
-              narrativeAnchor="sec-09-8"
-              blocks={blocks}
-              chart={arChart}
-            />
-          ),
-        },
-        {
-          id: "sec-09-i",
-          title: subTitleForSnap("sec-09-i"),
-          content: (
-            <AnchorSlide
-              insights={prodInsights}
-              table={products}
-              tableTitle={CL.operatingProducts}
-              narrativeAnchor="sec-09-9"
-              blocks={blocks}
-              dense
-            />
-          ),
-        },
+          ) : null,
+          { dense: true, topicSubjectAnchor: "sec-09-9" },
+        ),
+        blockSlide("sec-09-j", CL.majorGames, { topicSubject: true, hideLicenseColumn: true }),
+        blockSlide("sec-09-k", CL.gameMetrics, { topicSubject: true }),
+        subSlide(
+          "sec-09-l",
+          (() => {
+            const rp = getTable(snapshot, "sec-09-12");
+            const note = getNarrativeMarkdown(snapshot, "sec-09-12");
+            return (
+              <>
+                {note ? <p className="text-xs leading-relaxed text-zinc-500">{note.replace(/^\*|\*$/g, "")}</p> : null}
+                {rp ? <Sec09RelatedPartyExplorer table={rp} /> : null}
+              </>
+            );
+          })(),
+          { dense: true, subjectAnchor: "sec-09-12" },
+        ),
+        subSlide(
+          "sec-09-m",
+          (() => {
+            const blocks = getAnchorBlocks(snapshot, "sec-09-13");
+            return blocks.length > 0 ? (
+              <Sec09CustomerExplorer blocks={blocks} snapshot={snapshot} />
+            ) : (
+              <p className="text-sm text-zinc-500">蓝本 sec-09-13 暂无表格数据。</p>
+            );
+          })(),
+          { dense: true, blueprintAnalysisAnchor: "sec-09-13" },
+        ),
+        blockSlide("sec-09-n", CL.consolidationScopeChange),
+        blockSlide("sec-09-o", CL.relatedPartyChange),
       ]}
     />
   );

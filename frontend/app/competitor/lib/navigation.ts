@@ -1,4 +1,4 @@
-/** 九屏主导航 + 每屏细分 snap 锚点（与 ProgressScale 一致） */
+/** 九屏主导航 + 每屏细分 snap 锚点（与 ProgressScale 一致）；蓝本止于 sec-09 */
 export type NavSub = { id: string; title: string };
 export type NavSection = { id: string; title: string; subs: NavSub[] };
 
@@ -53,24 +53,18 @@ export const NAV_SECTIONS: NavSection[] = [
     id: "sec-07",
     title: "利润费用",
     subs: [
-      { id: "sec-07-a", title: "核心科目" },
-      { id: "sec-07-b", title: "盈利驱动" },
-      { id: "sec-07-c", title: "费用率" },
-      { id: "sec-07-d", title: "费用率变动" },
-      { id: "sec-07-e", title: "费用额变动" },
+      { id: "sec-07-a", title: "盈利解读" },
+      { id: "sec-07-c", title: "费用分析" },
     ],
   },
   {
     id: "sec-08",
     title: "现金流量",
-    subs: [
-      { id: "sec-08-a", title: "现金流科目" },
-      { id: "sec-08-b", title: "净利与经营CF" },
-    ],
+    subs: [{ id: "sec-08-a", title: "现金流分析" }],
   },
   {
     id: "sec-09",
-    title: "其他事项",
+    title: "细节补充",
     subs: [
       { id: "sec-09-a", title: "房租" },
       { id: "sec-09-b", title: "广告ROI" },
@@ -81,16 +75,12 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: "sec-09-g", title: "投资理财" },
       { id: "sec-09-h", title: "应收账龄" },
       { id: "sec-09-i", title: "运营产品" },
-    ],
-  },
-  {
-    id: "sec-10",
-    title: "风险附录",
-    subs: [
-      { id: "sec-10-a", title: "风险评分卡" },
-      { id: "sec-10-b", title: "研发资本化" },
-      { id: "sec-10-c", title: "子公司贡献" },
-      { id: "sec-10-d", title: "横向对比" },
+      { id: "sec-09-j", title: "主要游戏情况" },
+      { id: "sec-09-k", title: "游戏数据" },
+      { id: "sec-09-l", title: "关联方交易" },
+      { id: "sec-09-m", title: "重要客商" },
+      { id: "sec-09-n", title: "合并范围变更" },
+      { id: "sec-09-o", title: "关联方变更" },
     ],
   },
 ];

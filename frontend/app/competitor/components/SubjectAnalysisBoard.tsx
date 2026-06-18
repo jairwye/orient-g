@@ -18,18 +18,25 @@ type Props = {
   groups: SubjectAnalysisGroup[];
   snapshot: CompetitorReportSnapshot;
   delayMs?: number;
+  /** company=分主体（公司色条）；topic=分主题（统一 zinc 强调） */
+  mode?: "company" | "topic";
 };
 
-export function SubjectAnalysisBoard({ groups, snapshot, delayMs = 200 }: Props) {
+export function SubjectAnalysisBoard({ groups, snapshot, delayMs = 200, mode = "company" }: Props) {
   if (!groups.length) return null;
+
+  const heading = mode === "topic" ? CL.topicAnalysis : CL.subjectAnalysis;
 
   return (
     <FadeInView delayMs={delayMs}>
       <div className="mt-6 space-y-4 border-t border-zinc-800/80 pt-5 sm:mt-8 sm:space-y-5 sm:pt-6">
-        <p className="text-xs font-medium tracking-wide text-zinc-500">{CL.subjectAnalysis}</p>
+        <p className="text-xs font-medium tracking-wide text-zinc-500">{heading}</p>
         <div className="grid gap-3 sm:grid-cols-2 xl:gap-4">
           {groups.map((group, gi) => {
-            const accent = group.colKey ? colorForCompany(group.colKey, snapshot) : "#71717a";
+            const accent =
+              mode === "topic" || !group.colKey
+                ? "#52525b"
+                : colorForCompany(group.colKey, snapshot);
             return (
               <article
                 key={group.company}
@@ -43,7 +50,6 @@ export function SubjectAnalysisBoard({ groups, snapshot, delayMs = 200 }: Props)
                     aria-hidden
                   />
                   <h3 className="text-sm font-medium text-zinc-100">{group.company}</h3>
-                  <span className="ml-auto text-[10px] tabular-nums text-zinc-600">{group.bullets.length}</span>
                 </header>
                 <ul className="space-y-2">
                   {group.bullets.map((bullet, bi) => (

@@ -7,6 +7,9 @@ import pytest
 
 from backend.services.competitor_report_parser import (
     CompetitorParseError,
+    _parse_table,
+    _split_table_cells,
+    collect_sec09_anchor_stats,
     parse_cell_value,
     parse_markdown,
     split_dual_values,
@@ -49,9 +52,9 @@ def test_parse_minimal_fixture(minimal_md: str):
         uploaded_by="test",
     )
     assert snap["version"] == 1
-    assert len(snap["sections"]) == 10
+    assert len(snap["sections"]) == 9
     ids = [s["id"] for s in snap["sections"]]
-    assert ids == [f"sec-{i:02d}" for i in range(1, 11)]
+    assert ids == [f"sec-{i:02d}" for i in range(1, 10)]
     assert len(snap["companies"]) >= 2
     assert isinstance(warnings, list)
 
@@ -63,9 +66,9 @@ def test_parse_yycq_fixture(yycq_md: str):
         uploaded_by="test",
     )
     assert snap["version"] == 1
-    assert len(snap["sections"]) == 10
+    assert len(snap["sections"]) == 9
     ids = [s["id"] for s in snap["sections"]]
-    assert ids == [f"sec-{i:02d}" for i in range(1, 11)]
+    assert ids == [f"sec-{i:02d}" for i in range(1, 10)]
     assert len(snap["companies"]) == 8
     sec01 = next(s for s in snap["sections"] if s["id"] == "sec-01")
     anchors = [b.get("anchor") for b in sec01["blocks"]]
@@ -74,6 +77,45 @@ def test_parse_yycq_fixture(yycq_md: str):
     assert tables
     assert len(tables[0]["rows"]) >= 8
     assert isinstance(warnings, list)
+
+
+def test_parse_yycq_sec09_block_anchors(yycq_md: str):
+    snap, _ = parse_markdown(
+        yycq_md,
+        source_filename="行业财报汇析-2025年_数据文档_YYCQ版.md",
+        uploaded_by="test",
+    )
+    sec09 = next(s for s in snap["sections"] if s["id"] == "sec-09")
+    anchors = {b.get("anchor") for b in sec09["blocks"]}
+    for anchor in ("sec-09-10", "sec-09-11", "sec-09-12", "sec-09-13", "sec-09-14", "sec-09-15"):
+        assert anchor in anchors, f"missing {anchor}"
+    games = [b for b in sec09["blocks"] if b.get("anchor") == "sec-09-10" and b.get("kind") == "table"]
+    assert len(games) >= 2
+    gov = [b for b in sec09["blocks"] if b.get("anchor") == "sec-09-3" and b.get("kind") == "table"]
+    assert len(gov) >= 2, "sec-09-3 应含汇总表 + 补助明细表"
+
+
+def test_parse_yycq_sec09_truncation_warnings(yycq_md: str):
+    snap, warnings = parse_markdown(
+        yycq_md,
+        source_filename="行业财报汇析-2025年_数据文档_YYCQ版.md",
+        uploaded_by="test",
+    )
+    sec09 = next(s for s in snap["sections"] if s["id"] == "sec-09")
+    stats = collect_sec09_anchor_stats(sec09["blocks"])
+    assert stats.get("sec-09-3", {}).get("table", 0) >= 2
+    assert stats.get("sec-09-10", {}).get("table", 0) >= 2
+    assert not any("截断版" in w for w in warnings)
+
+
+def test_parse_minimal_sec09_truncation_warning(minimal_md: str):
+    _, warnings = parse_markdown(
+        minimal_md,
+        source_filename="competitor_report_minimal.md",
+        uploaded_by="test",
+    )
+    assert any("截断版" in w for w in warnings)
+    assert any("sec-09-3" in w and "明细" in w for w in warnings)
 
 
 def test_parse_rejects_empty():
@@ -92,3 +134,49 @@ def test_parse_cell_value():
 def test_split_dual_values():
     assert split_dual_values("5698 289,895") == ("5698", "289,895")
     assert split_dual_values("100") is None
+
+
+def test_split_table_cells_preserves_merged_empty_columns():
+    """|| 开头行表示合并单元格前的空列，不可丢弃否则整表串列。"""
+    assert _split_table_cells("| 公司 | 项目 | 金额 |") == ["公司", "项目", "金额"]
+    assert _split_table_cells("|| 项目B | 100 |") == ["", "项目B", "100"]
+    assert _split_table_cells("| | 续行 | 200 |") == ["", "续行", "200"]
+
+
+def test_parse_table_with_leading_empty_cells():
+    warnings: list[str] = []
+    table = _parse_table(
+        [
+            "| 公司 | 项目 | 金额 |",
+            "| --- | --- | --- |",
+            "| 三七互娱 | 项目A | 100 |",
+            "|| 项目B | 200 |",
+        ],
+        "test-anchor",
+        warnings,
+    )
+    assert table is not None
+    assert table["headers"] == ["公司", "项目", "金额"]
+    assert len(table["rows"]) == 2
+    assert table["rows"][1]["公司"] in (None, "", "—")
+    assert table["rows"][1]["项目"] == "项目B"
+    assert table["rows"][1]["金额"] == 200
+
+
+def test_parse_two_col_table_with_double_pipe_rows():
+    """sec-01-1：|| 开头但只有两列，应去掉多余前导空列。"""
+    warnings: list[str] = []
+    table = _parse_table(
+        [
+            "| 指标 | 值 |",
+            "| --- | --- |",
+            "|| 7家公司合计营收 | 约 243.62亿 |",
+            "|| 板块总盘变动 | 约 -6.5% |",
+        ],
+        "sec-01-1",
+        warnings,
+    )
+    assert table is not None
+    assert table["rows"][0]["指标"] == "7家公司合计营收"
+    assert "243" in str(table["rows"][0]["值"])
+    assert table["rows"][1]["指标"] == "板块总盘变动"

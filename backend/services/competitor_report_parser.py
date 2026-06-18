@@ -33,6 +33,46 @@ class CompetitorParseError(ValueError):
     """阻断性解析错误。"""
 
 
+SEC09_TAIL_ANCHORS = tuple(f"sec-09-{n}" for n in range(10, 16))
+
+
+def collect_sec09_anchor_stats(blocks: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """统计 sec-09 各锚点的 table / narrative 数量（供上传诊断）。"""
+    stats: dict[str, dict[str, int]] = {}
+    for block in blocks:
+        anchor = block.get("anchor") or ""
+        if not anchor.startswith("sec-09"):
+            continue
+        kind = block.get("kind") or ""
+        if kind not in ("table", "narrative"):
+            continue
+        bucket = stats.setdefault(anchor, {"table": 0, "narrative": 0})
+        bucket[kind] += 1
+    return stats
+
+
+def append_sec09_truncation_warnings(
+    blocks_by_section: dict[str, list[dict[str, Any]]],
+    warnings: list[str],
+) -> None:
+    """蓝本缺少 sec-09-10～15 时追加告警。"""
+    sec09 = blocks_by_section.get("sec-09", [])
+    present = {b.get("anchor") for b in sec09 if b.get("kind") == "table"}
+    missing = [a for a in SEC09_TAIL_ANCHORS if a not in present]
+    if missing:
+        warnings.append(
+            f"蓝本可能为截断版：缺少 {', '.join(missing)} 的表格数据（sec-09-10 之后细节补充未解析）"
+        )
+    gov_tables = [b for b in sec09 if b.get("anchor") == "sec-09-3" and b.get("kind") == "table"]
+    if len(gov_tables) < 2:
+        warnings.append(
+            "sec-09-3 仅解析到 1 张表，政府补助明细（第二张表）缺失；请确认蓝本含「补助明细项目」表格"
+        )
+    rnd = next((b for b in sec09 if b.get("anchor") == "sec-09-4" and b.get("kind") == "table"), None)
+    if rnd and "项目进展" not in (rnd.get("headers") or []):
+        warnings.append("sec-09-4 在研项目表缺少「项目进展」列，可视化方案将无法启用")
+
+
 def parse_markdown(
     md_text: str,
     *,
@@ -74,7 +114,7 @@ def parse_markdown(
     sections: list[dict[str, Any]] = []
     missing: list[str] = []
     table_count = 0
-    for n in range(1, 11):
+    for n in range(1, 10):
         sid = f"sec-{n:02d}"
         blocks = blocks_by_section.get(sid, [])
         if not blocks:
@@ -92,6 +132,8 @@ def parse_markdown(
         raise CompetitorParseError(f"缺少章节: {', '.join(missing)}")
     if table_count == 0:
         raise CompetitorParseError("未解析到任何表格")
+
+    append_sec09_truncation_warnings(blocks_by_section, warnings)
 
     companies = _extract_companies(blocks_by_section, warnings)
     meta["company_count"] = len(companies)
@@ -172,6 +214,32 @@ def _parse_chunk(chunk: str, anchor: str, warnings: list[str]) -> list[dict[str,
     return blocks
 
 
+def _split_table_cells(line: str) -> list[str]:
+    """Markdown 管道表行：保留合并单元格前的空列（|| 开头）。"""
+    s = line.strip()
+    if not s.startswith("|"):
+        return []
+    parts = [c.strip() for c in s.split("|")]
+    if parts and parts[0] == "":
+        parts = parts[1:]
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    return parts
+
+
+def _align_row_cells(row: list[str], header: list[str]) -> list[str]:
+    """去掉 || 开头多出的前导空列，使数据行宽度与表头一致（sec-01-1 两列表 vs sec-09 合并单元格）。"""
+    aligned = list(row)
+    n = len(header)
+    while len(aligned) > n and aligned and aligned[0] == "":
+        aligned = aligned[1:]
+    if len(aligned) < n:
+        aligned = aligned + [""] * (n - len(aligned))
+    elif len(aligned) > n:
+        aligned = aligned[:n]
+    return aligned
+
+
 def _parse_table(
     table_lines: list[str],
     anchor: str,
@@ -181,11 +249,7 @@ def _parse_table(
         return None
     rows_raw: list[list[str]] = []
     for line in table_lines:
-        s = line.strip()
-        if s.startswith("||"):
-            s = "|" + s[2:]
-        cells = [c.strip() for c in s.strip("|").split("|")]
-        rows_raw.append(cells)
+        rows_raw.append(_split_table_cells(line))
 
     header = rows_raw[0]
     body_start = 1
@@ -195,8 +259,7 @@ def _parse_table(
     headers = [h for h in header if h]
     rows: list[dict[str, Any]] = []
     for row in data_rows:
-        if len(row) < len(header):
-            row = row + [""] * (len(header) - len(row))
+        row = _align_row_cells(row, header)
         obj: dict[str, Any] = {}
         for h, c in zip(header, row):
             if not h:

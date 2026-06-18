@@ -50,3 +50,19 @@ export const CHART_POSITIVE_CLASS = {
   toastTitle: "text-green-200",
   toastMessage: "text-green-300/80",
 } as const;
+
+/**
+ * 工作流「开发中」：与图表当期 blue-600（#2563eb）同色系。
+ */
+export const WORKFLOW_WIP_CLASS = {
+  listRowBorder: "border border-dashed border-blue-900/45 bg-blue-950/15 hover:bg-blue-950/25",
+  listTitle: "text-zinc-400",
+  badge:
+    "rounded border border-blue-600/35 bg-blue-600/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-blue-400/95",
+  chipBorder: "border border-dashed border-blue-900/50 text-zinc-400",
+  chipBadge: "rounded bg-blue-600/15 px-1 py-px text-[10px] font-medium leading-none text-blue-400/90",
+  pageBanner:
+    "flex flex-wrap items-center gap-2 rounded-lg border border-blue-900/45 bg-blue-950/25 px-3 py-2 text-xs text-blue-200/90",
+  cardBorder:
+    "border border-dashed border-blue-900/45 bg-blue-950/15 hover:border-blue-800/55 hover:bg-blue-950/25",
+} as const;

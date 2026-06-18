@@ -43,10 +43,6 @@ const Sec09Others = dynamic(
   () => import("./sections/Sec09Others").then((m) => ({ default: m.Sec09Others })),
   { ssr: false },
 );
-const Sec10Risk = dynamic(
-  () => import("./sections/Sec10Risk").then((m) => ({ default: m.Sec10Risk })),
-  { ssr: false },
-);
 
 export default function CompetitorPage() {
   const { finance_path } = useAuth();
@@ -74,7 +70,7 @@ export default function CompetitorPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">竞品财报</h1>
         <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
           <p className="max-w-md text-sm text-zinc-500">
-            请在财务后台上传 Markdown 蓝本（须含 sec-01～sec-10 锚点）。
+            请在财务后台上传 Markdown 蓝本（须含 sec-01～sec-09 锚点）。
           </p>
           <Link
             href={finance_path || "/finance"}
@@ -110,7 +106,7 @@ export default function CompetitorPage() {
   const warnings = state.data.warnings ?? [];
 
   return (
-    <CompetitorScrollProvider jumpToSnap={navigate}>
+    <CompetitorScrollProvider jumpToSnap={navigate} activeSnapId={activeSnapId}>
       <div className="competitor-canvas absolute inset-0 flex flex-col overflow-hidden">
         <CompetitorPageHeader activeSnapId={activeSnapId} onNavigate={navigate} />
         <CompetitorWarningsBanner warnings={warnings} isFixture={isFixture} />
@@ -129,7 +125,6 @@ export default function CompetitorPage() {
             <Sec07Profit {...sectionProps} />
             <Sec08Cashflow {...sectionProps} />
             <Sec09Others {...sectionProps} />
-            <Sec10Risk {...sectionProps} />
         </div>
       </div>
     </CompetitorScrollProvider>

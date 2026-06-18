@@ -17,7 +17,7 @@ export function ProgressScale({ activeSnapId, onNavigate }: Props) {
 
   return (
     <nav
-      className="hidden w-[min(78vw,820px)] shrink-0 sm:block"
+      className="hidden w-[min(94vw,984px)] shrink-0 sm:block"
       aria-label="章节进度"
       data-active-snap={activeSnapId}
       onMouseLeave={() => setHoveredId(null)}

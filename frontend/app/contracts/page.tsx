@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { PageDevInProgressNotice } from "../components/PageDevInProgressNotice";
 import { getAuthHeaders } from "../lib/auth";
 
 type ContractListItem = {
@@ -60,6 +61,11 @@ export default function ContractsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">合同台账</h1>
         <p className="mt-1 text-sm text-zinc-500">上传 PDF 合同（含图片/扫描件），系统会解析并生成台账记录，同时归入“合同管理”知识库文件夹供 AI 问答。</p>
+        <div className="mt-3 max-w-3xl">
+          <PageDevInProgressNotice>
+            台账字段解析、检索与 AI 写入链路仍在完善。
+          </PageDevInProgressNotice>
+        </div>
       </div>
 
       <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">

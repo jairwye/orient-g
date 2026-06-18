@@ -15,9 +15,8 @@ export type SubjectAnalysisGroup = {
 };
 
 const COMPANY_LABELS = COMPANY_COLS.map((c) => colToLabel(c));
-const CROSS_SUBJECT = "综合观察";
 
-const LABEL_ORDER = [...COMPANY_LABELS, CROSS_SUBJECT];
+const LABEL_ORDER = [...COMPANY_LABELS];
 
 const LABELS_BY_LENGTH = [...COMPANY_LABELS].sort((a, b) => b.length - a.length);
 
@@ -95,6 +94,35 @@ function stripCompanyLead(text: string, company: string): string {
   return body || text.trim();
 }
 
+function normalizeBulletKey(text: string): string {
+  return text.replace(/\s+/g, "").replace(/[，,。；;：:！!？?、]/g, "").toLowerCase();
+}
+
+/** 叙事与 FP&A 洞察合并后去重 */
+export function dedupeSubjectBullets(bullets: SubjectBullet[]): SubjectBullet[] {
+  const kept: SubjectBullet[] = [];
+  const keys: string[] = [];
+
+  for (const bullet of bullets) {
+    const key = normalizeBulletKey(bullet.text);
+    if (!key) continue;
+
+    let dup = false;
+    for (const existing of keys) {
+      if (existing === key || existing.includes(key) || key.includes(existing)) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) continue;
+
+    keys.push(key);
+    kept.push(bullet);
+  }
+
+  return kept;
+}
+
 function ensureBucket(buckets: Map<string, SubjectBullet[]>, company: string): SubjectBullet[] {
   if (!buckets.has(company)) buckets.set(company, []);
   return buckets.get(company)!;
@@ -127,7 +155,6 @@ function ingestParagraph(
   const explicit = findPrimaryCompany(trimmed);
   const company = explicit ?? activeCompany;
   if (!company) {
-    pushBullet(buckets, CROSS_SUBJECT, { text: trimmed });
     return null;
   }
 
@@ -212,18 +239,12 @@ export function buildSubjectAnalysisGroups(
       findPrimaryCompany(`${ins.headline} ${ins.detail ?? ""}`);
     if (co) {
       pushBullet(buckets, co, insightToBullet(ins, co));
-    } else {
-      pushBullet(buckets, CROSS_SUBJECT, {
-        text: ins.detail ? `${ins.headline}。${ins.detail}` : ins.headline,
-        tone: ins.tone,
-        tag: ins.label,
-      });
     }
   }
 
   return LABEL_ORDER.filter((co) => (buckets.get(co)?.length ?? 0) > 0).map((co) => ({
     company: co,
-    colKey: co === CROSS_SUBJECT ? "" : labelToCol(co),
+    colKey: labelToCol(co),
     bullets: buckets.get(co)!,
   }));
 }

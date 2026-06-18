@@ -8,6 +8,14 @@ export function parseNum(v: string | number | null | undefined): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   const s = String(v).trim();
   if (s === "—" || s === "-" || s === "N/A") return null;
+  if (/[\u4e00-\u9fff]/.test(s)) {
+    if (/^\d{4}年/.test(s)) {
+      // 保留「2024年…」类，不在此解析
+    } else if (!/亿|万|约|家|扭亏|减亏/.test(s)) {
+      return null;
+    }
+  }
+  if (/[a-zA-Z]/.test(s) && !/^[+-]?\d/.test(s)) return null;
   const pct = s.endsWith("%");
   let inner = s.replace(/,/g, "").replace(/，/g, "");
   if (pct) inner = inner.slice(0, -1);
@@ -32,6 +40,15 @@ export function parseScore(v: string | number | null | undefined): number | null
   return m ? parseFloat(m[1]) : null;
 }
 
+/** sec-08-2 经营现金流/净利：蓝本 1.22 表示 122%，0.414 表示 41.4% */
+export function cfProfitRatioToPercentPoints(n: number): number {
+  const abs = Math.abs(n);
+  if (abs === 0) return 0;
+  if (abs <= 3) return round2(n * 100);
+  if (abs <= 200) return round2(n);
+  return round2(n);
+}
+
 /** 将比率或百分点统一为「百分比数值」（如 8.5 表示 8.5%） */
 export function toPercentPoints(n: number): number {
   const abs = Math.abs(n);
@@ -51,8 +68,9 @@ export function isPercentColumnKey(key: string): boolean {
   if (k.includes("(pct)")) return true;
   if (/ROE/i.test(k)) return true;
   if (k.includes("毛利率") || k.includes("费用率") || k.includes("占比")) return true;
-  if (k.includes("经营CF/净利") || k.includes("CF/净利")) return true;
+  if (k.includes("经营CF/净利") || k.includes("经营现金流/净利") || k.includes("CF/净利")) return true;
   if (k.includes("净利率") || k.includes("收益率")) return true;
+  if (k.includes("费比") || k.includes("持股比例") || k.includes("股权变动")) return true;
   if (k.endsWith("率") && !k.includes("增长")) return true;
   return false;
 }
@@ -62,6 +80,9 @@ const PRESERVE_TEXT = /家|亿|扭亏|减亏|约|—|-/;
 export function formatDecimal2(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const r = round2(n);
+  if (Number.isInteger(r) && r >= 1990 && r <= 2099) {
+    return String(r);
+  }
   if (Number.isInteger(r)) {
     return r.toLocaleString("zh-CN");
   }
@@ -92,10 +113,21 @@ export function formatTableCell(
   val: string | number | null | undefined,
 ): string {
   if (val == null || val === "") return "—";
+  const col = columnKey.trim();
+  if (
+    col.includes("期间") ||
+    col.includes("方案") ||
+    col.includes("备注") ||
+    col.includes("性质") ||
+    /名称|项目|游戏|版号|ISBN|品类|渠道|运营|收费|客商|公司名称/.test(col)
+  ) {
+    return String(val).trim() || "—";
+  }
   if (typeof val === "string") {
     const t = val.trim();
     if (!t || t === "—" || t === "-") return "—";
     if (PRESERVE_TEXT.test(t) && !/^-?\d/.test(t)) return t;
+    if (/^\d{4}年/.test(t)) return t;
     if (t.endsWith("%") && isPercentColumnKey(columnKey)) {
       const n = parseNum(t);
       return n != null ? formatPct(n) : t;

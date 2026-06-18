@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { CAROUSEL_AUTO_MS } from "../lib/carousel_timing";
+import { CarouselDotsBar } from "./CarouselDotsBar";
 
 export type ChartCarouselSlide = {
   id: string;
@@ -12,17 +14,15 @@ type Props = {
   slides: ChartCarouselSlide[];
   autoMs?: number;
   height?: string;
-  /** Recharts 绘图区像素高度（避免 flex 链上 height:100% 塌缩为 0） */
   chartHeightPx?: number;
-  /** 挂载后延迟多久再开始自动轮播（毫秒） */
   autoStartDelayMs?: number;
-  hideArrows?: boolean;
+  dotsPosition?: "top" | "bottom";
+  activated?: boolean;
+  activationKey?: number;
 };
 
-/** 中间主图占比；两侧各 peek 露出邻图 */
 const CENTER_RATIO = 0.84;
 const PEEK_RATIO = (1 - CENTER_RATIO) / 2;
-/** peek 列内 slide 宽度 = center / peek，使邻图与主图同比例 */
 const PEEK_INNER_SCALE = CENTER_RATIO / PEEK_RATIO;
 
 function SlideCard({
@@ -54,10 +54,10 @@ function SlideCard({
       aria-label={slide.title}
       aria-current={active ? "true" : undefined}
     >
-      <div className="shrink-0 border-b border-zinc-800/80 px-4 py-2.5">
+      <div className="shrink-0 border-b border-zinc-800/80 px-4 py-2">
         <p className="truncate text-sm font-medium text-zinc-200">{slide.title}</p>
       </div>
-      <div className="min-h-0 flex-1 p-3 sm:p-4">
+      <div className="min-h-0 flex-1 overflow-hidden p-2.5 sm:p-3">
         <div className="w-full" style={{ height: chartHeightPx }}>
           {slide.content}
         </div>
@@ -66,31 +66,37 @@ function SlideCard({
   );
 }
 
-/**
- * 无限循环轮播：当前图完整居中，左右始终露出上一张 / 下一张边缘（取模）。
- */
 export function ChartCarousel({
   slides,
-  autoMs = 8000,
+  autoMs = CAROUSEL_AUTO_MS,
   height = "h-[min(580px,64vh)]",
   chartHeightPx = 420,
   autoStartDelayMs = 0,
-  hideArrows = true,
+  dotsPosition = "bottom",
+  activated = true,
+  activationKey = 0,
 }: Props) {
   const [index, setIndex] = useState(0);
-  const [paused, setPaused] = useState(false);
+  const [userPaused, setUserPaused] = useState(false);
   const [autoReady, setAutoReady] = useState(autoStartDelayMs <= 0);
   const count = slides.length;
 
+  const pauseFromUser = useCallback(() => setUserPaused(true), []);
+
   const go = useCallback(
-    (delta: number) => {
+    (delta: number, fromUser = false) => {
       if (!count) return;
+      if (fromUser) pauseFromUser();
       setIndex((i) => (i + delta + count) % count);
     },
-    [count],
+    [count, pauseFromUser],
   );
 
   useEffect(() => {
+    if (!activated) {
+      setAutoReady(false);
+      return;
+    }
     if (autoStartDelayMs <= 0) {
       setAutoReady(true);
       return;
@@ -98,13 +104,13 @@ export function ChartCarousel({
     setAutoReady(false);
     const timer = window.setTimeout(() => setAutoReady(true), autoStartDelayMs);
     return () => window.clearTimeout(timer);
-  }, [autoStartDelayMs, count]);
+  }, [autoStartDelayMs, count, activationKey, activated]);
 
   useEffect(() => {
-    if (!autoMs || !autoReady || count <= 1 || paused) return;
+    if (!autoMs || !autoReady || !activated || count <= 1 || userPaused) return;
     const timer = window.setInterval(() => go(1), autoMs);
     return () => window.clearInterval(timer);
-  }, [autoMs, autoReady, count, paused, go]);
+  }, [autoMs, autoReady, activated, count, userPaused, go]);
 
   if (!count) return null;
 
@@ -114,95 +120,68 @@ export function ChartCarousel({
   const peekPct = PEEK_RATIO * 100;
   const innerPct = PEEK_INNER_SCALE * 100;
 
-  return (
+  const dots = (
+    <CarouselDotsBar
+      slides={slides}
+      activeIndex={index}
+      size="md"
+      onSelect={(i) => {
+        pauseFromUser();
+        setIndex(i);
+      }}
+      onResume={() => setUserPaused(false)}
+      showResume={userPaused && activated}
+      className="py-3"
+    />
+  );
+
+  const grid = (
     <div
-      className={"relative flex flex-col overflow-hidden " + height}
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
+      className="grid min-h-0 flex-1 gap-3 overflow-hidden"
+      style={{
+        gridTemplateColumns: `${peekPct}% ${centerPct}% ${peekPct}%`,
+        gridTemplateRows: "minmax(0, 1fr)",
+      }}
     >
-      <div
-        className="grid min-h-0 flex-1 gap-3 overflow-hidden"
-        style={{
-          gridTemplateColumns: `${peekPct}% ${centerPct}% ${peekPct}%`,
-          gridTemplateRows: "minmax(0, 1fr)",
-        }}
-      >
-        {/* 左侧：上一张的右缘 */}
-        <div className="pointer-events-none relative z-0 h-full min-h-0 overflow-hidden rounded-xl">
-          <div
-            className="pointer-events-auto absolute top-0 bottom-0 right-0"
-            style={{ width: `${innerPct}%` }}
-          >
-            <SlideCard
-              slide={slides[prevIndex]}
-              active={false}
-              onClick={() => go(-1)}
-              className="h-full w-full"
-              chartHeightPx={chartHeightPx}
-            />
-          </div>
-        </div>
-
-        {/* 中间：当前完整图 */}
-        <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
-          <SlideCard slide={slides[index]} active className="h-full" chartHeightPx={chartHeightPx} />
-        </div>
-
-        {/* 右侧：下一张的左缘 */}
-        <div className="pointer-events-none relative z-0 h-full min-h-0 overflow-hidden rounded-xl">
-          <div
-            className="pointer-events-auto absolute top-0 bottom-0 left-0"
-            style={{ width: `${innerPct}%` }}
-          >
-            <SlideCard
-              slide={slides[nextIndex]}
-              active={false}
-              onClick={() => go(1)}
-              className="h-full w-full"
-              chartHeightPx={chartHeightPx}
-            />
-          </div>
+      <div className="pointer-events-none relative z-0 h-full min-h-0 overflow-hidden rounded-xl">
+        <div
+          className="pointer-events-auto absolute top-0 bottom-0 right-0 overflow-hidden"
+          style={{ width: `${innerPct}%` }}
+        >
+          <SlideCard
+            slide={slides[prevIndex]!}
+            active={false}
+            onClick={() => go(-1, true)}
+            className="h-full w-full"
+            chartHeightPx={chartHeightPx}
+          />
         </div>
       </div>
-
-      {count > 1 ? (
-        <div className="flex shrink-0 items-center justify-center gap-3 py-3">
-          {!hideArrows ? (
-            <button
-              type="button"
-              aria-label="上一图"
-              onClick={() => go(-1)}
-              className="rounded-md border border-zinc-700/80 px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200"
-            >
-              上一张
-            </button>
-          ) : null}
-          <div className="flex gap-1.5">
-            {slides.map((slide, i) => (
-              <button
-                key={slide.id}
-                type="button"
-                aria-label={`切换到 ${slide.title}`}
-                onClick={() => setIndex(i)}
-                className={
-                  "h-1.5 rounded-full transition-all " +
-                  (i === index ? "w-5 bg-blue-500" : "w-1.5 bg-zinc-600 hover:bg-zinc-500")
-                }
-              />
-            ))}
-          </div>
-          {!hideArrows ? (
-            <button
-              type="button"
-              aria-label="下一图"
-              onClick={() => go(1)}
-              className="rounded-md border border-zinc-700/80 px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200"
-            >
-              下一张
-            </button>
-          ) : null}
+      <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
+        <SlideCard slide={slides[index]!} active className="h-full" chartHeightPx={chartHeightPx} />
+      </div>
+      <div className="pointer-events-none relative z-0 h-full min-h-0 overflow-hidden rounded-xl">
+        <div
+          className="pointer-events-auto absolute top-0 bottom-0 left-0 overflow-hidden"
+          style={{ width: `${innerPct}%` }}
+        >
+          <SlideCard
+            slide={slides[nextIndex]!}
+            active={false}
+            onClick={() => go(1, true)}
+            className="h-full w-full"
+            chartHeightPx={chartHeightPx}
+          />
         </div>
-      ) : null}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={"relative flex flex-col overflow-hidden " + height}>
+      {dotsPosition === "top" ? dots : null}
+      {grid}
+      {dotsPosition === "bottom" ? dots : null}
     </div>
   );
 }

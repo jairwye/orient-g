@@ -42,8 +42,10 @@ export default function DashboardLayout({
   const [collapsed, setCollapsed] = useState(true);
   const { is_admin, view_business_dashboard } = useAuth();
   const navItems = [
-    ...(view_business_dashboard ? [businessDashboardNavItem, competitorNavItem] : []),
-    ...baseNavItems,
+    ...(view_business_dashboard ? [businessDashboardNavItem] : []),
+    ...baseNavItems.slice(0, 3),
+    ...(view_business_dashboard ? [competitorNavItem] : []),
+    ...baseNavItems.slice(3),
     ...(is_admin ? [{ href: "/equity", label: "股权全景", icon: Network }] : []),
     ...(is_admin ? [{ href: "/admin", label: "管理后台", icon: Settings }] : []),
   ];

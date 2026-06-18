@@ -32,9 +32,8 @@ export function TopicAnalysisBoard({ groups, delayMs = 200 }: Props) {
               className="rounded-lg border border-zinc-800/80 bg-zinc-900/35 p-3.5 sm:p-4"
               style={{ borderLeftWidth: 3, borderLeftColor: BUSINESS_CHART_COLORS.current }}
             >
-              <header className="mb-2.5 flex items-start justify-between gap-2">
+              <header className="mb-2.5">
                 <h3 className="text-sm font-medium leading-snug text-zinc-100">{group.displayTitle}</h3>
-                <span className="shrink-0 text-[10px] tabular-nums text-zinc-600">{group.bullets.length}</span>
               </header>
               <ul className="space-y-2">
                 {group.bullets.map((bullet, bi) => (

@@ -130,9 +130,18 @@ export default function FinanceAdminPage() {
         throw new Error(msg ?? "上传失败");
       }
       setCompetitorWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      const stats = data.sec09_anchor_stats as Record<string, { table?: number; narrative?: number }> | undefined;
+      const statBits: string[] = [];
+      if (stats) {
+        for (const key of ["sec-09-3", "sec-09-4", "sec-09-10", "sec-09-15"]) {
+          const n = stats[key]?.table;
+          if (n != null) statBits.push(`${key}: ${n} 表`);
+        }
+      }
+      const statLine = statBits.length ? `；${statBits.join("、")}` : "";
       setCompetitorMessage({
         type: "success",
-        text: `已解析 ${data.sections_parsed ?? 10} 屏，侧栏「竞品财报」已更新。`,
+        text: `已解析 ${data.sections_parsed ?? 9} 章（sec-01～sec-09）${statLine}。侧栏「竞品财报」已更新。`,
       });
     } catch (err) {
       setCompetitorMessage({
@@ -318,9 +327,15 @@ export default function FinanceAdminPage() {
       {/* 4. 上传竞品财报汇析 MD */}
       <div className="mb-6 max-w-2xl rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
         <h2 className="mb-3 text-sm font-medium text-zinc-300">上传竞品财报汇析（Markdown）</h2>
-        <p className="mb-3 text-xs text-zinc-500">
+        <p className="mb-2 text-xs text-zinc-500">
           上传后将解析为侧栏「竞品财报」分析页数据；与当前财务后台 URL 路径无关。
         </p>
+        <ul className="mb-3 list-inside list-disc space-y-1 text-xs text-zinc-500">
+          <li>仅修改仓库 <code className="text-zinc-400">uploads/*.md</code> 不会自动生效，须在此上传生成运行时 Snapshot。</li>
+          <li>解析产物写入 <code className="text-zinc-400">uploads/competitor/report.snapshot.json</code>。</li>
+          <li>本地开发若从未上传，竞品页会回退 minimal 预览数据（政府补助明细、sec-09-10 之后等屏会占位）。</li>
+          <li>完整蓝本须含 <code className="text-zinc-400">sec-09-10</code>～<code className="text-zinc-400">sec-09-15</code> 及 sec-09-3 补助明细第二张表。</li>
+        </ul>
         <input
           ref={competitorFileRef}
           type="file"

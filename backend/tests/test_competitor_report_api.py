@@ -77,12 +77,12 @@ def test_upload_and_get_flow(client: TestClient, tmp_path, monkeypatch):
     assert upload.status_code == 200, upload.text
     body = upload.json()
     assert body.get("ok") is True
-    assert body.get("sections_parsed") == 10
+    assert body.get("sections_parsed") == 9
 
     get_r = client.get("/api/competitor/report", headers=_headers("admin"))
     assert get_r.status_code == 200, get_r.text
     snap = get_r.json()
-    assert len(snap.get("sections") or []) == 10
+    assert len(snap.get("sections") or []) == 9
 
     summary = client.get("/api/competitor/summary", headers=_headers("admin"))
     assert summary.status_code == 200
@@ -95,7 +95,7 @@ def test_fixture_fallback_when_no_upload(client: TestClient, tmp_path, monkeypat
     r = client.get("/api/competitor/report", headers=_headers("admin"))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert len(body.get("sections") or []) == 10
+    assert len(body.get("sections") or []) == 9
     assert body.get("meta", {}).get("data_source") == "fixture"
 
 
