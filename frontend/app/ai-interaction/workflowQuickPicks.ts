@@ -53,3 +53,9 @@ export function resolveQuickWorkflowPicks(workflowConfigs: WorkflowConfig[]): Re
     };
   });
 }
+
+/** 对话框上方胶囊：省略列表最后一项（在「更多…」中查看） */
+export function resolveQuickWorkflowChipPicks(workflowConfigs: WorkflowConfig[]): ResolvedQuickWorkflowPick[] {
+  const all = resolveQuickWorkflowPicks(workflowConfigs);
+  return all.length > 1 ? all.slice(0, -1) : all;
+}

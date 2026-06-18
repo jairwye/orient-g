@@ -1,3 +1,4 @@
+import { normalizeTableCompanyKeys } from "./companies";
 import type { CompetitorReportSnapshot, NarrativeBlock, TableBlock } from "./types";
 
 export function getTable(
@@ -12,7 +13,7 @@ export function getTables(snapshot: CompetitorReportSnapshot, anchor: string): T
   for (const sec of snapshot.sections) {
     for (const b of sec.blocks) {
       if (b.kind === "table" && b.anchor === anchor) {
-        out.push(b);
+        out.push(normalizeTableCompanyKeys(b));
       }
     }
   }

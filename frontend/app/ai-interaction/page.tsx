@@ -99,7 +99,7 @@ import {
   FINANCE_ANNUAL_REPORT_SKILL_ID,
   WORKFLOW_CONFIGS_LS_KEY,
 } from "./constants";
-import { resolveQuickWorkflowPicks, type ResolvedQuickWorkflowPick } from "./workflowQuickPicks";
+import { resolveQuickWorkflowPicks, resolveQuickWorkflowChipPicks, type ResolvedQuickWorkflowPick } from "./workflowQuickPicks";
 
 /** 内置工作流与 localStorage 合并：新条目插入，同 id 以本地覆盖字段 */
 function mergeConfigById<T extends { id: string }>(builtins: T[], saved: T[] | null | undefined): T[] {
@@ -1143,6 +1143,11 @@ export default function AiInteractionPage() {
 
   const quickWorkflowPicks = useMemo(
     () => resolveQuickWorkflowPicks(workflowConfigs),
+    [workflowConfigs],
+  );
+
+  const quickWorkflowChipPicks = useMemo(
+    () => resolveQuickWorkflowChipPicks(workflowConfigs),
     [workflowConfigs],
   );
 
@@ -3821,7 +3826,7 @@ export default function AiInteractionPage() {
                   <div className="shrink-0 pb-3 pt-2">
                     <div className={chatContentInnerClass}>
                     <div className="flex items-center gap-1.5 overflow-x-auto pb-3">
-                      {quickWorkflowPicks.map((it) => (
+                      {quickWorkflowChipPicks.map((it) => (
                         <button
                           key={it.key}
                           type="button"

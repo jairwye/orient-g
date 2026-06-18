@@ -21,7 +21,7 @@ import { DataTable } from "../components/DataTable";
 import { SubjectAnalysisBoard } from "../components/SubjectAnalysisBoard";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS } from "../lib/competitor_chart_colors";
-import { COMPANY_COLS, colToLabel } from "../lib/companies";
+import { COMPANY_COLS, colToLabel, rowValueForCompany } from "../lib/companies";
 import { parseCashQualityPoints } from "../lib/finance_analysis";
 import { CL, FK, FK_CF_ITEM } from "../lib/field_keys";
 import {
@@ -110,8 +110,8 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
   const compareData = useMemo(
     () =>
       COMPANY_COLS.map((col) => {
-        const profit = profitRow ? parseNum(profitRow[col]) : null;
-        const ocf = ocfRow ? parseNum(ocfRow[col]) : null;
+        const profit = profitRow ? parseNum(rowValueForCompany(profitRow, col)) : null;
+        const ocf = ocfRow ? parseNum(rowValueForCompany(ocfRow, col)) : null;
         if (profit == null && ocf == null) return null;
         return {
           name: colToLabel(col),
