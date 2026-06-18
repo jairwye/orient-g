@@ -1,5 +1,6 @@
 import {
   QUICK_WORKFLOW_PICK_DEFS,
+  resolveQuickWorkflowChipPicks,
   resolveQuickWorkflowPicks,
 } from "../workflowQuickPicks";
 import { WF_COMPETITOR_FINANCE_ID, WF_DATA_PARSE_EXCEL_ID } from "../constants";
@@ -40,5 +41,17 @@ describe("resolveQuickWorkflowPicks", () => {
     expect(picks[2]?.wip).toBe(true);
     expect(picks[3]?.wip).toBe(true);
     expect(picks[4]?.wip).toBe(true);
+  });
+});
+
+describe("resolveQuickWorkflowChipPicks", () => {
+  it("omits the last pick for inline chip row", () => {
+    const chips = resolveQuickWorkflowChipPicks([
+      { id: WF_COMPETITOR_FINANCE_ID, label: "竞品财报分析" },
+      { id: "wf.nl_finance_process.v1", label: "自然语言生成财务流程" },
+    ]);
+    expect(chips).toHaveLength(QUICK_WORKFLOW_PICK_DEFS.length - 1);
+    expect(chips.map((c) => c.key)).not.toContain("wf.contracts_ledger.write");
+    expect(chips[chips.length - 1]?.key).toBe("wf.nl_finance_process.v1");
   });
 });
