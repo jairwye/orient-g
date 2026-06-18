@@ -18,6 +18,7 @@ import { CompetitorChartTooltip, competitorBarTooltipProps } from "../components
 import { DataTable } from "../components/DataTable";
 import { BlueprintAnalysisPanel } from "../components/BlueprintAnalysisPanel";
 import { Sec09CustomerExplorer } from "../components/Sec09CustomerExplorer";
+import { Sec09CustomerViz } from "../components/Sec09CustomerViz";
 import { Sec09OperatingProductsExplorer } from "../components/Sec09OperatingProductsExplorer";
 import { Sec09RelatedPartyExplorer } from "../components/Sec09RelatedPartyExplorer";
 import { Sec09RndProjectExplorer } from "../components/Sec09RndProjectExplorer";
@@ -34,6 +35,8 @@ import { subTitleForSnap } from "../lib/navigation";
 import { buildSec09SubjectGroups } from "../lib/sec09_subject_analysis";
 import { buildTopicSubjectGroups } from "../lib/sec09_topic_subject_analysis";
 import { mergeRndProjectTable } from "../lib/sec09_table_transforms";
+import { stripBlocksAfterLastTable } from "../lib/sec09_block_utils";
+import { relatedPartyChangeFormatCell } from "../lib/related_party_change_format";
 import { getAnchorAnalysisMarkdown, getAnchorBlocks, getGovSubsidyDetailTable, getNarrativeMarkdown, getTable, getTables } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
 
@@ -482,8 +485,12 @@ export function Sec09Others({ snapshot }: SectionProps) {
           "sec-09-m",
           (() => {
             const blocks = getAnchorBlocks(snapshot, "sec-09-13");
+            const customerTables = getTables(snapshot, "sec-09-13");
             return blocks.length > 0 ? (
-              <Sec09CustomerExplorer blocks={blocks} snapshot={snapshot} />
+              <>
+                <Sec09CustomerExplorer blocks={blocks} snapshot={snapshot} />
+                <Sec09CustomerViz tables={customerTables} snapshot={snapshot} delayMs={60} />
+              </>
             ) : (
               <p className="text-sm text-zinc-500">蓝本 sec-09-13 暂无表格数据。</p>
             );
@@ -491,7 +498,24 @@ export function Sec09Others({ snapshot }: SectionProps) {
           { dense: true, blueprintAnalysisAnchor: "sec-09-13" },
         ),
         blockSlide("sec-09-n", CL.consolidationScopeChange),
-        blockSlide("sec-09-o", CL.relatedPartyChange),
+        subSlide(
+          "sec-09-o",
+          (() => {
+            const blocks = stripBlocksAfterLastTable(getAnchorBlocks(snapshot, "sec-09-15"));
+            return blocks.length > 0 ? (
+              <Sec09BlockStream
+                blocks={blocks}
+                defaultTableTitle={CL.relatedPartyChange}
+                wrapText
+                formatCell={relatedPartyChangeFormatCell}
+                endDivider
+              />
+            ) : (
+              <p className="text-sm text-zinc-500">蓝本 sec-09-15 暂无表格数据，请保存 MD 并在财务后台重新上传解析。</p>
+            );
+          })(),
+          { dense: true },
+        ),
       ]}
     />
   );

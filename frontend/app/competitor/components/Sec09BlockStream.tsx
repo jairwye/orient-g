@@ -6,6 +6,12 @@ import type { AnchorBlock } from "../lib/selectors";
 import { sec09FormatCell, stripLicenseColumn } from "../lib/sec09_table_format";
 import { fillDownTableRows } from "../lib/table_fill_down";
 
+type FormatCellFn = (
+  header: string,
+  value: string | number | null,
+  row?: Record<string, string | number | null>,
+) => ReactNode;
+
 function narrativePieces(markdown: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const text = markdown.trim();
@@ -56,6 +62,8 @@ export function Sec09BlockStream({
   delayMs = 40,
   wrapText = false,
   hideLicenseColumn = false,
+  formatCell,
+  endDivider = false,
 }: {
   blocks: AnchorBlock[];
   defaultTableTitle: string;
@@ -65,11 +73,15 @@ export function Sec09BlockStream({
   wrapText?: boolean;
   /** 主要游戏：隐藏版号列 */
   hideLicenseColumn?: boolean;
+  formatCell?: FormatCellFn;
+  /** 屏末分隔线（不追加蓝本脚注） */
+  endDivider?: boolean;
 }) {
   if (!blocks.length) return null;
 
   let tableIndex = 0;
   let lastNarrative = "";
+  const cellFormat = formatCell ?? sec09FormatCell;
 
   return (
     <div className="space-y-4 sm:space-y-5">
@@ -107,10 +119,11 @@ export function Sec09BlockStream({
             delayMs={delayMs + idx * 20}
             compact
             wrapText={wrapText}
-            formatCell={sec09FormatCell}
+            formatCell={cellFormat}
           />
         );
       })}
+      {endDivider ? <div className="border-t border-zinc-800/80" aria-hidden /> : null}
     </div>
   );
 }
