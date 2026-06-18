@@ -2,7 +2,7 @@
  * 竞品财报 — 财务分析视角（同业基准、驱动归因、质量分级）
  * 纯函数，从 snapshot 表推导可扫读的分析师结论。
  */
-import { COMPANY_COLS, colToLabel } from "./companies";
+import { COMPANY_COLS, colToLabel, rowValueForCompany } from "./companies";
 import { FK, FK_AMOUNT_CHANGE, FK_CF_ITEM, FK_CHANGE, FK_METRIC, CL } from "./field_keys";
 import { cfProfitRatioToPercentPoints, parseNum, round2, toPercentPoints } from "./format";
 import { getTable } from "./selectors";
@@ -45,7 +45,7 @@ export type AcquisitionModel = "buy" | "brand" | "channel" | "organic";
 function tableMetric(table: TableBlock | undefined, metric: string, col: string): number | null {
   const row = table?.rows.find((r) => String(r[FK.metric] ?? "") === metric);
   if (!row) return null;
-  return parseNum(row[col]);
+  return parseNum(rowValueForCompany(row, col));
 }
 
 
@@ -123,14 +123,14 @@ export function parseCashQualityPoints(snapshot: CompetitorReportSnapshot): Cash
   const ratioRow = cf.rows.find((r) => /经营.*(CF|现金流)\/净利/.test(String(r[FK.metric] ?? "")));
 
   return COMPANY_COLS.map((col) => {
-    const profit = profitRow ? parseNum(profitRow[col]) : null;
-    const ocf = ocfRow ? parseNum(ocfRow[col]) : null;
+    const profit = profitRow ? parseNum(rowValueForCompany(profitRow, col)) : null;
+    const ocf = ocfRow ? parseNum(rowValueForCompany(ocfRow, col)) : null;
     if (profit == null && ocf == null) return null;
     const p = profit ?? 0;
     const o = ocf ?? 0;
     let ratioPct = 0;
     if (ratioRow) {
-      const raw = parseNum(ratioRow[col]);
+      const raw = parseNum(rowValueForCompany(ratioRow, col));
       if (raw != null) ratioPct = cfProfitRatioToPercentPoints(raw);
     } else if (p !== 0) {
       ratioPct = (o / p) * 100;
