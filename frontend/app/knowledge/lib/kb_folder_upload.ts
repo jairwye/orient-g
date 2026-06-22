@@ -1,4 +1,6 @@
 /** 与 backend.services.kb_documents.MY_DOC_UPLOAD_MAX_BYTES 保持一致 */
+import { sha256HexFromFile } from "../../lib/sha256";
+
 export const KB_MY_DOC_MAX_BYTES = 20 * 1024 * 1024;
 export const KB_UPLOAD_CONCURRENCY = 3;
 const ENQUEUE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
@@ -16,12 +18,6 @@ export type FolderUploadOutcome =
   | { status: "skipped"; filename: string; doc_id: string; reason: string }
   | { status: "rejected"; filename: string; reason: string }
   | { status: "failed"; filename: string; reason: string };
-
-export async function sha256HexFromFile(file: File): Promise<string> {
-  const buf = await file.arrayBuffer();
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 function parseUploadError(status: number, bodyText: string): string {
   try {
@@ -73,7 +69,7 @@ async function uploadOneFile(
       const form = new FormData();
       form.append("file", file);
       form.append("folder_id", folderId);
-      form.append("source_hash", sourceHash);
+      if (sourceHash) form.append("source_hash", sourceHash);
       xhr.onload = () => {
         const text = xhr.responseText || "";
         if (xhr.status >= 200 && xhr.status < 300) {
@@ -203,8 +199,12 @@ export async function runFolderIncrementalUpload(
     validFiles,
     KB_UPLOAD_CONCURRENCY,
     async (file) => {
-      const h = await sha256HexFromFile(file);
-      hashByName.set(file.name, h);
+      try {
+        const h = await sha256HexFromFile(file);
+        hashByName.set(file.name, h);
+      } catch {
+        hashByName.set(file.name, "");
+      }
     },
     (done, total) => {
       onProgress({
@@ -224,8 +224,10 @@ export async function runFolderIncrementalUpload(
     pct: 100,
     label: "正在检查文件夹内是否已有相同内容…",
   });
-  const uniqueHashes = [...new Set(hashByName.values())];
-  const existingMap = await fetchExistingSourceHashes(folderId, uniqueHashes, headers);
+  const uniqueHashes = [...new Set([...hashByName.values()].filter(Boolean))];
+  const existingMap = uniqueHashes.length
+    ? await fetchExistingSourceHashes(folderId, uniqueHashes, headers)
+    : {};
 
   const toUpload: { file: File; hash: string }[] = [];
   for (const file of validFiles) {

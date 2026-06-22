@@ -1127,12 +1127,13 @@ async def knowledge_upload_my_document(
     did = str(info.get("doc_id") or "")
     if not did:
         raise HTTPException(status_code=500, detail="上传失败：缺少 doc_id")
+    # 先绑定目标文件夹，便于队列满时重传仍能通过子树哈希跳过
+    if fid:
+        bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=did)
     if not _enqueue_user_doc_with_retry(tenant_id, un, did):
         kb_docs.mark_document_failed(tenant_id, did, "队列已满，稍后重试")
         raise HTTPException(status_code=503, detail="队列已满，请稍后重试")
 
-    if fid:
-        bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=did)
     return {
         "ok": True,
         "skipped": False,
