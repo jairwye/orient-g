@@ -108,7 +108,7 @@ const snapBrokenCompanyMeta = {
         {
           kind: "table",
           anchor: "sec-04-1",
-          headers: ["指标", "YYCQ", "三七互娱", "完美世界"],
+          headers: ["指标", "YYCQ", "可比公司A", "可比公司B"],
           rows: [],
         },
       ],
@@ -126,8 +126,8 @@ describe("broken snapshot company labels", () => {
   it("宽表扫描优先于错误的 companies.label", () => {
     expect(companyColsForSnapshot(snapBrokenCompanyMeta)).toEqual([
       "YYCQ",
-      "三七互娱",
-      "完美世界",
+      "可比公司A",
+      "可比公司B",
     ]);
   });
 });

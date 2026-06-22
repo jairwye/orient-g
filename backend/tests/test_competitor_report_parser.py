@@ -7,6 +7,8 @@ import pytest
 
 from backend.services.competitor_report_parser import (
     CompetitorParseError,
+    _is_wide_company_table,
+    _looks_like_metric_header,
     _parse_table,
     _split_table_cells,
     collect_sec09_anchor_stats,
@@ -17,6 +19,7 @@ from backend.services.competitor_report_parser import (
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 MINIMAL_FIXTURE = FIXTURE_DIR / "competitor_report_minimal.md"
+LABELS_FIXTURE = FIXTURE_DIR / "competitor_report_labels.md"
 YYCQ_FIXTURE = FIXTURE_DIR / "competitor_report_yycq.md"
 YYCQ_UPLOAD = (
     Path(__file__).resolve().parents[2]
@@ -79,18 +82,26 @@ def test_parse_yycq_fixture(yycq_md: str):
     assert isinstance(warnings, list)
 
 
-def test_parse_yycq_company_labels(yycq_md: str):
+def test_company_labels_skip_long_table_metrics():
+    """长表 KPI 列不得误映射为公司 label；宽表表头优先。"""
+    md = LABELS_FIXTURE.read_text(encoding="utf-8")
     snap, _ = parse_markdown(
-        yycq_md,
-        source_filename="行业财报汇析-2025年_数据文档_YYCQ版.md",
+        md,
+        source_filename="competitor_report_labels.md",
         uploaded_by="test",
     )
     by_id = {c["id"]: c for c in snap["companies"]}
-    assert by_id["yycq"]["label"] in ("YYCQ", "游艺春秋", "本公司")
-    assert "亿" not in by_id["yycq"]["label"]
-    assert by_id["37"]["label"] == "三七互娱"
-    assert by_id["wm"]["label"] == "完美世界"
-    assert "同比" not in by_id["37"]["label"]
+    assert by_id["yycq"]["label"] == "YYCQ"
+    assert by_id["37"]["label"] == "可比公司A"
+    assert by_id["wm"]["label"] == "可比公司B"
+    assert all("亿" not in c["label"] for c in snap["companies"])
+
+
+def test_wide_vs_long_table_header_detection():
+    assert _is_wide_company_table(["公司", "营收(亿)", "营收同比", "净利(亿)"]) is False
+    assert _is_wide_company_table(["指标", "YYCQ", "可比公司A"]) is True
+    assert _looks_like_metric_header("营收(亿)") is True
+    assert _looks_like_metric_header("可比公司A") is False
 
 
 def test_parse_yycq_sec05_product_table(yycq_md: str):
