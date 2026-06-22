@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
+import { useAuth } from "../../contexts/AuthContext";
 import { competitorReportHref } from "../lib/navigation";
 import { VerticalPageHeader } from "../components/VerticalPageHeader";
 import { VerticalInternalSection } from "../components/VerticalReportBody";
@@ -16,6 +17,7 @@ import { useVerticalReport } from "../lib/useVerticalReport";
 import { CompetitorScrollProvider } from "../lib/scroll_context";
 
 export default function VerticalComparePage() {
+  const { finance_path } = useAuth();
   const { state, reload } = useVerticalReport();
   const { state: competitorState } = useCompetitorReport();
   const competitorSnapshot = competitorState.status === "ready" ? competitorState.data : undefined;
@@ -56,8 +58,18 @@ export default function VerticalComparePage() {
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">纵向对比</h1>
         <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
           <p className="max-w-md text-sm text-zinc-500">
-            未找到纵向分析报告。请将纵向分析 MD 置于 uploads/competitor/vertical_report.md，或开发机使用 tests/fixtures 蓝本。
+            暂无纵向分析报告。请管理员在财务后台上传「纵向分析 Markdown」（须含
+            {" "}
+            <code className="text-zinc-400">## 1. 公司名</code>
+            {" "}
+            章节）。
           </p>
+          <Link
+            href={finance_path || "/finance"}
+            className="rounded-md border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
+          >
+            前往财务后台上传
+          </Link>
           <Link
             href={competitorReportHref()}
             className="rounded-md border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"

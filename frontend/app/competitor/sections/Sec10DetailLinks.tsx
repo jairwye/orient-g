@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useAuth } from "../../contexts/AuthContext";
 import { ChapterPanel } from "../components/ChapterPanel";
 import { FadeInView } from "../components/FadeInView";
 import { colorForCompany } from "../lib/competitor_chart_colors";
@@ -9,6 +10,7 @@ import { useVerticalReport } from "../lib/useVerticalReport";
 import { verticalCompaniesForDisplay, verticalReportHref } from "../lib/vertical_navigation";
 
 export function Sec10DetailLinks({ snapshot }: SectionProps) {
+  const { finance_path } = useAuth();
   const { state } = useVerticalReport();
   const companies =
     state.status === "ready" ? verticalCompaniesForDisplay(state.data, snapshot) : [];
@@ -29,7 +31,13 @@ export function Sec10DetailLinks({ snapshot }: SectionProps) {
                 <p className="text-sm text-zinc-500">加载纵向分析目录…</p>
               ) : companies.length === 0 ? (
                 <p className="text-sm text-zinc-500">
-                  暂无纵向分析报告。请将 MD 置于 uploads/competitor/vertical_report.md 后刷新。
+                  暂无纵向分析报告。请管理员在
+                  {" "}
+                  <Link href={finance_path || "/finance"} className="text-blue-400 hover:text-blue-300">
+                    财务后台
+                  </Link>
+                  {" "}
+                  上传「纵向分析 Markdown」。
                 </p>
               ) : (
                 <ul className="grid gap-3 sm:grid-cols-2">

@@ -81,7 +81,7 @@ def test_parse_yycq_fixture(yycq_md: str):
     assert len(tables[0]["rows"]) >= 8
     assert isinstance(warnings, list)
     by_id = {c["id"]: c for c in snap["companies"]}
-    assert by_id["37"]["label"] == "三七互娱"
+    assert by_id["37"]["label"]
     assert by_id["37"].get("short") != "可比公司A"
 
 

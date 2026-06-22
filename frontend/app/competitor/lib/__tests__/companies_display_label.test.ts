@@ -163,19 +163,19 @@ describe("normalizeTableCompanyKeys", () => {
 describe("runtimeCompanyDisplayName", () => {
   const snap = {
     companies: [
-      { id: "yycq", label: "游艺春秋" },
-      { id: "37", label: "三七互娱", short: "可比公司A" },
-      { id: "wm", label: "完美世界" },
+      { id: "yycq", label: "YYCQ" },
+      { id: "37", label: "可比公司A", short: "可比公司A" },
+      { id: "wm", label: "可比公司B" },
     ],
   } as CompetitorReportSnapshot;
 
-  it("页面优先 snapshot 蓝本 label，不用 GitHub 占位", () => {
-    expect(runtimeCompanyDisplayName("37", snap, "可比公司A")).toBe("三七互娱");
-    expect(runtimeCompanyDisplayName("wm", snap, "可比公司B")).toBe("完美世界");
-    expect(runtimeCompanyDisplayName("yycq", snap, "本公司")).toBe("游艺春秋");
+  it("页面优先 snapshot 蓝本 label，不用 short 占位", () => {
+    expect(runtimeCompanyDisplayName("37", snap, "可比公司A")).toBe("可比公司A");
+    expect(runtimeCompanyDisplayName("wm", snap, "可比公司B")).toBe("可比公司B");
+    expect(runtimeCompanyDisplayName("yycq", snap, "本公司")).toBe("YYCQ");
   });
 
-  it("无 snapshot 时 fallback 为蓝本原文", () => {
-    expect(runtimeCompanyDisplayName("37", undefined, "三七互娱")).toBe("三七互娱");
+  it("无 snapshot 时 fallback 为传入展示名", () => {
+    expect(runtimeCompanyDisplayName("37", undefined, "可比公司A")).toBe("可比公司A");
   });
 });

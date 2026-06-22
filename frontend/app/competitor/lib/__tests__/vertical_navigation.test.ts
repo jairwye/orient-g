@@ -38,12 +38,12 @@ describe("vertical_navigation", () => {
   it("详情链接展示名优先竞品 snapshot 蓝本", () => {
     const competitorSnap = {
       companies: [
-        { id: "37", label: "三七互娱" },
-        { id: "wm", label: "完美世界" },
+        { id: "37", label: "可比公司A" },
+        { id: "wm", label: "可比公司B" },
       ],
     } as import("../types").CompetitorReportSnapshot;
     const displayed = verticalCompaniesForDisplay(sampleReport, competitorSnap);
-    expect(displayed[0]!.name).toBe("三七互娱");
-    expect(displayed[1]!.name).toBe("完美世界");
+    expect(displayed[0]!.name).toBe("可比公司A");
+    expect(displayed[1]!.name).toBe("可比公司B");
   });
 });

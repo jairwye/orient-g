@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.config import settings
 from backend.services.vertical_report_parser import parse_vertical_report
 from backend.services.vertical_report_store import load_vertical_report
 
@@ -31,8 +32,10 @@ def test_vertical_section_ids_unique():
         assert len(ids) == len(set(ids)), f"{company['name']} 存在重复 section id: {ids}"
 
 
-def test_load_vertical_report():
+def test_load_vertical_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "competitor_fixture_fallback", True)
     doc = load_vertical_report()
-    if doc is None:
-        pytest.skip("纵向分析 MD 不可用")
+    assert doc is not None
     assert len(doc.get("companies") or []) >= 2
+    assert doc.get("meta", {}).get("data_source") == "fixture"

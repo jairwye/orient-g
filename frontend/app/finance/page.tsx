@@ -36,6 +36,11 @@ export default function FinanceAdminPage() {
   const [competitorWarnings, setCompetitorWarnings] = useState<string[]>([]);
   const competitorFileRef = useRef<HTMLInputElement>(null);
 
+  const [verticalUploading, setVerticalUploading] = useState(false);
+  const [verticalMessage, setVerticalMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [verticalWarnings, setVerticalWarnings] = useState<string[]>([]);
+  const verticalFileRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     fetch("/api/settings", { credentials: "include", headers: getAuthHeaders() })
       .then((r) => (r.ok ? r.json() : { finance_path: DEFAULT_FINANCE_PATH }))
@@ -150,6 +155,43 @@ export default function FinanceAdminPage() {
       });
     } finally {
       setCompetitorUploading(false);
+    }
+  };
+
+  const handleVerticalUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setVerticalMessage(null);
+    setVerticalWarnings([]);
+    setVerticalUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/competitor/admin/upload-vertical", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg =
+          (typeof data.detail === "string" ? data.detail : undefined) ??
+          (Array.isArray(data.detail) ? data.detail[0]?.msg : undefined);
+        throw new Error(msg ?? "上传失败");
+      }
+      setVerticalWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setVerticalMessage({
+        type: "success",
+        text: `已解析 ${data.companies_parsed ?? 0} 家公司纵向分析。详情链接屏与「纵向对比」页已更新。`,
+      });
+    } catch (err) {
+      setVerticalMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "上传失败",
+      });
+    } finally {
+      setVerticalUploading(false);
     }
   };
 
@@ -371,6 +413,57 @@ export default function FinanceAdminPage() {
             ))}
             {competitorWarnings.length > 20 && (
               <li>…另有 {competitorWarnings.length - 20} 条告警</li>
+            )}
+          </ul>
+        )}
+      </div>
+
+      {/* 5. 上传纵向分析 MD */}
+      <div className="mb-6 max-w-2xl rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
+        <h2 className="mb-3 text-sm font-medium text-zinc-300">上传纵向分析（Markdown）</h2>
+        <p className="mb-2 text-xs text-zinc-500">
+          上传后供竞品财报「详情链接」屏与「纵向对比」页（`/competitor/vertical`）展示；与行业汇析 MD 为独立文件。
+        </p>
+        <ul className="mb-3 list-inside list-disc space-y-1 text-xs text-zinc-500">
+          <li>须含 <code className="text-zinc-400">## 1. 公司名</code> 形式的公司章节（如各公司纵向分析报告）。</li>
+          <li>解析产物写入 <code className="text-zinc-400">uploads/competitor/vertical_report.md</code>。</li>
+          <li>生产环境须在此上传；本地开发未上传时可回退 tests/fixtures 预览数据。</li>
+        </ul>
+        <input
+          ref={verticalFileRef}
+          type="file"
+          accept=".md,text/markdown"
+          className="hidden"
+          onChange={handleVerticalUpload}
+          disabled={verticalUploading}
+        />
+        <button
+          type="button"
+          onClick={() => verticalFileRef.current?.click()}
+          disabled={verticalUploading}
+          className="rounded-md border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+        >
+          {verticalUploading ? "上传解析中…" : "选择并上传 .md"}
+        </button>
+        {verticalMessage && (
+          <p className={`mt-3 text-sm ${verticalMessage.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
+            {verticalMessage.text}
+          </p>
+        )}
+        {verticalMessage?.type === "success" && (
+          <p className="mt-2">
+            <Link href="/competitor/vertical" className="text-sm text-blue-400 hover:text-blue-300">
+              打开纵向对比页 →
+            </Link>
+          </p>
+        )}
+        {verticalWarnings.length > 0 && (
+          <ul className="mt-3 max-h-32 overflow-y-auto text-xs text-amber-400/90">
+            {verticalWarnings.slice(0, 20).map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+            {verticalWarnings.length > 20 && (
+              <li>…另有 {verticalWarnings.length - 20} 条告警</li>
             )}
           </ul>
         )}

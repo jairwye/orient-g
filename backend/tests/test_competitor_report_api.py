@@ -113,3 +113,64 @@ def test_report_404_when_empty(client: TestClient, tmp_path, monkeypatch):
     r = client.get("/api/competitor/report", headers=_headers("admin"))
     assert r.status_code == 404
     assert r.json().get("detail") == "no_report"
+
+
+VERTICAL_FIXTURE = FIXTURE_DIR / "vertical_report_minimal.md"
+
+
+def test_vertical_upload_forbidden_non_admin(client: TestClient, monkeypatch):
+    from backend.routers import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "_is_admin_user", lambda _u: False)
+    r = client.post(
+        "/api/competitor/admin/upload-vertical",
+        headers=_headers("finance_user"),
+        files={"file": ("vertical.md", VERTICAL_FIXTURE.read_bytes(), "text/markdown")},
+    )
+    assert r.status_code == 403
+
+
+def test_vertical_report_requires_auth(client: TestClient):
+    r = client.get("/api/competitor/vertical-report")
+    assert r.status_code == 401
+
+
+def test_vertical_fixture_fallback_when_no_upload(client: TestClient, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "competitor_fixture_fallback", True)
+    r = client.get("/api/competitor/vertical-report", headers=_headers("admin"))
+    assert r.status_code == 200, r.text
+    assert r.json().get("meta", {}).get("data_source") == "fixture"
+
+
+def test_vertical_upload_and_get_flow(client: TestClient, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "competitor_fixture_fallback", False)
+
+    upload = client.post(
+        "/api/competitor/admin/upload-vertical",
+        headers=_headers("admin"),
+        files={"file": ("vertical.md", VERTICAL_FIXTURE.read_bytes(), "text/markdown")},
+    )
+    assert upload.status_code == 200, upload.text
+    body = upload.json()
+    assert body.get("ok") is True
+    assert body.get("companies_parsed") == 7
+
+    get_r = client.get("/api/competitor/vertical-report", headers=_headers("admin"))
+    assert get_r.status_code == 200, get_r.text
+    doc = get_r.json()
+    assert len(doc.get("companies") or []) == 7
+
+    meta_r = client.get("/api/competitor/vertical-report/meta", headers=_headers("admin"))
+    assert meta_r.status_code == 200
+    assert meta_r.json().get("company_count") == 7
+
+
+def test_vertical_report_404_when_empty(client: TestClient, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "competitor_fixture_fallback", None)
+    r = client.get("/api/competitor/vertical-report", headers=_headers("admin"))
+    assert r.status_code == 404
+    assert r.json().get("detail") == "no_vertical_report"

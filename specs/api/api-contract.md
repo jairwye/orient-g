@@ -271,12 +271,64 @@ type CompetitorReportSnapshot = {
 - **说明**：展示路由固定 `/competitor`；数据存 `{upload_dir}/competitor/report.snapshot.json`；与 `finance_path` 无关。
 - **数值**：带 `%` 的表单元格解析为**百分点**（如 `41.4%` → `41.4`），非 0～1 小数；`parser_version >= 1.1.0` 起生效，旧 snapshot 须重新上传。
 
-### 4.3 纵向对比报告（`view_business_dashboard`）
+### 4.4 纵向对比报告（`view_business_dashboard`）
+
+#### 4.4.1 上传（管理员）
+
+- **路径**：`POST /api/competitor/admin/upload-vertical`
+- **请求**：`multipart/form-data`，字段 `file`（`.md`，UTF-8；须含 `## 1. 公司名` 等公司章节）
+- **成功响应**：
+
+```json
+{
+  "ok": true,
+  "meta": { "title": "各公司纵向对比", "uploaded_at": "…", "uploaded_by": "admin", "source_filename": "vertical_report_example.md", "company_count": 7 },
+  "warnings": [],
+  "companies_parsed": 7
+}
+```
+
+- **存储**：`{upload_dir}/competitor/vertical_report.md`（历史副本在 `competitor/history/`）
+- **错误**：400 解析失败；403 非管理员；413 文件过大
+
+#### 4.4.2 读取
 
 - **路径**：`GET /api/competitor/vertical-report`
-- **响应**：`VerticalReportSnapshot`（按公司 `## N. 公司名` 分章，内含 `sections` / `blocks` 与行业汇析相同的 table/narrative 块形状）
-- **404**：`{ "detail": "no_vertical_report" }` — 未找到 `uploads/competitor/vertical_report.md` 且开发 fixture 不可用
-- **说明**：展示路由 `/competitor/vertical`；文件名中性约定 `vertical_report.md`；公司 `id` 按章节顺序映射 canonical peer slug（`37`/`wm`/…），**展示名**来自 MD 原文
+- **响应**：`VerticalReportSnapshot`（见下）
+- **404**：`{ "detail": "no_vertical_report" }` — 生产环境未上传且无 fixture 回退
+- **路径**：`GET /api/competitor/vertical-report/meta` — 仅 `meta` + `warnings` + `company_count`
+- **说明**：展示路由 `/competitor/vertical`；财务后台上传区；公司 `id` 按章节顺序映射 canonical peer slug（`37`/`wm`/…），**展示名**来自 MD 原文
+
+```ts
+type VerticalReportSnapshot = {
+  version: 1;
+  meta: {
+    title?: string;
+    parser_version?: string;
+    uploaded_at?: string;
+    uploaded_by?: string;
+    source_filename?: string;
+    data_source?: "fixture";
+  };
+  intro: Array<{ kind: "narrative"; markdown: string }>;
+  companies: Array<{
+    id: string;           // canonical slug，如 37 / wm
+    snap_id: string;      // 锚点，如 v-37
+    name: string;         // MD 章节标题中的公司名
+    sections: Array<{ id: string; title: string }>;
+    blocks: Array<
+      | {
+          kind: "table";
+          anchor: string;
+          headers: string[];
+          rows: Record<string, string | number | null>[];
+        }
+      | { kind: "narrative"; anchor?: string; markdown: string }
+    >;
+  }>;
+  warnings: string[];
+};
+```
 
 ---
 

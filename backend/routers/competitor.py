@@ -13,7 +13,7 @@ from backend.services.competitor_report_parser import (
     parse_markdown,
 )
 from backend.services.competitor_report_store import load_meta, save_snapshot, snapshot_for_api
-from backend.services.vertical_report_store import load_vertical_report
+from backend.services.vertical_report_store import load_vertical_meta, load_vertical_report, save_vertical_report
 
 router = APIRouter()
 
@@ -115,6 +115,47 @@ def competitor_summary(request: Request):
     }
 
 
+@router.post("/admin/upload-vertical")
+async def competitor_admin_upload_vertical(request: Request, file: UploadFile = File(...)):
+    """上传各公司纵向分析 MD，写入 uploads/competitor/vertical_report.md。仅管理员。"""
+    _require_admin(request)
+    if not file.filename or not file.filename.lower().endswith(".md"):
+        raise HTTPException(status_code=400, detail="请上传 .md 文件")
+    raw = await file.read()
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件过大")
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise HTTPException(status_code=400, detail="文件须为 UTF-8 编码") from e
+
+    username = _get_username_from_request(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="未登录")
+    try:
+        doc = save_vertical_report(
+            raw,
+            source_filename=file.filename,
+            uploaded_by=username,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    meta = doc.get("meta") or {}
+    return {
+        "ok": True,
+        "meta": {
+            "title": meta.get("title"),
+            "uploaded_at": meta.get("uploaded_at"),
+            "uploaded_by": meta.get("uploaded_by"),
+            "source_filename": meta.get("source_filename"),
+            "company_count": meta.get("company_count"),
+        },
+        "warnings": list(doc.get("warnings") or []),
+        "companies_parsed": len(doc.get("companies") or []),
+    }
+
+
 @router.get("/vertical-report")
 def competitor_vertical_report(request: Request):
     """返回各公司纵向分析报告（结构化 JSON）。"""
@@ -123,3 +164,12 @@ def competitor_vertical_report(request: Request):
     if not doc:
         raise HTTPException(status_code=404, detail="no_vertical_report")
     return JSONResponse(content=doc, headers={"Cache-Control": "no-store, no-cache"})
+
+
+@router.get("/vertical-report/meta")
+def competitor_vertical_report_meta(request: Request):
+    _require_view_business_dashboard(request)
+    meta = load_vertical_meta()
+    if not meta:
+        raise HTTPException(status_code=404, detail="no_vertical_report")
+    return JSONResponse(content=meta, headers={"Cache-Control": "no-store, no-cache"})
