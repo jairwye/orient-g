@@ -27,8 +27,14 @@ for cid, label, short in COMPANY_LABELS:
     LABEL_TO_COMPANY[label] = (cid, label, short)
     if short:
         LABEL_TO_COMPANY[short] = (cid, label, short)
+LABEL_TO_COMPANY["游艺春秋"] = ("yycq", "本公司", "YYCQ")
 
 _COMPANY_HEADER_SKIP = frozenset({"公司", "指标", "科目", "排名"})
+_WIDE_TABLE_MARKERS = frozenset({"指标", "科目", "项目", "事项"})
+_METRIC_HEADER_RE = re.compile(
+    r"(亿|万|元|\)|同比|变动|ROE|CF|标签|评分|排名|占比|比率|率$|净利|营收|收入|成本|毛利率|人数|周转|乘数|负债|资产|现金|比值|/|x$)",
+    re.IGNORECASE,
+)
 
 
 class CompetitorParseError(ValueError):
@@ -326,6 +332,20 @@ def _looks_numeric(s: str) -> bool:
     return bool(re.match(r"^-?\d+(\.\d+)?%?$", s))
 
 
+def _looks_like_metric_header(header: str) -> bool:
+    key = header.strip()
+    if not key or key in _COMPANY_HEADER_SKIP or key == "值":
+        return True
+    return bool(_METRIC_HEADER_RE.search(key))
+
+
+def _is_wide_company_table(headers: list[Any]) -> bool:
+    normalized = [h.strip() for h in headers if isinstance(h, str) and h.strip()]
+    if not normalized or "公司" in normalized:
+        return False
+    return any(h in _WIDE_TABLE_MARKERS or h.startswith("变动") for h in normalized)
+
+
 def _extract_companies(
     blocks_by_section: dict[str, list[dict[str, Any]]],
     warnings: list[str],
@@ -342,14 +362,24 @@ def _extract_companies(
             cid, _canonical, short = info
             if cid not in seen:
                 seen.add(cid)
-                # 展示名与蓝本原文一致（本公司 或 YYCQ）
+                # 展示名与蓝本原文一致（本公司 / YYCQ / 游艺春秋）
                 entry: dict[str, Any] = {"id": cid, "label": key}
                 if short and short != key:
                     entry["short"] = short
                 found.append(entry)
+                return
+            for entry in found:
+                if entry.get("id") != cid:
+                    continue
+                current = str(entry.get("label") or "")
+                if _looks_like_metric_header(current) or current in (_canonical, short or ""):
+                    entry["label"] = key
+                break
 
     def map_headers_by_column_order(headers: list[Any]) -> None:
-        """内网蓝本可能仍用历史列名：按宽表列序绑定到固定 company id。"""
+        """宽表（指标×公司）按列序绑定公司 id；跳过 sec-01-2 等「公司×指标」长表。"""
+        if not _is_wide_company_table(headers):
+            return
         company_headers = [
             h.strip()
             for h in headers
@@ -365,7 +395,8 @@ def _extract_companies(
                 for entry in found:
                     if entry.get("id") != cid:
                         continue
-                    if entry.get("label") in (default_label, short or ""):
+                    current = str(entry.get("label") or "")
+                    if _looks_like_metric_header(current) or current in (default_label, short or ""):
                         entry["label"] = header_label
                 continue
             seen.add(cid)

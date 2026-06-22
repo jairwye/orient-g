@@ -79,6 +79,20 @@ def test_parse_yycq_fixture(yycq_md: str):
     assert isinstance(warnings, list)
 
 
+def test_parse_yycq_company_labels(yycq_md: str):
+    snap, _ = parse_markdown(
+        yycq_md,
+        source_filename="行业财报汇析-2025年_数据文档_YYCQ版.md",
+        uploaded_by="test",
+    )
+    by_id = {c["id"]: c for c in snap["companies"]}
+    assert by_id["yycq"]["label"] in ("YYCQ", "游艺春秋", "本公司")
+    assert "亿" not in by_id["yycq"]["label"]
+    assert by_id["37"]["label"] == "三七互娱"
+    assert by_id["wm"]["label"] == "完美世界"
+    assert "同比" not in by_id["37"]["label"]
+
+
 def test_parse_yycq_sec05_product_table(yycq_md: str):
     snap, _ = parse_markdown(
         yycq_md,

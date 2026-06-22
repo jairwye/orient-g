@@ -2,7 +2,10 @@ import type { CompetitorReportSnapshot } from "../types";
 import {
   colToLabel,
   companyColsForSnapshot,
+  companyColsFromTableHeaders,
   companyDisplayLabel,
+  isLikelyMetricHeader,
+  isWideCompanyTable,
   labelToCol,
   normalizeTableCompanyKeys,
   rowValueForCompany,
@@ -49,6 +52,10 @@ describe("companyDisplayLabel", () => {
     expect(companyDisplayLabel("本公司", snapYycqShort)).toBe("YYCQ");
   });
 
+  it("蓝本行内写 游艺春秋 时原样展示", () => {
+    expect(companyDisplayLabel("游艺春秋", snapSubjectLabel)).toBe("游艺春秋");
+  });
+
   it("蓝本宽表第一列为历史列名时页面展示该列名", () => {
     expect(companyDisplayLabel("本公司", snapLegacySubjectHeader)).toBe("主体列A");
     expect(subjectUiLabel(snapLegacySubjectHeader)).toBe("主体列A");
@@ -75,8 +82,53 @@ describe("companyColsForSnapshot", () => {
     ]);
   });
 
+  it("长表（公司×指标）不把 营收(亿) 当成公司列", () => {
+    const kpiHeaders = ["公司", "营收(亿)", "营收同比", "净利(亿)"];
+    expect(isWideCompanyTable(kpiHeaders)).toBe(false);
+    expect(companyColsFromTableHeaders(kpiHeaders)).toEqual([]);
+    expect(isLikelyMetricHeader("营收(亿)")).toBe(true);
+  });
+
   it("无表头时回退 snapshot.companies", () => {
     expect(companyColsForSnapshot(snap)).toEqual(["YYCQ", "可比公司A"]);
+  });
+});
+
+/** 模拟错误 snapshot：companies 被长表列序误映射为指标名 */
+const snapBrokenCompanyMeta = {
+  companies: [
+    { id: "yycq", label: "营收(亿)", short: "YYCQ" },
+    { id: "37", label: "营收同比", short: "可比公司A" },
+    { id: "wm", label: "净利(亿)", short: "可比公司B" },
+  ],
+  sections: [
+    {
+      id: "sec-04",
+      blocks: [
+        {
+          kind: "table",
+          anchor: "sec-04-1",
+          headers: ["指标", "YYCQ", "三七互娱", "完美世界"],
+          rows: [],
+        },
+      ],
+    },
+  ],
+} as CompetitorReportSnapshot;
+
+describe("broken snapshot company labels", () => {
+  it("主体展示名来自宽表 YYCQ，而非 营收(亿)", () => {
+    expect(subjectUiLabel(snapBrokenCompanyMeta)).toBe("YYCQ");
+    expect(colToLabel("本公司", snapBrokenCompanyMeta)).toBe("YYCQ");
+    expect(colToLabel("YYCQ", snapBrokenCompanyMeta)).toBe("YYCQ");
+  });
+
+  it("宽表扫描优先于错误的 companies.label", () => {
+    expect(companyColsForSnapshot(snapBrokenCompanyMeta)).toEqual([
+      "YYCQ",
+      "三七互娱",
+      "完美世界",
+    ]);
   });
 });
 

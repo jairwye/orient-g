@@ -1,7 +1,7 @@
 import type { CompetitorReportSnapshot, TableBlock } from "./types";
 import { FK } from "./field_keys";
 
-/** 本公司列 canonical 名；表头亦可能写 YYCQ 或蓝本原文列名 */
+/** 本公司列 canonical 名；表头亦可能写 YYCQ / 游艺春秋 或蓝本原文列名 */
 export const SUBJECT_COL = "本公司" as const;
 
 /** 竞品财报 MD 表头中的公司列名（canonical；匿名蓝本用 本公司 / 可比公司A…） */
@@ -16,7 +16,7 @@ export const COMPANY_COLS = [
   "可比公司G",
 ] as const;
 
-const SUBJECT_ALIASES = new Set<string>([SUBJECT_COL, "YYCQ"]);
+const SUBJECT_ALIASES = new Set<string>([SUBJECT_COL, "YYCQ", "游艺春秋"]);
 
 const TABLE_NON_COMPANY_HEADERS = new Set<string>([
   FK.metric,
@@ -27,63 +27,112 @@ const TABLE_NON_COMPANY_HEADERS = new Set<string>([
   FK.value,
 ]);
 
+const WIDE_TABLE_MARKERS = new Set<string>(["指标", "科目", "项目", "事项"]);
+
+const METRIC_HEADER_RE =
+  /(亿|万|元|\)|同比|变动|ROE|CF|标签|评分|排名|占比|比率|率$|净利|营收|收入|成本|毛利率|人数|周转|乘数|负债|资产|现金|比值|\/|x$)/i;
+
+/** 表头是否像指标列（如 营收(亿)），而非公司名 */
+export function isLikelyMetricHeader(header: string): boolean {
+  const t = header.trim();
+  if (!t || TABLE_NON_COMPANY_HEADERS.has(t) || t === "值") return true;
+  return METRIC_HEADER_RE.test(t);
+}
+
+/** 宽表：指标/科目 × 公司列；长表含「公司」列时公司名在行内 */
+export function isWideCompanyTable(headers: string[]): boolean {
+  const normalized = headers.map((h) => h.trim()).filter(Boolean);
+  if (!normalized.length || normalized.includes(FK.company)) return false;
+  return normalized.some((h) => WIDE_TABLE_MARKERS.has(h) || h.startsWith("变动"));
+}
+
 export function isSubjectCol(colOrLabel: string): boolean {
   return SUBJECT_ALIASES.has(colOrLabel.trim()) || labelToCol(colOrLabel) === SUBJECT_COL;
 }
 
-/** 宽表表头中的公司列（排除 指标 / 公司等维度列） */
+/** 宽表表头中的公司列（排除维度列与指标列） */
 export function companyColsFromTableHeaders(headers: string[]): string[] {
-  return headers.filter((h) => h.trim() && !TABLE_NON_COMPANY_HEADERS.has(h.trim()));
+  if (!isWideCompanyTable(headers)) return [];
+  return headers.filter((h) => {
+    const t = h.trim();
+    return t && !TABLE_NON_COMPANY_HEADERS.has(t) && !isLikelyMetricHeader(t);
+  });
 }
 
-/** 优先用表头中的公司列，其次 snapshot.companies，最后匿名 COMPANY_COLS */
+function firstWideCompanyCols(snapshot: CompetitorReportSnapshot): string[] {
+  for (const section of snapshot.sections ?? []) {
+    for (const block of section.blocks ?? []) {
+      if (block.kind !== "table") continue;
+      const cols = companyColsFromTableHeaders((block as TableBlock).headers ?? []);
+      if (cols.length >= 2) return cols;
+    }
+  }
+  return [];
+}
+
+function snapshotCompanyColLabels(snapshot: CompetitorReportSnapshot): string[] {
+  const wide = firstWideCompanyCols(snapshot);
+  if (wide.length >= 2) return wide;
+  const fromMeta = snapshot.companies
+    ?.map((c) => c.label)
+    .filter((l): l is string => Boolean(l?.trim()) && !isLikelyMetricHeader(l));
+  if (fromMeta?.length) return fromMeta;
+  return [...COMPANY_COLS];
+}
+
+/** 优先用宽表表头中的公司列，其次 snapshot 宽表扫描，最后匿名 COMPANY_COLS */
 export function companyColsForSnapshot(
   snapshot: CompetitorReportSnapshot,
   tableHeaders?: string[],
 ): string[] {
   const fromHeaders = tableHeaders?.length ? companyColsFromTableHeaders(tableHeaders) : [];
   if (fromHeaders.length > 0) return fromHeaders;
-  const labels = snapshot.companies?.map((c) => c.label).filter(Boolean) as string[] | undefined;
-  if (labels?.length) return labels;
-  return [...COMPANY_COLS];
+  return snapshotCompanyColLabels(snapshot);
 }
 
 /** 主体列在蓝本中的全部可能行键（含表头原文，不写死内网历史列名） */
 export function subjectDataKeys(snapshot?: CompetitorReportSnapshot): string[] {
-  const keys = new Set<string>([SUBJECT_COL, "YYCQ"]);
+  const keys = new Set<string>([SUBJECT_COL, "YYCQ", "游艺春秋"]);
   const yycq = snapshot?.companies?.find((c) => c.id === "yycq");
-  if (yycq?.label?.trim()) keys.add(yycq.label.trim());
+  if (yycq?.label?.trim() && !isLikelyMetricHeader(yycq.label)) keys.add(yycq.label.trim());
   if (yycq?.short?.trim()) keys.add(yycq.short.trim());
-  if (snapshot) {
-    for (const section of snapshot.sections ?? []) {
-      for (const block of section.blocks ?? []) {
-        if (block.kind !== "table") continue;
-        const headers = companyColsFromTableHeaders((block as TableBlock).headers ?? []);
-        if (headers[0]) keys.add(headers[0]);
-      }
-    }
+  const wide = snapshot ? firstWideCompanyCols(snapshot) : [];
+  if (wide[0]) keys.add(wide[0]);
+  for (const col of wide) {
+    if (isSubjectCol(col)) keys.add(col);
   }
   return [...keys];
 }
 
-/** 内网页面主体展示名：以蓝本表头 / snapshot 为准，匿名 canonical「本公司」不在 UI 展示 */
+/** 内网页面主体展示名：以宽表第一公司列 / 公司列 / snapshot 为准，匿名「本公司」不在 UI 展示 */
 export function subjectUiLabel(snapshot?: CompetitorReportSnapshot): string {
-  if (snapshot) {
-    for (const section of snapshot.sections ?? []) {
-      for (const block of section.blocks ?? []) {
-        if (block.kind !== "table") continue;
-        const headers = companyColsFromTableHeaders((block as TableBlock).headers ?? []);
-        const first = headers[0];
-        if (first && first !== SUBJECT_COL) return first;
+  if (!snapshot) return "YYCQ";
+
+  const wide = firstWideCompanyCols(snapshot);
+  const subjectCol = wide[0];
+  if (subjectCol && subjectCol !== SUBJECT_COL && !isLikelyMetricHeader(subjectCol)) {
+    return subjectCol;
+  }
+
+  for (const section of snapshot.sections ?? []) {
+    for (const block of section.blocks ?? []) {
+      if (block.kind !== "table") continue;
+      const table = block as TableBlock;
+      if (!table.headers?.includes(FK.company)) continue;
+      for (const row of table.rows ?? []) {
+        const name = String(row[FK.company] ?? "").trim();
+        if (isSubjectCol(name) && name !== SUBJECT_COL) return name;
       }
     }
-
-    const yycq = snapshot.companies?.find((c) => c.id === "yycq");
-    const label = yycq?.label?.trim();
-    if (label && label !== SUBJECT_COL && !label.startsWith("可比公司")) return label;
-    const short = yycq?.short?.trim();
-    if (short && short !== SUBJECT_COL) return short;
   }
+
+  const yycq = snapshot.companies?.find((c) => c.id === "yycq");
+  const label = yycq?.label?.trim();
+  if (label && label !== SUBJECT_COL && !label.startsWith("可比公司") && !isLikelyMetricHeader(label)) {
+    return label;
+  }
+  const short = yycq?.short?.trim();
+  if (short && short !== SUBJECT_COL && !isLikelyMetricHeader(short)) return short;
   return "YYCQ";
 }
 
@@ -94,9 +143,14 @@ export function companyDisplayLabel(
 ): string {
   const raw = colOrLabel.trim();
   if (!isSubjectCol(raw)) {
+    if (isLikelyMetricHeader(raw) && snapshot) {
+      const hit = snapshot.companies.find((c) => c.label === raw || c.short === raw);
+      if (hit && !isLikelyMetricHeader(hit.label)) return hit.label;
+    }
     return raw || labelToCol(raw);
   }
-  if (raw === "YYCQ") return snapshot ? subjectUiLabel(snapshot) : "YYCQ";
+  // 蓝本已写 YYCQ / 游艺春秋 时原样展示；仅匿名「本公司」映射为宽表主体列名
+  if (raw !== SUBJECT_COL && raw !== "本公司") return raw;
   if (snapshot) return subjectUiLabel(snapshot);
   return "YYCQ";
 }
@@ -138,7 +192,10 @@ export function getCompanyContext(
       ? companyColsFromTableHeaders(tableHeaders)
       : [...COMPANY_COLS];
   const labels = cols.map((c) => colToLabel(c, snapshot));
-  const fromSnap = snapshot?.companies.flatMap((c) => [c.label, c.short].filter(Boolean) as string[]) ?? [];
+  const fromSnap =
+    snapshot?.companies
+      .flatMap((c) => [c.label, c.short].filter(Boolean) as string[])
+      .filter((l) => !isLikelyMetricHeader(l)) ?? [];
   const labelOrder = [...new Set([...labels, ...fromSnap])];
   const labelsByLength = [...labelOrder].sort((a, b) => b.length - a.length);
   const peerCols = cols.filter((c) => !isSubjectCol(c));
@@ -166,7 +223,9 @@ export function defaultPeerCompanyCol(
 ): string {
   const peers = peerCompanyColsForSnapshot(snapshot, tableHeaders);
   if (peers[0]) return peers[0];
-  const names = snapshot.companies?.map((c) => c.label).filter(Boolean) as string[] | undefined;
+  const names = snapshot.companies
+    ?.map((c) => c.label)
+    .filter((l): l is string => Boolean(l?.trim()) && !isLikelyMetricHeader(l));
   return names?.[1] ?? names?.[0] ?? PEER_COMPANY_COLS[0] ?? "";
 }
 
@@ -186,8 +245,11 @@ export function colKeyForDisplayLabel(label: string, snapshot?: CompetitorReport
 
 export function companyMatchLabels(snapshot?: CompetitorReportSnapshot): string[] {
   const ctx = getCompanyContext(snapshot);
-  const extras = [SUBJECT_COL, "YYCQ", "本公司"];
-  const fromSnap = snapshot?.companies.flatMap((c) => [c.label, c.short].filter(Boolean) as string[]) ?? [];
+  const extras = [SUBJECT_COL, "YYCQ", "游艺春秋", "本公司"];
+  const fromSnap =
+    snapshot?.companies
+      .flatMap((c) => [c.label, c.short].filter(Boolean) as string[])
+      .filter((l) => !isLikelyMetricHeader(l)) ?? [];
   return [...new Set([...ctx.labelOrder, ...extras, ...fromSnap, ...subjectDataKeys(snapshot)])];
 }
 
