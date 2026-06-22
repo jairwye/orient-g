@@ -92,6 +92,14 @@ export const NAV_SECTIONS: NavSection[] = [
 
 export const ALL_SNAP_IDS = NAV_SECTIONS.flatMap((s) => s.subs.map((sub) => sub.id));
 
+/** 竞品财报最后一屏（详情链接 / 纵向对比入口） */
+export const COMPETITOR_LAST_SNAP_ID =
+  NAV_SECTIONS[NAV_SECTIONS.length - 1]?.subs[0]?.id ?? "sec-10-a";
+
+export function competitorReportHref(snapId: string = COMPETITOR_LAST_SNAP_ID): string {
+  return `/competitor#${snapId}`;
+}
+
 export function buildScaleEntries(): ScaleEntry[] {
   const entries: ScaleEntry[] = [];
   for (const section of NAV_SECTIONS) {

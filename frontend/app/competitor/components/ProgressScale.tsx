@@ -212,29 +212,59 @@ export function useSnapScrollObserver(
   }, [scrollRootRef, enabled]);
 
   const navigate = useCallback(
-    (id: string) => {
+    (id: string, options?: { behavior?: ScrollBehavior }) => {
+      const behavior = options?.behavior ?? "smooth";
       const root = scrollRootRef.current;
       const el =
         root?.querySelector<HTMLElement>(`[data-competitor-snap="${id}"]`) ??
         document.getElementById(id);
       if (!el || !root) {
-        el?.scrollIntoView({ behavior: "smooth", block: "start" });
+        el?.scrollIntoView({ behavior, block: "start" });
         if (id) setActiveSnapId(id);
-        return;
+        return false;
       }
       const top = snapOffsetTop(el, root);
       navLockRef.current = id;
       setActiveSnapId(id);
       root.dataset.activeSnap = id;
-      root.scrollTo({ top, behavior: "smooth" });
+      root.scrollTo({ top, behavior });
       const release = () => {
         navLockRef.current = null;
       };
       root.addEventListener("scrollend", release, { once: true });
       window.setTimeout(release, 900);
+      return true;
     },
     [scrollRootRef],
   );
+
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
+  /** URL hash（如从纵向页返回 /competitor#sec-10-a）→ 定位到对应 snap；动态区块未挂载时重试 */
+  useEffect(() => {
+    if (!enabled) return;
+    const hash = window.location.hash.replace(/^#/, "");
+    if (!hash || !snapIds.includes(hash)) return;
+
+    let cancelled = false;
+    let timer = 0;
+    let attempts = 0;
+
+    const tryNavigate = () => {
+      if (cancelled) return;
+      attempts += 1;
+      const ok = navigateRef.current(hash, { behavior: "auto" });
+      if (ok || attempts >= 60) return;
+      timer = window.setTimeout(tryNavigate, 50);
+    };
+
+    timer = window.setTimeout(tryNavigate, 80);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [enabled, snapIds]);
 
   return { activeSnapId, navigate };
 }

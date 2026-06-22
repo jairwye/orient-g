@@ -29,6 +29,7 @@ for cid, label, short in COMPANY_LABELS:
         LABEL_TO_COMPANY[short] = (cid, label, short)
 
 _COMPANY_HEADER_SKIP = frozenset({"公司", "指标", "科目", "排名"})
+_ANONYMIZED_PEER_SHORT_RE = re.compile(r"^可比公司[A-G]$")
 _WIDE_TABLE_MARKERS = frozenset({"指标", "科目", "项目", "事项"})
 _METRIC_HEADER_RE = re.compile(
     r"(亿|万|元|\)|同比|变动|ROE|CF|标签|评分|排名|占比|比率|率$|净利|营收|收入|成本|毛利率|人数|周转|乘数|负债|资产|现金|比值|/|x$)",
@@ -385,6 +386,15 @@ def _is_wide_company_table(headers: list[Any]) -> bool:
     return any(h in _WIDE_TABLE_MARKERS or h.startswith("变动") for h in normalized)
 
 
+def _snapshot_short(label: str, short: str | None) -> str | None:
+    """GitHub 占位「可比公司A」不进 snapshot.short，避免页面误展示。"""
+    if not short or short == label:
+        return None
+    if _ANONYMIZED_PEER_SHORT_RE.match(short.strip()):
+        return None
+    return short
+
+
 def _extract_companies(
     blocks_by_section: dict[str, list[dict[str, Any]]],
     warnings: list[str],
@@ -403,8 +413,9 @@ def _extract_companies(
                 seen.add(cid)
                 # 展示名与蓝本原文一致（本公司 / YYCQ / 蓝本列名）
                 entry: dict[str, Any] = {"id": cid, "label": key}
-                if short and short != key:
-                    entry["short"] = short
+                short_val = _snapshot_short(key, short)
+                if short_val:
+                    entry["short"] = short_val
                 found.append(entry)
                 return
             for entry in found:
@@ -440,8 +451,9 @@ def _extract_companies(
                 continue
             seen.add(cid)
             entry: dict[str, Any] = {"id": cid, "label": header_label}
-            if short and short != header_label:
-                entry["short"] = short
+            short_val = _snapshot_short(header_label, short)
+            if short_val:
+                entry["short"] = short_val
             found.append(entry)
 
     for blocks in blocks_by_section.values():
@@ -463,8 +475,9 @@ def _extract_companies(
             if cid not in seen:
                 seen.add(cid)
                 entry = {"id": cid, "label": label}
-                if short and short != label:
-                    entry["short"] = short
+                short_val = _snapshot_short(label, short)
+                if short_val:
+                    entry["short"] = short_val
                 found.append(entry)
         if len(found) >= 8:
             warnings.append("sec-01-2 公司列未完整识别，已回退默认 8 家列表")

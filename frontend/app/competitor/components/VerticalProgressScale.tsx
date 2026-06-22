@@ -3,16 +3,21 @@
 import { useMemo } from "react";
 import { buildVerticalScaleEntries } from "../lib/vertical_navigation";
 import type { VerticalReportSnapshot } from "../lib/vertical_types";
+import type { CompetitorReportSnapshot } from "../lib/types";
 
 type Props = {
   report: VerticalReportSnapshot;
+  competitorSnapshot?: CompetitorReportSnapshot;
   activeSnapId: string;
   onNavigate: (id: string) => void;
 };
 
-/** 纵向对比页顶刻度：圆点 + 公司名（来自 snapshot） */
-export function VerticalProgressScale({ report, activeSnapId, onNavigate }: Props) {
-  const entries = useMemo(() => buildVerticalScaleEntries(report), [report]);
+/** 纵向对比页顶刻度：圆点 + 公司名（蓝本展示名） */
+export function VerticalProgressScale({ report, competitorSnapshot, activeSnapId, onNavigate }: Props) {
+  const entries = useMemo(
+    () => buildVerticalScaleEntries(report, competitorSnapshot),
+    [report, competitorSnapshot],
+  );
 
   return (
     <nav

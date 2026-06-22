@@ -32,10 +32,10 @@ export function TopicSubjectBoard({ groups, snapshot, delayMs = 200 }: Props) {
                 <h3 className="text-sm font-medium leading-snug text-zinc-100">{group.topic}</h3>
               </header>
               <ul className="space-y-2.5">
-                {group.subjects.map((sub) => {
+                {group.subjects.map((sub, si) => {
                   const accent = sub.colKey ? colorForCompany(sub.colKey, snapshot) : "#52525b";
                   return (
-                    <li key={`${group.topic}-${sub.company}`} className="flex gap-2 text-xs leading-relaxed sm:text-[13px]">
+                    <li key={`${group.topic}-${sub.company || "line"}-${si}`} className="flex gap-2 text-xs leading-relaxed sm:text-[13px]">
                       <span
                         className="mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full"
                         style={{ backgroundColor: accent }}

@@ -1,7 +1,9 @@
 import type { VerticalReportSnapshot } from "../vertical_types";
+import { COMPETITOR_LAST_SNAP_ID, competitorReportHref } from "../navigation";
 import {
   allVerticalSnapIds,
   buildVerticalScaleEntries,
+  verticalCompaniesForDisplay,
   verticalCompaniesFromReport,
   verticalReportHref,
 } from "../vertical_navigation";
@@ -26,5 +28,22 @@ describe("vertical_navigation", () => {
 
   it("详情链接 href", () => {
     expect(verticalReportHref("v-37")).toBe("/competitor/vertical#v-37");
+  });
+
+  it("返回竞品财报最后一节", () => {
+    expect(COMPETITOR_LAST_SNAP_ID).toBe("sec-10-a");
+    expect(competitorReportHref()).toBe("/competitor#sec-10-a");
+  });
+
+  it("详情链接展示名优先竞品 snapshot 蓝本", () => {
+    const competitorSnap = {
+      companies: [
+        { id: "37", label: "三七互娱" },
+        { id: "wm", label: "完美世界" },
+      ],
+    } as import("../types").CompetitorReportSnapshot;
+    const displayed = verticalCompaniesForDisplay(sampleReport, competitorSnap);
+    expect(displayed[0]!.name).toBe("三七互娱");
+    expect(displayed[1]!.name).toBe("完美世界");
   });
 });

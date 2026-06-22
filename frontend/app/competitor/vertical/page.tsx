@@ -2,18 +2,23 @@
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
+import { competitorReportHref } from "../lib/navigation";
 import { VerticalPageHeader } from "../components/VerticalPageHeader";
 import { VerticalInternalSection } from "../components/VerticalReportBody";
 import { VerticalPreservedText } from "../components/VerticalPreservedText";
 import { SnapContent, SnapPanel } from "../components/SnapPanel";
 import { useSnapScrollObserver } from "../components/ProgressScale";
 import { colorForCompany } from "../lib/competitor_chart_colors";
+import { runtimeCompanyDisplayName } from "../lib/companies";
 import { allVerticalSnapIds } from "../lib/vertical_navigation";
+import { useCompetitorReport } from "../lib/useCompetitorReport";
 import { useVerticalReport } from "../lib/useVerticalReport";
 import { CompetitorScrollProvider } from "../lib/scroll_context";
 
 export default function VerticalComparePage() {
   const { state, reload } = useVerticalReport();
+  const { state: competitorState } = useCompetitorReport();
+  const competitorSnapshot = competitorState.status === "ready" ? competitorState.data : undefined;
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollReady = state.status === "ready";
   const snapIds = state.status === "ready" ? allVerticalSnapIds(state.data) : [];
@@ -50,7 +55,7 @@ export default function VerticalComparePage() {
             未找到纵向分析报告。请将纵向分析 MD 置于 uploads/competitor/vertical_report.md，或开发机使用 tests/fixtures 蓝本。
           </p>
           <Link
-            href="/competitor"
+            href={competitorReportHref()}
             className="rounded-md border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
           >
             返回竞品财报
@@ -86,6 +91,7 @@ export default function VerticalComparePage() {
       <div className="competitor-canvas absolute inset-0 flex flex-col overflow-hidden">
         <VerticalPageHeader
           report={state.status === "ready" ? state.data : null}
+          competitorSnapshot={competitorSnapshot}
           activeSnapId={activeSnapId}
           onNavigate={navigate}
         />
@@ -123,7 +129,7 @@ export default function VerticalComparePage() {
                         {String(index + 1).padStart(2, "0")} / {data.companies.length}
                       </p>
                       <h2 className="mt-2 text-2xl font-semibold tracking-tight text-zinc-100 sm:text-3xl md:text-4xl">
-                        {company.name}
+                        {runtimeCompanyDisplayName(company.id, competitorSnapshot, company.name)}
                       </h2>
                     </div>
                     <div className="mt-8 sm:mt-10">

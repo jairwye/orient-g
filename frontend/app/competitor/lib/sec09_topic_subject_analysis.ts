@@ -159,6 +159,29 @@ function isRegionDistributionTopic(topic: string): boolean {
   return topic === "发行地区" || topic.startsWith("发行地区");
 }
 
+function isProductCountTopic(topic: string): boolean {
+  return topic.startsWith("产品数量");
+}
+
+/** 产品数量：按句引用蓝本，删去 > 排名分隔符，不按公司拆行 */
+function splitProductCount(body: string): SubjectAnalysisGroup[] {
+  let text = body.trim();
+  const subtitle = text.match(/^[^。；]{2,30}[。；]\s*/);
+  if (subtitle && !/款|互娱|世界|掌趣|塔人|像素|绿岸|春秋|飞扬|可比/.test(subtitle[0]!)) {
+    text = text.slice(subtitle[0].length).trim();
+  }
+  const sentences = text.split(/(?<=[。；!！?？])\s*/).filter((s) => s.trim());
+  const strip = (s: string) => s.replace(/>/g, "");
+  if (!sentences.length) {
+    return [{ company: "", colKey: "", bullets: [{ text: strip(text) }] }];
+  }
+  return sentences.map((s) => ({
+    company: "",
+    colKey: "",
+    bullets: [{ text: strip(s.trim()) }],
+  }));
+}
+
 /** 游戏名称对应：蓝本原文整段引用，不按公司拆行 */
 function splitGameNameMapping(body: string): SubjectAnalysisGroup[] {
   const text = body.trim();
@@ -276,6 +299,8 @@ export function buildTopicSubjectGroups(
       subjects = splitGameNameMapping(parsed.body);
     } else if (isRegionDistributionTopic(parsed.topic)) {
       subjects = splitRegionDistribution(parsed.body, snapshot);
+    } else if (isProductCountTopic(parsed.topic)) {
+      subjects = splitProductCount(parsed.body);
     } else {
       subjects = splitByCompany(parsed.body, snapshot);
     }

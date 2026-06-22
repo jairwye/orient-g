@@ -1,4 +1,6 @@
 /** 纵向对比页：公司 snap 导航（数据来自 GET /api/competitor/vertical-report） */
+import { runtimeCompanyDisplayName } from "./companies";
+import type { CompetitorReportSnapshot } from "./types";
 import type { VerticalReportSnapshot } from "./vertical_types";
 
 export type VerticalCompanyNav = {
@@ -21,13 +23,27 @@ export function verticalCompaniesFromReport(data: VerticalReportSnapshot): Verti
   }));
 }
 
+/** 纵向目录 + 竞品 snapshot：页面展示用蓝本主体名 */
+export function verticalCompaniesForDisplay(
+  vertical: VerticalReportSnapshot,
+  competitorSnapshot?: CompetitorReportSnapshot,
+): VerticalCompanyNav[] {
+  return verticalCompaniesFromReport(vertical).map((c) => ({
+    ...c,
+    name: runtimeCompanyDisplayName(c.id, competitorSnapshot, c.name),
+  }));
+}
+
 export function allVerticalSnapIds(data: VerticalReportSnapshot): string[] {
   const intro = (data.intro?.length ?? 0) > 0 ? ["v-intro"] : [];
   return [...intro, ...(data.companies ?? []).map((c) => c.snap_id)];
 }
 
-export function buildVerticalScaleEntries(data: VerticalReportSnapshot): VerticalScaleEntry[] {
-  return verticalCompaniesFromReport(data).map((c) => ({
+export function buildVerticalScaleEntries(
+  data: VerticalReportSnapshot,
+  competitorSnapshot?: CompetitorReportSnapshot,
+): VerticalScaleEntry[] {
+  return verticalCompaniesForDisplay(data, competitorSnapshot).map((c) => ({
     snapId: c.snapId,
     fullLabel: c.name,
     kind: "main" as const,

@@ -81,4 +81,17 @@ describe("buildTopicSubjectGroups sec-09-9 运营产品", () => {
     expect(subjects[3]!.company).toBe("可比公司F");
     expect(subjects[4]!.company).toBe("可比公司G");
   });
+
+  it("产品数量卡片删去蓝本中的 > 分隔符", () => {
+    const md = [
+      "**产品数量与集中度。** 可比公司A37款>可比公司D17款>可比公司B15款>可比公司C12款>可比公司F10款>游艺春秋7款>华清飞扬6款>可比公司G4款。但产品数量不等于收入贡献——可比公司G4款中《蜀门》一款贡献98.2%收入。",
+    ].join("\n");
+
+    const groups = buildTopicSubjectGroups(md, productSnapshot());
+    const card = groups.find((g) => g.topic.startsWith("产品数量"))!;
+    const allText = card.subjects.flatMap((s) => s.bullets.map((b) => b.text)).join("");
+    expect(allText).not.toContain(">");
+    expect(allText).toContain("可比公司A37款");
+    expect(allText).toContain("可比公司D17款");
+  });
 });

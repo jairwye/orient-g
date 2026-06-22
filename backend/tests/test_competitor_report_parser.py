@@ -80,6 +80,9 @@ def test_parse_yycq_fixture(yycq_md: str):
     assert tables
     assert len(tables[0]["rows"]) >= 8
     assert isinstance(warnings, list)
+    by_id = {c["id"]: c for c in snap["companies"]}
+    assert by_id["37"]["label"] == "三七互娱"
+    assert by_id["37"].get("short") != "可比公司A"
 
 
 def test_company_labels_skip_long_table_metrics():

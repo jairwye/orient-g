@@ -50,6 +50,40 @@ export function isSubjectCol(colOrLabel: string): boolean {
   return SUBJECT_ALIASES.has(colOrLabel.trim()) || labelToCol(colOrLabel) === SUBJECT_COL;
 }
 
+/** GitHub / 单测占位名（非内网蓝本原文，不应在页面展示） */
+export function isAnonymizedCompanyLabel(label: string): boolean {
+  const t = label.trim();
+  return t === SUBJECT_COL || t === "本公司" || /^可比公司[A-G]$/.test(t);
+}
+
+/**
+ * 运行时 UI 展示名：优先 snapshot 蓝本 label，其次纵向/叙事等 fallback。
+ * canonical id 固定；页面不出现 GitHub 占位「可比公司A」「本公司」。
+ */
+export function runtimeCompanyDisplayName(
+  companyId: string,
+  snapshot?: CompetitorReportSnapshot,
+  blueprintFallback?: string,
+): string {
+  const fromSnap = snapshot?.companies?.find((c) => c.id === companyId);
+  const snapLabel = fromSnap?.label?.trim();
+
+  if (companyId === "yycq") {
+    if (snapLabel && !isAnonymizedCompanyLabel(snapLabel)) return snapLabel;
+    const fb = blueprintFallback?.trim();
+    if (fb && !isAnonymizedCompanyLabel(fb)) return fb;
+    return subjectUiLabel(snapshot);
+  }
+
+  if (snapLabel && !isAnonymizedCompanyLabel(snapLabel)) return snapLabel;
+
+  const fb = blueprintFallback?.trim();
+  if (fb && !isAnonymizedCompanyLabel(fb)) return fb;
+
+  if (snapLabel) return snapLabel;
+  return fb || companyId;
+}
+
 /** 宽表表头中的公司列（排除维度列与指标列） */
 export function companyColsFromTableHeaders(headers: string[]): string[] {
   if (!isWideCompanyTable(headers)) return [];
