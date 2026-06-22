@@ -5,7 +5,19 @@ export function getTable(
   snapshot: CompetitorReportSnapshot,
   anchor: string,
 ): TableBlock | undefined {
-  return getTables(snapshot, anchor)[0];
+  return getBestTable(snapshot, anchor);
+}
+
+/** 同锚点多表时取行数最多的一张（避免旧表覆盖新分组结构） */
+export function getBestTable(
+  snapshot: CompetitorReportSnapshot,
+  anchor: string,
+): TableBlock | undefined {
+  const tables = getTables(snapshot, anchor);
+  if (!tables.length) return undefined;
+  return tables.reduce((best, cur) =>
+    cur.rows.length > best.rows.length ? cur : best,
+  );
 }
 
 export function getTables(snapshot: CompetitorReportSnapshot, anchor: string): TableBlock[] {

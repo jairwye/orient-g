@@ -20,6 +20,7 @@
 ### Changed
 
 - **竞品财报模型**：原独立 `sec-10` 并入 `sec-09` 子锚点；删除 `Sec10Risk` 屏；API/spec 同步为 9 章。
+- **竞品解析 v1.1.0**：`%` 单元格存百分点（非小数比例）；sec-04 人力成本分组表、sec-05 产品宽表容错、公司列展示与蓝本一致；**生产须重新上传 MD** 或本地 refresh snapshot。
 
 - **登录与鉴权**：JWT 过期（401）跳转 `/login?expired=1`；AuthGuard 标签页获焦复检；Next API 代理 JSON body 改为 buffer 转发（修复密码错误误报 502「后端不可用」）。
 - Hermes 流式：Runs/chat 双路径 `HermesRunsLoopGuard`；error 时 salvage 过程稿（`hermes_salvaged`）；Tier 1 pack 充分时跳过 supplemental；Tier 0 终稿统一 `finalize_agent_reply`。

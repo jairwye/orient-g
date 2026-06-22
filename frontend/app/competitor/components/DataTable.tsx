@@ -24,6 +24,17 @@ type Props = {
   wrapText?: boolean;
   onRowClick?: (row: Record<string, string | number | null>, index: number) => void;
   isRowSelected?: (row: Record<string, string | number | null>, index: number) => boolean;
+  /** 分组标题行（如 sec-04-3 **人力成本**）：整行合并为一格 */
+  isSectionHeaderRow?: (row: Record<string, string | number | null>) => boolean;
+  rowLabelHeader?: string;
+  /** 表头展示文案（行键仍用 headers 原值） */
+  headerDisplay?: (header: string) => string;
+  /** 单元格取值（默认 row[header]；宽表 YYCQ/游艺春秋 等需别名时使用） */
+  getCellValue?: (
+    header: string,
+    row: Record<string, string | number | null>,
+  ) => string | number | null | undefined;
+  sectionHeaderClassName?: string;
 };
 
 export function DataTable({
@@ -41,8 +52,15 @@ export function DataTable({
   wrapText = false,
   onRowClick,
   isRowSelected,
+  isSectionHeaderRow,
+  rowLabelHeader,
+  headerDisplay,
+  getCellValue,
+  sectionHeaderClassName,
 }: Props) {
   if (!rows.length) return null;
+
+  const labelHeader = rowLabelHeader ?? headers[0] ?? "";
 
   const wrapCol = (h: string) => wrapText || /目的|备注|项目|名称|性质|方案|变动|公司名称|游戏名称|主要补助|拟达到|交易类型|备注/.test(h);
 
@@ -53,7 +71,9 @@ export function DataTable({
           ? flowContent
             ? ""
             : "flex min-h-0 flex-1 flex-col overflow-hidden"
-          : "overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50"
+          : flowContent
+            ? "rounded-lg border border-zinc-800 bg-zinc-900/50"
+            : "overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50"
       }
     >
       {(title || subtitle) && !embedded ? (
@@ -81,13 +101,34 @@ export function DataTable({
               <tr>
                 {headers.map((h) => (
                   <th key={h} className="whitespace-nowrap px-4 py-2.5 font-medium md:px-5">
-                    {h}
+                    {headerDisplay ? headerDisplay(h) : h}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((row, i) => {
+                if (isSectionHeaderRow?.(row)) {
+                  return (
+                    <tr
+                      key={i}
+                      className={
+                        "border-b border-zinc-800/50 bg-zinc-950/55 " + (sectionHeaderClassName ?? "")
+                      }
+                    >
+                      <td
+                        colSpan={headers.length}
+                        className="px-4 py-2.5 font-semibold text-zinc-100 md:px-5"
+                      >
+                        {formatCell(
+                          labelHeader,
+                          (getCellValue ? getCellValue(labelHeader, row) : row[labelHeader]) ?? null,
+                          row,
+                        )}
+                      </td>
+                    </tr>
+                  );
+                }
                 const dim = highlightRow?.(row) === false;
                 const accent = rowAccent?.(row);
                 const selected = isRowSelected?.(row, i) ?? false;
@@ -106,16 +147,19 @@ export function DataTable({
                     }
                     style={accent ? { boxShadow: `inset 3px 0 0 ${accent}` } : undefined}
                   >
-                    {headers.map((h) => (
+                    {headers.map((h) => {
+                      const cellVal = getCellValue ? getCellValue(h, row) : row[h];
+                      return (
                       <td
                         key={h}
                         className={
                           "px-4 py-2.5 md:px-5 " + (wrapCol(h) ? "max-w-[280px] whitespace-normal break-words align-top" : "whitespace-nowrap")
                         }
                       >
-                        {formatCell(h, row[h], row)}
+                        {formatCell(h, cellVal ?? null, row)}
                       </td>
-                    ))}
+                    );
+                    })}
                   </tr>
                 );
               })}

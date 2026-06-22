@@ -19,8 +19,10 @@ import { DataTable } from "../components/DataTable";
 import { NarrativesFromSection } from "../components/NarrativeBlock";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS } from "../lib/competitor_chart_colors";
+import { companyDisplayLabel } from "../lib/companies";
 import { CL, FK } from "../lib/field_keys";
 import { formatPctPoints, parseNum } from "../lib/format";
+import { sec05PercentPoints } from "../lib/sec05_product";
 import { subTitleForSnap } from "../lib/navigation";
 import { getTable } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
@@ -36,10 +38,6 @@ const REGION_COLORS: Record<string, string> = {
 
 type RegionRow = Record<string, string | number | null>;
 
-function companyLabel(raw: string): string {
-  return raw === "YYCQ" ? FK.yycqLabel : raw;
-}
-
 function isValidRegionRow(row: RegionRow): boolean {
   const region = String(row[FK.region] ?? "").trim();
   if (!region || region === "\u2014" || region === "-") return false;
@@ -47,10 +45,10 @@ function isValidRegionRow(row: RegionRow): boolean {
 }
 
 function normalizeShare(raw: number): number {
-  return Math.abs(raw) <= 1 ? raw * 100 : raw;
+  return sec05PercentPoints(raw);
 }
 
-function buildRegionMix(rows: RegionRow[]) {
+function buildRegionMix(rows: RegionRow[], snapshot: SectionProps["snapshot"]) {
   const regions = new Set<string>();
   const byCompany = new Map<string, { name: string; segments: Record<string, number> }>();
 
@@ -62,7 +60,7 @@ function buildRegionMix(rows: RegionRow[]) {
     if (!company || !region || shareRaw == null) continue;
     regions.add(region);
     if (!byCompany.has(company)) {
-      byCompany.set(company, { name: companyLabel(company), segments: {} });
+      byCompany.set(company, { name: companyDisplayLabel(company, snapshot), segments: {} });
     }
     const share = normalizeShare(shareRaw);
     byCompany.get(company)!.segments[region] = (byCompany.get(company)!.segments[region] ?? 0) + share;
@@ -92,8 +90,8 @@ export function Sec05Region({ snapshot }: SectionProps) {
   );
 
   const { types, data: mixData } = useMemo(
-    () => buildRegionMix(regionTable?.rows ?? []),
-    [regionTable?.rows],
+    () => buildRegionMix(regionTable?.rows ?? [], snapshot),
+    [regionTable?.rows, snapshot],
   );
 
   const chartHeight = Math.max(280, mixData.length * 40 + 80);

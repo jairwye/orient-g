@@ -26,16 +26,25 @@ import {
   colorForCompany,
   shadeCompanyColor,
 } from "../lib/competitor_chart_colors";
+import { companyDisplayLabel } from "../lib/companies";
 import { CL, FK } from "../lib/field_keys";
 import { formatPctPoints, parseNum } from "../lib/format";
+import {
+  SEC05_MARGIN_CHANGE,
+  SEC05_REV_SHARE,
+  normalizeSec05ProductRows,
+  parseSec05MarginChangePct,
+  sec05PercentPoints,
+  type Sec05ProductRow,
+} from "../lib/sec05_product";
 import { CHART_CAROUSEL_START_DELAY_MS } from "../lib/carousel_timing";
 import { subTitleForSnap } from "../lib/navigation";
 import { useSnapFocused } from "../lib/use_snap_focused";
-import { getTable } from "../lib/selectors";
+import { getBestTable } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
 
-const REV_SHARE = "\u6536\u5165\u5360\u6bd4";
-const MARGIN_CHANGE = "\u6bdb\u5229\u7387\u53d8\u52a8";
+const REV_SHARE = SEC05_REV_SHARE;
+const MARGIN_CHANGE = SEC05_MARGIN_CHANGE;
 
 /** 移动类收入口径归一（图例合并、同色） */
 const MOBILE_GAME_CANONICAL = "\u79fb\u52a8\u6e38\u620f";
@@ -85,11 +94,7 @@ const PRODUCT_TYPE_ORDER = [
   "\u5176\u4ed6/\u5f71\u89c6",
 ];
 
-type ProductRow = Record<string, string | number | null>;
-
-function companyLabel(raw: string): string {
-  return raw === "YYCQ" ? FK.yycqLabel : raw;
-}
+type ProductRow = Sec05ProductRow;
 
 function normalizeProductType(raw: string): string {
   const t = raw.trim();
@@ -99,16 +104,11 @@ function normalizeProductType(raw: string): string {
 }
 
 function normalizeShare(raw: number): number {
-  return Math.abs(raw) <= 1 ? raw * 100 : raw;
+  return sec05PercentPoints(raw);
 }
 
 function normalizeMargin(raw: number): number {
-  return Math.abs(raw) <= 1 ? raw * 100 : raw;
-}
-
-function parseMarginChangePct(v: string | number | null | undefined): number | null {
-  if (v == null || v === "") return null;
-  return parseNum(String(v).replace(/pct/gi, ""));
+  return sec05PercentPoints(raw);
 }
 
 function formatMarginChangePct(v: number): string {
@@ -127,7 +127,7 @@ function sortProductTypes(types: Iterable<string>): string[] {
   return [...ordered, ...rest];
 }
 
-function buildRevenueMix(rows: ProductRow[]) {
+function buildRevenueMix(rows: ProductRow[], snapshot: SectionProps["snapshot"]) {
   const productTypes = new Set<string>();
   const byCompany = new Map<string, { name: string; company: string; segments: Record<string, number> }>();
 
@@ -138,7 +138,7 @@ function buildRevenueMix(rows: ProductRow[]) {
     if (!company || !productType || shareRaw == null) continue;
     productTypes.add(productType);
     if (!byCompany.has(company)) {
-      byCompany.set(company, { name: companyLabel(company), company, segments: {} });
+      byCompany.set(company, { name: companyDisplayLabel(company, snapshot), company, segments: {} });
     }
     const share = normalizeShare(shareRaw);
     byCompany.get(company)!.segments[productType] = (byCompany.get(company)!.segments[productType] ?? 0) + share;
@@ -178,7 +178,7 @@ function buildProductMarginRows(rows: ProductRow[], snapshot: SectionProps["snap
       const marginRaw = parseNum(row[FK.grossMargin]);
       if (!productType || marginRaw == null) return;
       result.push({
-        label: `${companyLabel(company)} \u00b7 ${productType}`,
+        label: `${companyDisplayLabel(company, snapshot)} \u00b7 ${productType}`,
         company,
         productType,
         margin: normalizeMargin(marginRaw),
@@ -211,10 +211,10 @@ function buildMarginChangeRows(rows: ProductRow[], snapshot: SectionProps["snaps
     const base = colorForCompany(company, snapshot);
     items.forEach((row, idx) => {
       const productType = normalizeProductType(String(row[FK.productType] ?? ""));
-      const change = parseMarginChangePct(row[MARGIN_CHANGE]);
+      const change = parseSec05MarginChangePct(row[MARGIN_CHANGE]);
       if (!productType || change == null) return;
       result.push({
-        label: `${companyLabel(company)} \u00b7 ${productType}`,
+        label: `${companyDisplayLabel(company, snapshot)} \u00b7 ${productType}`,
         company,
         productType,
         change,
@@ -257,19 +257,24 @@ function RevenueChartCarousel({
 
 export function Sec05Revenue({ snapshot }: SectionProps) {
   const sec05 = snapshot.sections.find((s) => s.id === "sec-05");
-  const product = getTable(snapshot, "sec-05-1");
+  const product = getBestTable(snapshot, "sec-05-1");
+
+  const productRows = useMemo(
+    () => normalizeSec05ProductRows(product?.rows ?? [], product?.headers),
+    [product?.rows, product?.headers],
+  );
 
   const { types, data: mixData } = useMemo(
-    () => buildRevenueMix(product?.rows ?? []),
-    [product?.rows],
+    () => buildRevenueMix(productRows, snapshot),
+    [productRows, snapshot],
   );
   const marginRows = useMemo(
-    () => buildProductMarginRows(product?.rows ?? [], snapshot),
-    [product?.rows, snapshot],
+    () => buildProductMarginRows(productRows, snapshot),
+    [productRows, snapshot],
   );
   const marginChangeRows = useMemo(
-    () => buildMarginChangeRows(product?.rows ?? [], snapshot),
-    [product?.rows, snapshot],
+    () => buildMarginChangeRows(productRows, snapshot),
+    [productRows, snapshot],
   );
 
   const rowCount = Math.max(marginRows.length, marginChangeRows.length, mixData.length, 1);

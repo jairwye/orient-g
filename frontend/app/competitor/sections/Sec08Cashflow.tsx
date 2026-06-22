@@ -114,7 +114,7 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
         const ocf = ocfRow ? parseNum(rowValueForCompany(ocfRow, col)) : null;
         if (profit == null && ocf == null) return null;
         return {
-          name: colToLabel(col),
+          name: colToLabel(col, snapshot),
           profit: profit ?? 0,
           ocf: ocf ?? 0,
           sortKey: ocf ?? profit ?? 0,
@@ -122,7 +122,7 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
       })
         .filter(Boolean)
         .sort((a, b) => b!.sortKey - a!.sortKey),
-    [profitRow, ocfRow],
+    [profitRow, ocfRow, snapshot],
   );
 
   const chartH = Math.max(280, compareData.length * 44 + 72);

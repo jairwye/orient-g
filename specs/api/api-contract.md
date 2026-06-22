@@ -269,6 +269,7 @@ type CompetitorReportSnapshot = {
 - **路径**：`GET /api/competitor/report/meta` — 仅 `meta` + `warnings` 字段
 
 - **说明**：展示路由固定 `/competitor`；数据存 `{upload_dir}/competitor/report.snapshot.json`；与 `finance_path` 无关。
+- **数值**：带 `%` 的表单元格解析为**百分点**（如 `41.4%` → `41.4`），非 0～1 小数；`parser_version >= 1.1.0` 起生效，旧 snapshot 须重新上传。
 
 ---
 

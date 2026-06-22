@@ -79,6 +79,45 @@ def test_parse_yycq_fixture(yycq_md: str):
     assert isinstance(warnings, list)
 
 
+def test_parse_yycq_sec05_product_table(yycq_md: str):
+    snap, _ = parse_markdown(
+        yycq_md,
+        source_filename="行业财报汇析-2025年_数据文档_YYCQ版.md",
+        uploaded_by="test",
+    )
+    sec05 = next(s for s in snap["sections"] if s["id"] == "sec-05")
+    tables = [b for b in sec05["blocks"] if b.get("anchor") == "sec-05-1" and b.get("kind") == "table"]
+    assert tables
+    table = max(tables, key=lambda t: len(t["rows"]))
+    assert len(table["rows"]) >= 20
+    headers = table["headers"]
+    assert "收入占比" in headers
+    assert "毛利率" in headers
+    assert "毛利率变动" in headers
+    yycq = next(r for r in table["rows"] if r.get("公司") in ("YYCQ", "游艺春秋"))
+    assert yycq.get("收入占比") is not None
+    assert yycq.get("毛利率") is not None
+
+
+def test_parse_yycq_sec04_labor_cost_sections(yycq_md: str):
+    snap, _ = parse_markdown(
+        yycq_md,
+        source_filename="行业财报汇析-2025年_数据文档_YYCQ版.md",
+        uploaded_by="test",
+    )
+    sec04 = next(s for s in snap["sections"] if s["id"] == "sec-04")
+    tables = [b for b in sec04["blocks"] if b.get("anchor") == "sec-04-3" and b.get("kind") == "table"]
+    assert tables
+    table = max(tables, key=lambda t: len(t["rows"]))
+    metrics = [r.get("指标") for r in table["rows"]]
+    assert any("职工福利" in str(m) for m in metrics)
+    assert any("工会经费" in str(m) for m in metrics)
+    per_cap_yuan = [r for r in table["rows"] if str(r.get("指标", "")).strip() == "人均(元/年)"]
+    assert len(per_cap_yuan) >= 2
+    assert per_cap_yuan[0].get("三七互娱") == 18180.0
+    assert per_cap_yuan[1].get("三七互娱") == 1200.0
+
+
 def test_parse_yycq_sec09_block_anchors(yycq_md: str):
     snap, _ = parse_markdown(
         yycq_md,
@@ -127,7 +166,9 @@ def test_parse_cell_value():
     warnings: list[str] = []
     assert parse_cell_value("1,234.5", "sec-01-2", "营收", warnings) == 1234.5
     assert parse_cell_value("(100)", "sec-01-2", "净利", warnings) == -100
-    assert parse_cell_value("12%", "sec-01-2", "rate", warnings) == 0.12
+    assert parse_cell_value("12%", "sec-01-2", "rate", warnings) == 12
+    assert parse_cell_value("-214.6%", "sec-08-2", "经营CF增长率", warnings) == -214.6
+    assert parse_cell_value("41.4%", "sec-08-2", "经营CF/净利", warnings) == 41.4
     assert parse_cell_value("-", "sec-01-2", "x", warnings) is None
 
 

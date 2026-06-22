@@ -24,11 +24,13 @@ import {
   CHART_Y_AXIS,
   colorForCompany,
 } from "../lib/competitor_chart_colors";
-import { COMPANY_COLS, colToLabel } from "../lib/companies";
+import { COMPANY_COLS, colToLabel, companyDisplayLabel, rowValueForCompany } from "../lib/companies";
 import { CL, FK } from "../lib/field_keys";
 import { formatDecimal2, formatPctPoints, formatTableCell, parseNum, toPercentPoints } from "../lib/format";
+import { LaborCostTable } from "../components/LaborCostTable";
+import { laborCostTableHasFullSections } from "../lib/labor_cost_table_utils";
 import { subTitleForSnap } from "../lib/navigation";
-import { getTable } from "../lib/selectors";
+import { getBestTable } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
 
 const STACK_SERIES = [
@@ -116,29 +118,35 @@ function findPerCapProfitRow(rows: Record<string, string | number | null>[] | un
   );
 }
 
-function buildMetricBarData(metricRow: Record<string, string | number | null> | undefined) {
+function buildMetricBarData(
+  metricRow: Record<string, string | number | null> | undefined,
+  snapshot: SectionProps["snapshot"],
+) {
   if (!metricRow) return [];
   return COMPANY_COLS.map((col) => {
-    const value = parseNum(metricRow[col]);
+    const value = parseNum(rowValueForCompany(metricRow, col));
     if (value == null) return null;
     return {
-      name: colToLabel(col),
+      name: colToLabel(col, snapshot),
       colKey: col,
       value,
     };
   }).filter(Boolean);
 }
 
-function buildHeadcountAmpData(rows: Record<string, string | number | null>[] | undefined) {
+function buildHeadcountAmpData(
+  rows: Record<string, string | number | null>[] | undefined,
+  snapshot: SectionProps["snapshot"],
+) {
   const ampRow = rows?.find((r) => String(r[FK.metric] ?? "") === METRIC_HEADCOUNT_AMP);
   if (!ampRow) return [];
   return COMPANY_COLS.map((col) => {
-    const raw = ampRow[col];
+    const raw = rowValueForCompany(ampRow, col);
     const n = parseNum(raw);
     if (n == null) return null;
     const pct = toPercentPoints(n);
     return {
-      name: colToLabel(col),
+      name: colToLabel(col, snapshot),
       colKey: col,
       value: pct,
     };
@@ -148,10 +156,10 @@ function buildHeadcountAmpData(rows: Record<string, string | number | null>[] | 
 export function Sec04People({ snapshot }: SectionProps) {
   const sec04 = snapshot.sections.find((s) => s.id === "sec-04");
   const blocks = sec04?.blocks ?? [];
-  const headcount = getTable(snapshot, "sec-04-1");
-  const efficiency = getTable(snapshot, "sec-04-2");
-  const laborCost = getTable(snapshot, "sec-04-3");
-  const structure = getTable(snapshot, "sec-04-4");
+  const headcount = getBestTable(snapshot, "sec-04-1");
+  const efficiency = getBestTable(snapshot, "sec-04-2");
+  const laborCost = getBestTable(snapshot, "sec-04-3");
+  const structure = getBestTable(snapshot, "sec-04-4");
 
   const stackData =
     structure?.rows
@@ -163,7 +171,7 @@ export function Sec04People({ snapshot }: SectionProps) {
         const total = rd + ops + adm;
         if (!name || total <= 0) return null;
         return {
-          name: name === "YYCQ" ? FK.yycqLabel : name,
+          name: companyDisplayLabel(name, snapshot),
           rd: (rd / total) * 100,
           ops: (ops / total) * 100,
           adm: (adm / total) * 100,
@@ -174,9 +182,9 @@ export function Sec04People({ snapshot }: SectionProps) {
   const revRow = findPerCapRevRow(efficiency?.rows);
   const profRow = findPerCapProfitRow(efficiency?.rows);
 
-  const perCapRevData = buildMetricBarData(revRow);
-  const perCapProfitData = buildMetricBarData(profRow);
-  const headcountAmpData = buildHeadcountAmpData(headcount?.rows);
+  const perCapRevData = buildMetricBarData(revRow, snapshot);
+  const perCapProfitData = buildMetricBarData(profRow, snapshot);
+  const headcountAmpData = buildHeadcountAmpData(headcount?.rows, snapshot);
 
   const headcountAmpChart = (
     <PanelChart caption={CL.headcountAmpChart} chartClassName="h-60 w-full sm:h-72">
@@ -307,15 +315,18 @@ export function Sec04People({ snapshot }: SectionProps) {
 
   const laborTable =
     laborCost?.rows && laborCost.rows.length > 0 ? (
-      <DataTable headers={laborCost.headers} rows={laborCost.rows} delayMs={0} compact />
+      <LaborCostTable table={laborCost} snapshot={snapshot} />
     ) : null;
+
+  const laborCostIncomplete =
+    laborCost?.rows && laborCost.rows.length > 0 && !laborCostTableHasFullSections(laborCost.rows);
 
   const structureTable =
     structure?.rows && structure.rows.length > 0 ? (
       <DataTable headers={structure.headers} rows={structure.rows} delayMs={0} compact />
     ) : null;
 
-  const topics = [
+  const explorerTopics = [
     ...(headcountTable
       ? [
           {
@@ -352,6 +363,11 @@ export function Sec04People({ snapshot }: SectionProps) {
             title: CL.laborCost,
             content: (
               <TopicStack>
+                {laborCostIncomplete ? (
+                  <p className="text-xs leading-relaxed text-amber-400/90">
+                    当前快照缺少「职工福利 / 工会经费」分组，请在财务后台重新上传蓝本（直接改仓库 MD 不会自动生效）。
+                  </p>
+                ) : null}
                 {laborTable}
                 <NarrativesFromSection blocks={blocks} anchor="sec-04-3" immediate plain stripAnalysisPrefix />
               </TopicStack>
@@ -380,7 +396,7 @@ export function Sec04People({ snapshot }: SectionProps) {
           id: "sec-04-a",
           title: subTitleForSnap("sec-04-a"),
           dense: true,
-          content: <AppleFocusExplorer defaultActiveId="headcount" topics={topics} />,
+          content: <AppleFocusExplorer defaultActiveId="headcount" topics={explorerTopics} />,
         },
       ]}
     />

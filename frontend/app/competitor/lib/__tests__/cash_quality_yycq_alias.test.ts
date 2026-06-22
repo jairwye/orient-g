@@ -5,7 +5,7 @@ function snapshotWithYycqLabelHeader(): CompetitorReportSnapshot {
   return {
     version: 1,
     meta: {},
-    companies: [],
+    companies: [{ id: "yycq", label: "游艺春秋", short: "YYCQ" }],
     sections: [
       {
         id: "sec-08",

@@ -2,9 +2,9 @@ import { formatSolvencyMetricValue } from "../format";
 
 describe("formatSolvencyMetricValue", () => {
   it("formats fraction ratios as percent per blueprint", () => {
-    expect(formatSolvencyMetricValue("资产负债率", 0.388)).toBe("38.80%");
-    expect(formatSolvencyMetricValue("货币资金/总资产", 0.185)).toBe("18.50%");
-    expect(formatSolvencyMetricValue("有息负债率", 0.178)).toBe("17.80%");
+    expect(formatSolvencyMetricValue("资产负债率", 0.388)).toBe("38.8%");
+    expect(formatSolvencyMetricValue("货币资金/总资产", 0.185)).toBe("18.5%");
+    expect(formatSolvencyMetricValue("有息负债率", 0.178)).toBe("17.8%");
   });
 
   it("keeps liquidity ratios as decimals", () => {

@@ -128,4 +128,12 @@ describe("resolveScrollEndTarget", () => {
       shouldSnap: false,
     });
   });
+
+  it("超高屏未滚到面板底部时不提前磁吸", () => {
+    expect(resolveScrollEndTarget(ids, tallMetrics, 1700, vh, "up")).toEqual({
+      scrollTop: 1700,
+      activeId: "sec-01-b",
+      shouldSnap: false,
+    });
+  });
 });

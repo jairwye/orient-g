@@ -27,9 +27,10 @@ export function parseNum(v: string | number | null | undefined): number | null {
     const n = parseFloat(inner.replace(/[^\d.-]/g, ""));
     return Number.isFinite(n) ? n * 10000 : null;
   }
-  const n = parseFloat(inner.replace(/[^\d.-]/g, ""));
+  const n = parseFloat(inner.replace(/[^\d.+-]/g, ""));
   if (!Number.isFinite(n)) return null;
-  if (pct && Math.abs(n) > 1) return n / 100;
+  // 带 % 的蓝本数字即百分点，直接引用（如 -214.6%、41.4%）
+  if (pct) return n;
   return n;
 }
 
@@ -40,7 +41,7 @@ export function parseScore(v: string | number | null | undefined): number | null
   return m ? parseFloat(m[1]) : null;
 }
 
-/** sec-08-2 经营现金流/净利：蓝本 1.22 表示 122%，0.414 表示 41.4% */
+/** sec-08-2 经营现金流/净利：蓝本 1.22 表示 122%，0.414 表示 41.4%；亦可能已是 41.4% */
 export function cfProfitRatioToPercentPoints(n: number): number {
   const abs = Math.abs(n);
   if (abs === 0) return 0;
@@ -49,14 +50,26 @@ export function cfProfitRatioToPercentPoints(n: number): number {
   return round2(n);
 }
 
-/** 将比率或百分点统一为「百分比数值」（如 8.5 表示 8.5%） */
+/**
+ * 将 snapshot 数值统一为百分点（41.4 表示 41.4%）。
+ * 兼容旧版 /100 存储；新版与蓝本带 % 单元格为直接百分点。
+ */
 export function toPercentPoints(n: number): number {
   const abs = Math.abs(n);
   if (abs === 0) return 0;
-  if (abs <= 1) return round2(n * 100);
-  if (abs <= 100) return round2(n);
-  if (abs <= 10) return round2(n * 100);
+  if (abs < 1) return round2(n * 100);
+  const scaled = round2(n * 100);
+  if (abs <= 5 && Math.abs(scaled) >= 50) return scaled;
   return round2(n);
+}
+
+/** 百分点 → 展示串：与蓝本一致，不补尾零 */
+export function formatPercentFromPoints(points: number): string {
+  if (!Number.isFinite(points)) return "—";
+  const r = round2(points);
+  if (Number.isInteger(r)) return `${r.toLocaleString("zh-CN")}%`;
+  const formatted = r.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  return `${formatted}%`;
 }
 
 export function isPercentColumnKey(key: string): boolean {
@@ -77,6 +90,16 @@ export function isPercentColumnKey(key: string): boolean {
 
 const PRESERVE_TEXT = /家|亿|扭亏|减亏|约|—|-/;
 
+/** 蓝本中的纯数字串（保留小数位，如 8.8、1,234.5） */
+function blueprintNumericLiteral(raw: string): string | null {
+  const t = raw.trim();
+  if (!t || t === "—" || t === "-") return null;
+  const compact = t.replace(/\s+/g, "").replace(/，/g, ",");
+  if (/^-?[\d,]+(\.\d+)?$/.test(compact)) return t.replace(/\s+/g, "");
+  if (/^-?[\d,]+(\.\d+)?[xX]$/.test(compact)) return t.replace(/\s+/g, "");
+  return null;
+}
+
 export function formatDecimal2(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const r = round2(n);
@@ -86,25 +109,26 @@ export function formatDecimal2(n: number | null | undefined): string {
   if (Number.isInteger(r)) {
     return r.toLocaleString("zh-CN");
   }
-  return r.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // 不补尾零：8.8 而非 8.80（与蓝本小数位一致）
+  return r.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
 export function formatPct(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
-  return `${toPercentPoints(n).toFixed(2)}%`;
+  return formatPercentFromPoints(toPercentPoints(n));
 }
 
 export function formatYiWan(n: number | null | undefined, unit = "万"): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const r = round2(n);
-  if (unit === "亿" && Math.abs(r) >= 10000) return `${round2(r / 10000).toFixed(2)} 亿`;
-  if (Math.abs(r) >= 10000) return `${round2(r / 10000).toFixed(2)} 亿`;
+  if (unit === "亿" && Math.abs(r) >= 10000) return `${formatDecimal2(r / 10000)} 亿`;
+  if (Math.abs(r) >= 10000) return `${formatDecimal2(r / 10000)} 亿`;
   return `${formatDecimal2(r)} ${unit}`;
 }
 
 export function formatScore(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
-  return round2(n).toFixed(2);
+  return formatDecimal2(n);
 }
 
 /** 表格/卡片单元格：同比等百分数列、其余数值两位小数 */
@@ -128,9 +152,12 @@ export function formatTableCell(
     if (!t || t === "—" || t === "-") return "—";
     if (PRESERVE_TEXT.test(t) && !/^-?\d/.test(t)) return t;
     if (/^\d{4}年/.test(t)) return t;
-    if (t.endsWith("%") && isPercentColumnKey(columnKey)) {
-      const n = parseNum(t);
-      return n != null ? formatPct(n) : t;
+    if (t.endsWith("%")) {
+      return t.replace(/\s+/g, "");
+    }
+    if (!isPercentColumnKey(columnKey)) {
+      const numericLiteral = blueprintNumericLiteral(t);
+      if (numericLiteral != null) return numericLiteral;
     }
     if (t.includes("亿") || t.includes("约")) return t;
     const parsed = parseNum(t);
@@ -142,22 +169,24 @@ export function formatTableCell(
   return formatDecimal2(val);
 }
 
-/** 千分位 + 两位小数 */
+/** 千分位；小数位与数值一致，不补尾零 */
 export function formatDisplayNumber(val: string | number | null | undefined): string {
   if (val == null || val === "") return "—";
   if (typeof val === "string") {
     const t = val.trim();
     if (PRESERVE_TEXT.test(t) && !/^-?\d/.test(t)) return t;
+    const numericLiteral = blueprintNumericLiteral(t);
+    if (numericLiteral != null) return numericLiteral;
   }
   const n = typeof val === "number" ? val : parseNum(val);
   if (n == null) return String(val);
   return formatDecimal2(n);
 }
 
-/** 图表 tooltip：已是 0–100 的百分点 */
+/** 图表 tooltip：已是百分点（41.4 表示 41.4%） */
 export function formatPctPoints(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
-  return `${round2(n).toFixed(2)}%`;
+  return formatPercentFromPoints(n);
 }
 
 /** sec-06-3 偿债表：按行指标名格式化（参照蓝本） */
@@ -169,6 +198,9 @@ export function formatSolvencyMetricValue(
   val: string | number | null | undefined,
 ): string {
   if (val == null || val === "") return "—";
+  if (typeof val === "string" && val.trim().endsWith("%")) {
+    return val.trim().replace(/\s+/g, "");
+  }
   const n = parseNum(val);
   if (n == null) return String(val);
   const m = metric.trim();

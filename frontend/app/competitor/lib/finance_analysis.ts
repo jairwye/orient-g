@@ -56,8 +56,8 @@ export function peerMedian(values: number[]): number | null {
   return sorted.length % 2 ? sorted[mid]! : round2((sorted[mid - 1]! + sorted[mid]!) / 2);
 }
 
-function companyName(col: string): string {
-  return colToLabel(col);
+function companyName(col: string, snapshot?: CompetitorReportSnapshot): string {
+  return colToLabel(col, snapshot);
 }
 
 function driverLabel(d: DupontPoint["driver"]): string {
@@ -136,7 +136,7 @@ export function parseCashQualityPoints(snapshot: CompetitorReportSnapshot): Cash
       ratioPct = (o / p) * 100;
     }
     const { tier, tierLabel } = classifyCashQuality(p, o, ratioPct);
-    return { colKey: col, name: companyName(col), profit: p, ocf: o, ratioPct, tier, tierLabel };
+    return { colKey: col, name: companyName(col, snapshot), profit: p, ocf: o, ratioPct, tier, tierLabel };
   }).filter(Boolean) as CashQualityPoint[];
 }
 

@@ -9,7 +9,8 @@ describe("parseNum mixed labels", () => {
 
   it("still parses plain numbers", () => {
     expect(parseNum("1234.5")).toBe(1234.5);
-    expect(parseNum("49.4%")).toBeCloseTo(0.494);
+    expect(parseNum("49.4%")).toBe(49.4);
+    expect(parseNum("-214.6%")).toBe(-214.6);
   });
 });
 

@@ -69,7 +69,8 @@ export function resolveScrollEndTarget(
     }
 
     const bottomFromViewportTop = bottom - scrollTop;
-    if (bottomFromViewportTop < crossLine) {
+    const scrolledNearPanelBottom = scrollTop + viewportHeight >= bottom - 48;
+    if (bottomFromViewportTop < crossLine && scrolledNearPanelBottom) {
       return { scrollTop: nextTop, activeId: nextId!, shouldSnap: true };
     }
     return { scrollTop, activeId: id, shouldSnap: false };

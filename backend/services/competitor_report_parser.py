@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-PARSER_VERSION = "1.0.0"
+PARSER_VERSION = "1.1.0"
 
 ANCHOR_RE = re.compile(r"^#{1,3}\s+(sec-\d{2}(?:-\d+)?)\b\s*(.*)$", re.MULTILINE)
 SECTION_ID_RE = re.compile(r"^(sec-\d{2})")
@@ -294,7 +294,8 @@ def parse_cell_value(cell: str, anchor: str, header: str, warnings: list[str]) -
         inner = "-" + inner[1:-1]
     if re.match(r"^-?\d+(\.\d+)?$", inner):
         val = float(inner)
-        return val / 100.0 if pct and val > 1 else (val if not pct else val / 100.0)
+        # 带 % 的蓝本数字即百分点，直接入库（-214.6%、41.4% 不再 /100）
+        return val
     if re.match(r"^-?\d+(\.\d+)?x$", inner, re.I):
         return float(inner[:-1])
     if re.match(r"^-?\d+(\.\d+)?$", inner.replace("亿", "").replace("万", "")):
@@ -336,24 +337,26 @@ def _extract_companies(
             return
         info = LABEL_TO_COMPANY.get(key)
         if info:
-            cid, label, short = info
+            cid, _canonical, short = info
             if cid not in seen:
                 seen.add(cid)
-                entry: dict[str, Any] = {"id": cid, "label": label}
-                if short and short != label:
+                # 展示名与蓝本原文一致（YYCQ 或 游艺春秋）
+                entry: dict[str, Any] = {"id": cid, "label": key}
+                if short and short != key:
                     entry["short"] = short
                 found.append(entry)
 
-    sec01 = blocks_by_section.get("sec-01", [])
-    for block in sec01:
-        if block.get("kind") != "table":
-            continue
-        if block.get("anchor") != "sec-01-2":
-            continue
-        for row in block.get("rows") or []:
-            company_cell = row.get("公司")
-            if isinstance(company_cell, str):
-                add_from_label(company_cell)
+    for blocks in blocks_by_section.values():
+        for block in blocks:
+            if block.get("kind") != "table":
+                continue
+            for h in block.get("headers") or []:
+                if isinstance(h, str):
+                    add_from_label(h)
+            for row in block.get("rows") or []:
+                company_cell = row.get("公司")
+                if isinstance(company_cell, str):
+                    add_from_label(company_cell)
 
     if len(found) < 8:
         for cid, label, short in COMPANY_LABELS:
