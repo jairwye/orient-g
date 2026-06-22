@@ -50,16 +50,29 @@ export function cfProfitRatioToPercentPoints(n: number): number {
   return round2(n);
 }
 
+function fractionalDecimalPlaces(n: number): number {
+  const s = String(n);
+  const dot = s.indexOf(".");
+  if (dot === -1) return 0;
+  return s.length - dot - 1;
+}
+
 /**
  * 将 snapshot 数值统一为百分点（41.4 表示 41.4%）。
- * 兼容旧版 /100 存储；新版与蓝本带 % 单元格为直接百分点。
+ * 兼容旧版 /100 存储（如 2.146→214.6%）；新版与蓝本带 % 单元格为直接百分点（5.0→5.0%）。
  */
 export function toPercentPoints(n: number): number {
   const abs = Math.abs(n);
   if (abs === 0) return 0;
   if (abs < 1) return round2(n * 100);
   const scaled = round2(n * 100);
-  if (abs <= 5 && Math.abs(scaled) >= 50) return scaled;
+  // 旧 snapshot 大百分比被 /100：须三位及以上小数；避免 5.0/4.9 等客商占比被误 ×100
+  if (abs < 5 && Math.abs(scaled) >= 50 && fractionalDecimalPlaces(n) >= 3) return scaled;
+  return round2(n);
+}
+
+/** 蓝本「占比/持股/费比」等列已是百分点，与 sec-05 一致直接引用 */
+export function sharePercentPoints(n: number): number {
   return round2(n);
 }
 

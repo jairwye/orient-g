@@ -1,12 +1,11 @@
-import { colToLabel, COMPANY_COLS } from "./companies";
+import { companyLabelsForSnapshot, getCompanyContext } from "./companies";
+import type { CompetitorReportSnapshot } from "./types";
 
 export type NarrativePart =
   | { kind: "section"; title: string; body?: string }
   | { kind: "company"; company: string; text: string }
   | { kind: "paragraph"; text: string }
   | { kind: "list"; items: string[] };
-
-const COMPANY_LABELS = COMPANY_COLS.map((c) => colToLabel(c));
 
 /** 段内 (1)(2)(3) 枚举 */
 function splitInlineNumberedItems(text: string): NarrativePart[] | null {
@@ -25,7 +24,16 @@ export type FormatNarrativeOptions = {
   splitCompanies?: boolean;
   /** 隐藏「分析——」类小标题，正文按主体拆行 */
   stripAnalysisPrefix?: boolean;
+  /** 传入 snapshot 时用真实公司名拆分叙事（非匿名「可比公司A」） */
+  snapshot?: CompetitorReportSnapshot;
 };
+
+function narrativeLabels(opts: FormatNarrativeOptions): string[] {
+  if (opts.snapshot?.companies?.length) {
+    return [...getCompanyContext(opts.snapshot).labelOrder];
+  }
+  return companyLabelsForSnapshot();
+}
 
 function isAnalysisTitle(title: string): boolean {
   return /^分析/.test(title.trim());
@@ -41,9 +49,10 @@ function appendSectionBody(
   out: NarrativePart[],
   title: string,
   body: string,
-  splitCompanies: boolean,
-  stripAnalysisPrefix = false,
+  opts: FormatNarrativeOptions,
 ) {
+  const splitCompanies = opts.splitCompanies !== false;
+  const stripAnalysisPrefix = opts.stripAnalysisPrefix === true;
   const numbered = splitInlineNumberedItems(body);
   if (numbered) {
     if (shouldEmitSectionTitle(title, stripAnalysisPrefix)) {
@@ -60,7 +69,7 @@ function appendSectionBody(
     }
     return;
   }
-  const companyParts = splitCompanyMentions(body);
+  const companyParts = splitCompanyMentions(body, opts);
   const hasCompanyBlocks = companyParts.some((p) => p.kind === "company");
   if (hasCompanyBlocks) {
     if (shouldEmitSectionTitle(title, stripAnalysisPrefix)) {
@@ -75,8 +84,8 @@ function appendSectionBody(
 }
 
 /** 按文中公司名出现位置切分为主体块（同公司多次出现合并） */
-function splitCompanyMentions(text: string): NarrativePart[] {
-  const labels = [...COMPANY_LABELS].sort((a, b) => b.length - a.length);
+function splitCompanyMentions(text: string, opts: FormatNarrativeOptions): NarrativePart[] {
+  const labels = [...narrativeLabels(opts)].sort((a, b) => b.length - a.length);
   type Hit = { index: number; company: string; len: number };
   const hits: Hit[] = [];
 
@@ -94,7 +103,7 @@ function splitCompanyMentions(text: string): NarrativePart[] {
   hits.sort((a, b) => a.index - b.index);
 
   if (hits.length < 2) {
-    return splitCompanySentences(text);
+    return splitCompanySentences(text, opts);
   }
 
   const parts: NarrativePart[] = [];
@@ -123,9 +132,10 @@ function splitCompanyMentions(text: string): NarrativePart[] {
 }
 
 /** 按公司名切分长段落（句首或句号后接公司名） */
-function splitCompanySentences(text: string): NarrativePart[] {
+function splitCompanySentences(text: string, opts: FormatNarrativeOptions): NarrativePart[] {
+  const labels = narrativeLabels(opts);
   const pattern = new RegExp(
-    `(?<=[。；]|^)\\s*(${COMPANY_LABELS.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+    `(?<=[。；]|^)\\s*(${labels.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
     "g",
   );
   const hits: { index: number; company: string }[] = [];
@@ -191,15 +201,15 @@ export function formatNarrative(
           if (cleaned) out.push({ kind: "paragraph", text: cleaned });
         }
       } else if (stripAnalysisPrefix && isAnalysisTitle(title)) {
-        appendSectionBody(out, "", rest, splitCompanies, stripAnalysisPrefix);
+        appendSectionBody(out, "", rest, opts);
       } else {
-        appendSectionBody(out, title, rest, splitCompanies, stripAnalysisPrefix);
+        appendSectionBody(out, title, rest, opts);
       }
       continue;
     }
 
     if (splitCompanies) {
-      out.push(...splitCompanyMentions(t));
+      out.push(...splitCompanyMentions(t, opts));
     } else {
       out.push({ kind: "paragraph", text: t });
     }

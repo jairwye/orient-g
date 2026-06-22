@@ -2,8 +2,9 @@
 
 import { useMemo } from "react";
 import type { NarrativeBlock } from "../lib/types";
+import type { CompetitorReportSnapshot } from "../lib/types";
 import { formatNarrative, narrativeLeadExcerpt } from "../lib/narrative_format";
-import { colToLabel, COMPANY_COLS } from "../lib/companies";
+import { companyLabelsForSnapshot } from "../lib/companies";
 import { FadeInView } from "./FadeInView";
 
 function isMeaningful(markdown: string): boolean {
@@ -38,8 +39,8 @@ function renderInlineBold(text: string) {
   });
 }
 
-function renderPlainParagraph(text: string) {
-  for (const label of COMPANY_COLS.map((c) => colToLabel(c))) {
+function renderPlainParagraph(text: string, snapshot?: CompetitorReportSnapshot) {
+  for (const label of companyLabelsForSnapshot(snapshot)) {
     if (text.startsWith(label)) {
       const rest = text.slice(label.length).replace(/^[，,：:\s]+/, "");
       return (
@@ -84,6 +85,7 @@ export function FormattedNarrativeBody({
   columns = false,
   plain = false,
   stripAnalysisPrefix = false,
+  snapshot,
 }: {
   markdown: string;
   delayMs?: number;
@@ -93,10 +95,11 @@ export function FormattedNarrativeBody({
   plain?: boolean;
   /** 隐藏「分析——」小标题，正文按主体拆行 */
   stripAnalysisPrefix?: boolean;
+  snapshot?: CompetitorReportSnapshot;
 }) {
   const parts = useMemo(
-    () => formatNarrative(markdown, { splitCompanies: !plain, stripAnalysisPrefix }),
-    [markdown, plain, stripAnalysisPrefix],
+    () => formatNarrative(markdown, { splitCompanies: !plain, stripAnalysisPrefix, snapshot }),
+    [markdown, plain, stripAnalysisPrefix, snapshot],
   );
   if (!parts.length) return null;
 
@@ -157,7 +160,7 @@ export function FormattedNarrativeBody({
           }
           return (
             <p key={i} className="text-sm leading-relaxed text-zinc-400">
-              {plain ? renderPlainParagraph(part.text) : renderInlineBold(part.text)}
+              {plain ? renderPlainParagraph(part.text, snapshot) : renderInlineBold(part.text)}
             </p>
           );
         })}
@@ -173,6 +176,7 @@ export function InlineNarrative({
   columns = false,
   plain = false,
   stripAnalysisPrefix = false,
+  snapshot,
 }: {
   block: NarrativeBlock;
   delayMs?: number;
@@ -180,6 +184,7 @@ export function InlineNarrative({
   columns?: boolean;
   plain?: boolean;
   stripAnalysisPrefix?: boolean;
+  snapshot?: CompetitorReportSnapshot;
 }) {
   if (!isMeaningful(block.markdown)) return null;
   const body = (
@@ -190,6 +195,7 @@ export function InlineNarrative({
       columns={columns}
       plain={plain}
       stripAnalysisPrefix={stripAnalysisPrefix}
+      snapshot={snapshot}
     />
   );
   if (plain) return body;
@@ -205,6 +211,7 @@ export function NarrativesFromSection({
   columns = false,
   plain = false,
   stripAnalysisPrefix = false,
+  snapshot,
 }: {
   blocks: Array<{ kind: string; markdown?: string; anchor?: string }>;
   inline?: boolean;
@@ -216,6 +223,7 @@ export function NarrativesFromSection({
   columns?: boolean;
   plain?: boolean;
   stripAnalysisPrefix?: boolean;
+  snapshot?: CompetitorReportSnapshot;
 }) {
   let narratives = blocks.filter(
     (b) => b.kind === "narrative" && b.markdown && isMeaningful(b.markdown),
@@ -244,6 +252,7 @@ export function NarrativesFromSection({
             columns={columns}
             plain={plain}
             stripAnalysisPrefix={stripAnalysisPrefix}
+            snapshot={snapshot}
           />
         ))}
       </div>

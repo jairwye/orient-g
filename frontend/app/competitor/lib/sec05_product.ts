@@ -21,18 +21,27 @@ export function isSec05CompactHeader(headers: string[]): boolean {
   return headers.length > 0 && !headers.includes(SEC05_COST_SHARE);
 }
 
-function hasRevenueDeltaAmount(row: Sec05ProductRow): boolean {
-  const v = row[SEC05_REV_DELTA_AMT];
-  if (v == null || v === "" || v === "—" || v === "-") return false;
-  const t = String(v).trim();
-  // 压缩行常把「毛利率变动」错位到收入增减额列（如 -3.6pct）
-  if (/pct/i.test(t)) return false;
-  return true;
+/** 12 列宽表：本公司等完整行（含 毛利率变动 或 +477万 等） */
+export function isSec05FullProductRow(row: Sec05ProductRow): boolean {
+  const mc = row[SEC05_MARGIN_CHANGE];
+  if (mc != null && mc !== "" && mc !== "—") return true;
+  const rid = row[SEC05_REV_DELTA_AMT];
+  if (typeof rid === "string" && /万/.test(rid.trim())) return true;
+  const cid = row[SEC05_COST_DELTA_AMT];
+  if (cid != null && cid !== "" && cid !== "—") return true;
+  return false;
 }
 
 function pickMisalignedMarginChange(row: Sec05ProductRow): string | number | null | undefined {
   const amt = row[SEC05_REV_DELTA_AMT];
-  if (typeof amt === "string" && /pct/i.test(amt.trim())) return amt;
+  if (typeof amt === "string") {
+    const t = amt.trim();
+    if (/pct/i.test(t)) return t;
+  }
+  if (typeof amt === "number" && (row[SEC05_MARGIN_CHANGE] == null || row[SEC05_MARGIN_CHANGE] === "")) {
+    const sign = amt > 0 ? "+" : "";
+    return `${sign}${amt}pct`;
+  }
   const rate = row[SEC05_REV_DELTA_RATE];
   if (typeof rate === "string" && /pct/i.test(String(rate).trim())) return rate;
   return row[SEC05_MARGIN_CHANGE];
@@ -48,7 +57,7 @@ export function normalizeSec05ProductRow(
   headers?: string[],
 ): Sec05ProductRow {
   if (headers && isSec05CompactHeader(headers)) return row;
-  if (hasRevenueDeltaAmount(row)) return row;
+  if (isSec05FullProductRow(row)) return row;
 
   const rateSlot = row[SEC05_REV_DELTA_RATE];
   if (typeof rateSlot === "string" && /pct/i.test(rateSlot)) {

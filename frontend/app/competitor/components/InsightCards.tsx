@@ -66,7 +66,7 @@ export function RankInsightCards({
     <div className={gridClass}>
       {rows.map((row, i) => {
         const rawName = String(row[FK.company] ?? "");
-        const name = colToLabel(rawName);
+        const name = colToLabel(rawName, snapshot);
         const tag = String(row[FK.tag] ?? row["标签"] ?? "");
         const insight = String(row[FK.oneLine] ?? row["一句话研判"] ?? "");
         const scoreRaw = row[FK.compositeScore] ?? row["综合评分"];

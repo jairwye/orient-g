@@ -21,7 +21,7 @@ import { DataTable } from "../components/DataTable";
 import { SubjectAnalysisBoard } from "../components/SubjectAnalysisBoard";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS } from "../lib/competitor_chart_colors";
-import { COMPANY_COLS, colToLabel, rowValueForCompany } from "../lib/companies";
+import { companyColsForSnapshot, colToLabel, competitorTableUiProps, rowValueForCompany } from "../lib/companies";
 import { parseCashQualityPoints } from "../lib/finance_analysis";
 import { CL, FK, FK_CF_ITEM } from "../lib/field_keys";
 import {
@@ -100,8 +100,13 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
     return narrativeMarkdown(secBlocks, "sec-08-2");
   }, [snapshot]);
   const cashSubjectGroups = useMemo(
-    () => buildCashSubjectGroups(cashAnalysisMarkdown),
-    [cashAnalysisMarkdown],
+    () => buildCashSubjectGroups(cashAnalysisMarkdown, snapshot),
+    [cashAnalysisMarkdown, snapshot],
+  );
+
+  const cfCols = useMemo(
+    () => companyColsForSnapshot(snapshot, cfQuality?.headers),
+    [snapshot, cfQuality?.headers],
   );
 
   const profitRow = cfQuality?.rows.find((r) => String(r[FK.metric] ?? "").includes(CL.netProfit));
@@ -109,7 +114,7 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
 
   const compareData = useMemo(
     () =>
-      COMPANY_COLS.map((col) => {
+      cfCols.map((col) => {
         const profit = profitRow ? parseNum(rowValueForCompany(profitRow, col)) : null;
         const ocf = ocfRow ? parseNum(rowValueForCompany(ocfRow, col)) : null;
         if (profit == null && ocf == null) return null;
@@ -122,7 +127,7 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
       })
         .filter(Boolean)
         .sort((a, b) => b!.sortKey - a!.sortKey),
-    [profitRow, ocfRow, snapshot],
+    [profitRow, ocfRow, cfCols, snapshot],
   );
 
   const chartH = Math.max(280, compareData.length * 44 + 72);
@@ -144,6 +149,7 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
                   rows={cfItems.rows}
                   delayMs={40}
                   compact
+                  {...competitorTableUiProps(snapshot)}
                   formatCell={formatCfItemsCell}
                 />
               ) : null}
@@ -155,6 +161,7 @@ export function Sec08Cashflow({ snapshot }: SectionProps) {
                     rows={cfQuality.rows}
                     delayMs={60}
                     compact
+                    {...competitorTableUiProps(snapshot)}
                     formatCell={formatCfQualityCell}
                   />
                 </div>

@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS, colorForCompany } from "../lib/competitor_chart_colors";
-import { colToLabel, COMPANY_COLS, labelToCol } from "../lib/companies";
+import { colToLabel, companyColsForSnapshot, COMPANY_COLS, labelToCol } from "../lib/companies";
 import { CL } from "../lib/field_keys";
 import { formatDecimal2, parseNum } from "../lib/format";
 import type { CompetitorReportSnapshot, TableBlock } from "../lib/types";
@@ -195,7 +195,14 @@ export function GovSubsidyDetailPanel({
 }
 
 /** 在研项目全景可视化方案 */
-export function RndPipelineBlueprint({ delayMs = 80 }: { delayMs?: number }) {
+export function RndPipelineBlueprint({
+  delayMs = 80,
+  snapshot,
+}: {
+  delayMs?: number;
+  snapshot?: CompetitorReportSnapshot;
+}) {
+  const companyCols = snapshot ? companyColsForSnapshot(snapshot) : [...COMPANY_COLS];
   const stages = [
     { key: "dev", label: "研发中", color: STAGE_COLORS.dev },
     { key: "test", label: "测试中", color: STAGE_COLORS.test },
@@ -210,12 +217,12 @@ export function RndPipelineBlueprint({ delayMs = 80 }: { delayMs?: number }) {
       delayMs={delayMs}
     >
       <div className="mb-4 flex flex-wrap gap-1.5">
-        {COMPANY_COLS.map((col) => (
+        {companyCols.map((col) => (
           <span
             key={col}
             className="rounded-full border border-zinc-700/60 bg-zinc-900/50 px-2.5 py-0.5 text-[10px] text-zinc-400"
           >
-            {colToLabel(col)}
+            {colToLabel(col, snapshot)}
           </span>
         ))}
       </div>
@@ -241,9 +248,9 @@ export function RndPipelineBlueprint({ delayMs = 80 }: { delayMs?: number }) {
         <div className="rounded-md border border-zinc-800/60 bg-zinc-900/30 p-3">
           <p className="text-[11px] text-zinc-500">各公司在研数量（横条排序）</p>
           <div className="mt-2 space-y-1.5">
-            {COMPANY_COLS.slice(0, 4).map((col, i) => (
+            {companyCols.slice(0, 4).map((col, i) => (
               <div key={col} className="flex items-center gap-2">
-                <span className="w-14 shrink-0 text-[10px] text-zinc-500">{colToLabel(col)}</span>
+                <span className="w-14 shrink-0 text-[10px] text-zinc-500">{colToLabel(col, snapshot)}</span>
                 <div className="h-2 flex-1 rounded bg-zinc-800/50">
                   <div
                     className="h-full rounded"
@@ -282,7 +289,14 @@ export function RndPipelineBlueprint({ delayMs = 80 }: { delayMs?: number }) {
 }
 
 /** 运营产品矩阵可视化方案 */
-export function OperatingProductsBlueprint({ delayMs = 80 }: { delayMs?: number }) {
+export function OperatingProductsBlueprint({
+  delayMs = 80,
+  snapshot,
+}: {
+  delayMs?: number;
+  snapshot?: CompetitorReportSnapshot;
+}) {
+  const companyCols = snapshot ? companyColsForSnapshot(snapshot) : [...COMPANY_COLS];
   const lifecycle = ["成熟期", "成长期", "衰退期", "新品"];
   return (
     <BlueprintShell
@@ -299,9 +313,9 @@ export function OperatingProductsBlueprint({ delayMs = 80 }: { delayMs?: number 
                 {h}
               </div>
             ))}
-            {COMPANY_COLS.slice(0, 4).map((col) => (
+            {companyCols.slice(0, 4).map((col) => (
               <Fragment key={col}>
-                <div className="bg-zinc-900/50 p-2 text-zinc-400">{colToLabel(col)}</div>
+                <div className="bg-zinc-900/50 p-2 text-zinc-400">{colToLabel(col, snapshot)}</div>
                 {lifecycle.map((lc, j) => (
                   <div key={`${col}-${lc}`} className="bg-zinc-900/35 p-2">
                     <div className="flex flex-wrap gap-1">

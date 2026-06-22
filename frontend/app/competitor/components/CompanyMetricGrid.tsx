@@ -1,5 +1,6 @@
 "use client";
 
+import { colToLabel } from "../lib/companies";
 import { colorForCompany } from "../lib/competitor_chart_colors";
 import type { CompetitorReportSnapshot } from "../lib/types";
 import { CL, FK } from "../lib/field_keys";
@@ -76,7 +77,7 @@ export function CompanyMetricGrid({
         const roe = parseNum(row[ROE_KEY]);
         const accent = colorForCompany(name, snapshot);
         const profitPositive = profit != null && profit >= 0;
-        const displayName = name === "YYCQ" ? FK.yycqLabel : name;
+        const displayName = colToLabel(name, snapshot);
 
         const revDeltaRaw = row[REV_DELTA];
         const revDeltaNum = typeof revDeltaRaw === "number" ? revDeltaRaw : parseNum(revDeltaRaw);

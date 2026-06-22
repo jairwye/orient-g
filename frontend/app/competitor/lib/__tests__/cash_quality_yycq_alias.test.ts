@@ -29,11 +29,11 @@ function snapshotWithSubjectLabelHeader(): CompetitorReportSnapshot {
 }
 
 describe("parseCashQualityPoints subject alias", () => {
-  it("表头为本公司时仍解析出本公司分级点", () => {
+  it("表头为本公司时仍解析出主体分级点，页面展示 YYCQ", () => {
     const points = parseCashQualityPoints(snapshotWithSubjectLabelHeader());
-    const subject = points.find((p) => p.colKey === SUBJECT_COL);
+    const subject = points.find((p) => p.colKey === SUBJECT_COL || p.colKey === "本公司");
     expect(subject).toBeDefined();
-    expect(subject!.name).toBe("本公司");
+    expect(subject!.name).toBe("YYCQ");
     expect(subject!.profit).toBe(5698);
     expect(subject!.ocf).toBe(2864);
   });

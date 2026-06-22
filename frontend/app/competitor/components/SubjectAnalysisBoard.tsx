@@ -1,6 +1,7 @@
 "use client";
 
 import { colorForCompany } from "../lib/competitor_chart_colors";
+import { colToLabel, isSubjectCol, subjectUiLabel } from "../lib/companies";
 import type { SubjectAnalysisGroup } from "../lib/balance_subject_analysis";
 import type { InsightTone } from "../lib/finance_analysis";
 import { CL } from "../lib/field_keys";
@@ -49,7 +50,9 @@ export function SubjectAnalysisBoard({ groups, snapshot, delayMs = 200, mode = "
                     style={{ backgroundColor: accent }}
                     aria-hidden
                   />
-                  <h3 className="text-sm font-medium text-zinc-100">{group.company}</h3>
+                  <h3 className="text-sm font-medium text-zinc-100">
+                    {isSubjectCol(group.company) ? subjectUiLabel(snapshot) : colToLabel(group.company, snapshot)}
+                  </h3>
                 </header>
                 <ul className="space-y-2">
                   {group.bullets.map((bullet, bi) => (

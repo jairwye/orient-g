@@ -13,7 +13,6 @@ import { useSnapFocused } from "../lib/use_snap_focused";
 import { usePeekCarouselHeight } from "../lib/use_peek_carousel_height";
 import type { CompetitorReportSnapshot, TableBlock } from "../lib/types";
 
-const DEFAULT_COMPANY = "可比公司A";
 const COMPANY_KEY_SUMMARY = "公司";
 const COMPANY_KEY_DETAIL = "竞企名称";
 const SNAP_ID = "sec-09-i";
@@ -48,9 +47,13 @@ export function Sec09OperatingProductsExplorer({ summary, detail, snapshot }: Pr
   );
 
   const defaultIndex = useMemo(() => {
-    const i = companies.indexOf(DEFAULT_COMPANY);
+    const preferred = snapshot.companies
+      .filter((c) => c.id !== "yycq")
+      .map((c) => c.label)
+      .find((label) => companies.includes(label));
+    const i = preferred ? companies.indexOf(preferred) : 0;
     return i >= 0 ? i : 0;
-  }, [companies]);
+  }, [companies, snapshot]);
 
   const [activeIndex, setActiveIndex] = useState(defaultIndex);
   const [userPaused, setUserPaused] = useState(false);

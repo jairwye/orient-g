@@ -12,29 +12,14 @@ import { usePeekCarouselHeight } from "../lib/use_peek_carousel_height";
 import type { AnchorBlock } from "../lib/selectors";
 import type { CompetitorReportSnapshot, TableBlock } from "../lib/types";
 
-const DEFAULT_COMPANY = "可比公司A";
+import { parseCustomerCompanyTables } from "../lib/sec09_customer_blocks";
+
 const SNAP_ID = "sec-09-m";
 
 type CompanyTable = { company: string; table: Pick<TableBlock, "headers" | "rows"> };
 
 function parseCustomerBlocks(blocks: AnchorBlock[]): CompanyTable[] {
-  const out: CompanyTable[] = [];
-  let pendingCompany = "";
-
-  for (const block of blocks) {
-    if (block.kind === "narrative") {
-      const md = block.markdown?.trim() ?? "";
-      const h = md.match(/^###\s+(.+)$/m)?.[1]?.trim();
-      if (h && !h.startsWith("sec-")) pendingCompany = h;
-    } else if (block.kind === "table" && pendingCompany) {
-      out.push({
-        company: pendingCompany,
-        table: { headers: block.headers, rows: block.rows },
-      });
-      pendingCompany = "";
-    }
-  }
-  return out;
+  return parseCustomerCompanyTables(blocks);
 }
 
 type Props = {
@@ -58,9 +43,13 @@ export function Sec09CustomerExplorer({ blocks, snapshot }: Props) {
   const companies = useMemo(() => companyTables.map((c) => c.company), [companyTables]);
 
   const defaultIndex = useMemo(() => {
-    const i = companies.indexOf(DEFAULT_COMPANY);
+    const preferred = snapshot.companies
+      .filter((c) => c.id !== "yycq")
+      .map((c) => c.label)
+      .find((label) => companies.includes(label));
+    const i = preferred ? companies.indexOf(preferred) : 0;
     return i >= 0 ? i : 0;
-  }, [companies]);
+  }, [companies, snapshot]);
 
   const [activeIndex, setActiveIndex] = useState(defaultIndex);
   const [userPaused, setUserPaused] = useState(false);

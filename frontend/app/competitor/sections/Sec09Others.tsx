@@ -19,6 +19,7 @@ import { DataTable } from "../components/DataTable";
 import { BlueprintAnalysisPanel } from "../components/BlueprintAnalysisPanel";
 import { Sec09CustomerExplorer } from "../components/Sec09CustomerExplorer";
 import { Sec09CustomerViz } from "../components/Sec09CustomerViz";
+import { parseCustomerCompanyTables } from "../lib/sec09_customer_blocks";
 import { Sec09OperatingProductsExplorer } from "../components/Sec09OperatingProductsExplorer";
 import { Sec09RelatedPartyExplorer } from "../components/Sec09RelatedPartyExplorer";
 import { Sec09RndProjectExplorer } from "../components/Sec09RndProjectExplorer";
@@ -28,7 +29,7 @@ import { SubjectAnalysisBoard } from "../components/SubjectAnalysisBoard";
 import { TopicSubjectBoard } from "../components/TopicSubjectBoard";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS, colorForCompany } from "../lib/competitor_chart_colors";
-import { COMPANY_COLS, colToLabel } from "../lib/companies";
+import { companyColsForSnapshot, colToLabel, rowValueForCompany } from "../lib/companies";
 import { CL, FK, FK_METRIC } from "../lib/field_keys";
 import { formatDecimal2, formatPctPoints, parseNum, toPercentPoints } from "../lib/format";
 import { subTitleForSnap } from "../lib/navigation";
@@ -79,11 +80,12 @@ function metricBars(
 ) {
   const row = table?.rows.find((r) => String(r[FK.metric] ?? "") === metric);
   if (!row) return [];
-  return COMPANY_COLS.map((col) => {
-    const raw = parseNum(row[col]);
+  const cols = companyColsForSnapshot(snapshot, table?.headers);
+  return cols.map((col) => {
+    const raw = parseNum(rowValueForCompany(row, col));
     if (raw == null) return null;
     const value = opts?.asPct ? toPercentPoints(raw) : raw;
-    return { name: colToLabel(col), value, fill: colorForCompany(col, snapshot) };
+    return { name: colToLabel(col, snapshot), value, fill: colorForCompany(col, snapshot) };
   })
     .filter(Boolean)
     .sort((a, b) => b!.value - a!.value) as Array<{ name: string; value: number; fill: string }>;
@@ -154,9 +156,9 @@ export function Sec09Others({ snapshot }: SectionProps) {
       if (BLUEPRINT_ANALYSIS_ANCHORS.has(anchor)) {
         blueprint[anchor] = md;
       } else if (TOPIC_SUBJECT_ANCHORS.has(anchor)) {
-        topicSubject[anchor] = buildTopicSubjectGroups(md);
+        topicSubject[anchor] = buildTopicSubjectGroups(md, snapshot);
       } else {
-        subject[anchor] = buildSec09SubjectGroups(md);
+        subject[anchor] = buildSec09SubjectGroups(md, snapshot);
       }
     }
     return { subject, topicSubject, blueprint };
@@ -176,32 +178,38 @@ export function Sec09Others({ snapshot }: SectionProps) {
   const roiData = useMemo(() => metricBars(roi, FK_METRIC.compositeRoi, snapshot), [roi, snapshot]);
   const rentData = useMemo(() => metricBars(rent, FK_METRIC.rentPerCap, snapshot), [rent, snapshot]);
 
+  const sec09Cols = useMemo(
+    () => companyColsForSnapshot(snapshot, roi?.headers ?? currency?.headers),
+    [snapshot, roi?.headers, currency?.headers],
+  );
+
   const adShareData = useMemo(() => {
     const row = roi?.rows.find((r) => String(r[FK.metric] ?? "") === FK_METRIC.adSalesRatio);
     if (!row) return [];
-    return COMPANY_COLS.map((col) => {
-      const raw = parseNum(row[col]);
+    return sec09Cols.map((col) => {
+      const raw = parseNum(rowValueForCompany(row, col));
       if (raw == null) return null;
       const pct = toPercentPoints(raw);
       return {
-        name: colToLabel(col),
+        name: colToLabel(col, snapshot),
         value: pct,
         fill: colorForCompany(col, snapshot),
       };
     }).filter(Boolean).sort((a, b) => b!.value - a!.value);
-  }, [roi, snapshot]);
+  }, [roi, sec09Cols, snapshot]);
 
   const fxMixData = useMemo(() => {
-    const rmbRow = currency?.rows.find((r) => String(r[FK.metric] ?? "").includes("\u4eba\u6c11\u5e01\u5360\u6bd4"));
-    const fxRow = currency?.rows.find((r) => String(r[FK.metric] ?? "").includes("\u5916\u5e01\u5360\u6bd4"));
+    const rmbRow = currency?.rows.find((r) => String(r[FK.metric] ?? "").includes("人民币占比"));
+    const fxRow = currency?.rows.find((r) => String(r[FK.metric] ?? "").includes("外币占比"));
     if (!rmbRow && !fxRow) return [];
-    return COMPANY_COLS.map((col) => {
-      const rmb = rmbRow ? toPercentPoints(parseNum(rmbRow[col]) ?? 0) : 0;
-      const fx = fxRow ? toPercentPoints(parseNum(fxRow[col]) ?? 0) : 0;
+    const cols = companyColsForSnapshot(snapshot, currency?.headers);
+    return cols.map((col) => {
+      const rmb = rmbRow ? toPercentPoints(parseNum(rowValueForCompany(rmbRow, col)) ?? 0) : 0;
+      const fx = fxRow ? toPercentPoints(parseNum(rowValueForCompany(fxRow, col)) ?? 0) : 0;
       if (rmb === 0 && fx === 0) return null;
-      return { name: colToLabel(col), rmb, fx };
+      return { name: colToLabel(col, snapshot), rmb, fx };
     }).filter(Boolean);
-  }, [currency]);
+  }, [currency, snapshot]);
 
   const arOver1y = useMemo(() => {
     if (!arAging?.rows.length) return [];
@@ -210,11 +218,11 @@ export function Sec09Others({ snapshot }: SectionProps) {
         const co = String(row[FK.company] ?? "");
         const pct = parseNum(row["1\u5e74\u4ee5\u4e0a\u5360\u6bd4"]);
         if (pct == null) return null;
-        return { name: co === "YYCQ" ? FK.yycqLabel : co, value: toPercentPoints(pct) };
+        return { name: colToLabel(co, snapshot), value: toPercentPoints(pct) };
       })
       .filter(Boolean)
       .sort((a, b) => b!.value - a!.value);
-  }, [arAging?.rows]);
+  }, [arAging?.rows, snapshot]);
 
   const rndMerged = useMemo(
     () => (rndProjects ? mergeRndProjectTable(rndProjects) : null),
@@ -485,11 +493,11 @@ export function Sec09Others({ snapshot }: SectionProps) {
           "sec-09-m",
           (() => {
             const blocks = getAnchorBlocks(snapshot, "sec-09-13");
-            const customerTables = getTables(snapshot, "sec-09-13");
+            const companyTables = parseCustomerCompanyTables(blocks);
             return blocks.length > 0 ? (
               <>
                 <Sec09CustomerExplorer blocks={blocks} snapshot={snapshot} />
-                <Sec09CustomerViz tables={customerTables} snapshot={snapshot} delayMs={60} />
+                <Sec09CustomerViz companyTables={companyTables} snapshot={snapshot} delayMs={60} />
               </>
             ) : (
               <p className="text-sm text-zinc-500">蓝本 sec-09-13 暂无表格数据。</p>

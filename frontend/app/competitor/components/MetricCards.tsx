@@ -67,7 +67,7 @@ export function CompanyKpiCards({
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       {rows.map((row, i) => {
         const rawName = String(row[FK.company] ?? "");
-        const name = rawName === "YYCQ" ? FK.yycqLabel : colToLabel(rawName) || rawName;
+        const name = colToLabel(rawName, snapshot) || rawName;
         const accent = colorForCompany(rawName, snapshot);
         const tag = row["标签"] != null ? String(row["标签"]) : "";
         const fields = Object.entries(row).filter(([k]) => k !== FK.company && k !== "标签");

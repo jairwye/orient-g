@@ -1,5 +1,6 @@
 import { buildSubjectAnalysisGroups, detectCompanyInTitle } from "./balance_subject_analysis";
 import type { AnalystInsight, InsightTone } from "./finance_analysis";
+import type { CompetitorReportSnapshot } from "./types";
 
 export type TopicBullet = {
   text: string;
@@ -65,10 +66,10 @@ export function splitMarkdownByBoldTitles(markdown: string): TopicSection[] {
   return sections.filter((s) => s.title || s.body);
 }
 
-function narrativeBullets(body: string, sectionTitle: string): TopicBullet[] {
+function narrativeBullets(body: string, sectionTitle: string, snapshot?: CompetitorReportSnapshot): TopicBullet[] {
   if (!body.trim()) return [];
-  const titleCo = detectCompanyInTitle(sectionTitle);
-  const groups = buildSubjectAnalysisGroups(body, []);
+  const titleCo = detectCompanyInTitle(sectionTitle, snapshot);
+  const groups = buildSubjectAnalysisGroups(body, [], snapshot);
   const bullets: TopicBullet[] = [];
   for (const g of groups) {
     for (const b of g.bullets) {
@@ -137,6 +138,7 @@ function assignInsightTopic(ins: AnalystInsight, sections: TopicSection[]): stri
 export function buildTopicAnalysisGroups(
   markdown: string,
   insights: AnalystInsight[],
+  snapshot?: CompetitorReportSnapshot,
 ): TopicAnalysisGroup[] {
   const sections = splitMarkdownByBoldTitles(markdown);
   if (!sections.length && !insights.length) return [];
@@ -154,7 +156,7 @@ export function buildTopicAnalysisGroups(
 
   for (const section of sections) {
     const key = section.title || "分析";
-    for (const b of narrativeBullets(section.body, section.title)) {
+    for (const b of narrativeBullets(section.body, section.title, snapshot)) {
       ensureN(key).push(b);
     }
   }

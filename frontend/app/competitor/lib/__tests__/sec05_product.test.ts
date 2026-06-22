@@ -67,7 +67,37 @@ describe("normalizeSec05ProductRow", () => {
     expect(normalizeSec05ProductRow(row)[SEC05_REV_DELTA_RATE]).toBe(3.5);
   });
 
-  it("12 列压缩行：毛利率变动错位到收入增减额", () => {
+  it("12 列压缩行：毛利率变动错位到收入增减额（数字）", () => {
+    const row = {
+      公司: "可比公司A",
+      产品类型: "移动游戏",
+      收入占比: 97.3,
+      成本占比: 76.4,
+      毛利率: -8.0,
+      收入增减额: -3.6,
+    };
+    const wideHeaders = [
+      "公司",
+      "产品类型",
+      "收入(万)",
+      "收入占比",
+      "成本(万)",
+      "成本占比",
+      "毛利率",
+      "收入增减额",
+      "收入增减率",
+      "成本增减额",
+      "成本增减率",
+      "毛利率变动",
+    ];
+    const out = normalizeSec05ProductRow(row, wideHeaders);
+    expect(out[FK.grossMargin]).toBe(76.4);
+    expect(out[SEC05_REV_DELTA_RATE]).toBe(-8.0);
+    expect(out[SEC05_MARGIN_CHANGE]).toBe("-3.6pct");
+    expect(parseSec05MarginChangePct(out[SEC05_MARGIN_CHANGE])).toBe(-3.6);
+  });
+
+  it("12 列压缩行：毛利率变动错位到收入增减额（字符串）", () => {
     const row = {
       公司: "可比公司A",
       产品类型: "移动游戏",

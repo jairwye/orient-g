@@ -24,7 +24,7 @@ function BusinessModelCards({ snapshot }: { snapshot: SectionProps["snapshot"] }
         const keyword = String(row[FK.modeKeyword] ?? "");
         const feature = String(row[FK.coreFeature] ?? "");
         const accent = colorForCompany(name, snapshot);
-        const displayName = name === "YYCQ" ? FK.yycqLabel : name;
+        const displayName = colToLabel(name, snapshot);
         return (
           <FadeInView key={name || i} delayMs={i * 60} className="h-full">
             <div
@@ -82,7 +82,7 @@ export function Sec01Overview({ snapshot }: SectionProps) {
                   compact
                   rowAccent={(row) => colorForCompany(String(row[FK.company] ?? ""), snapshot)}
                   formatCell={(h, v) =>
-                    h === FK.company ? colToLabel(String(v ?? "")) : formatTableCell(h, v)
+                    h === FK.company ? colToLabel(String(v ?? ""), snapshot) : formatTableCell(h, v)
                   }
                 />
               ) : null}

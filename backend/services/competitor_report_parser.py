@@ -28,6 +28,8 @@ for cid, label, short in COMPANY_LABELS:
     if short:
         LABEL_TO_COMPANY[short] = (cid, label, short)
 
+_COMPANY_HEADER_SKIP = frozenset({"公司", "指标", "科目", "排名"})
+
 
 class CompetitorParseError(ValueError):
     """阻断性解析错误。"""
@@ -333,7 +335,7 @@ def _extract_companies(
 
     def add_from_label(raw: str) -> None:
         key = raw.strip()
-        if not key or key in ("公司", "指标", "科目", "排名"):
+        if not key or key in _COMPANY_HEADER_SKIP:
             return
         info = LABEL_TO_COMPANY.get(key)
         if info:
@@ -346,13 +348,41 @@ def _extract_companies(
                     entry["short"] = short
                 found.append(entry)
 
+    def map_headers_by_column_order(headers: list[Any]) -> None:
+        """内网蓝本可能仍用历史列名：按宽表列序绑定到固定 company id。"""
+        company_headers = [
+            h.strip()
+            for h in headers
+            if isinstance(h, str) and h.strip() and h.strip() not in _COMPANY_HEADER_SKIP
+        ]
+        if len(company_headers) < 2:
+            return
+        for i, (cid, default_label, short) in enumerate(COMPANY_LABELS):
+            if i >= len(company_headers):
+                break
+            header_label = company_headers[i]
+            if cid in seen:
+                for entry in found:
+                    if entry.get("id") != cid:
+                        continue
+                    if entry.get("label") in (default_label, short or ""):
+                        entry["label"] = header_label
+                continue
+            seen.add(cid)
+            entry: dict[str, Any] = {"id": cid, "label": header_label}
+            if short and short != header_label:
+                entry["short"] = short
+            found.append(entry)
+
     for blocks in blocks_by_section.values():
         for block in blocks:
             if block.get("kind") != "table":
                 continue
-            for h in block.get("headers") or []:
+            headers = block.get("headers") or []
+            for h in headers:
                 if isinstance(h, str):
                     add_from_label(h)
+            map_headers_by_column_order(headers)
             for row in block.get("rows") or []:
                 company_cell = row.get("公司")
                 if isinstance(company_cell, str):

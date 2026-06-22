@@ -5,10 +5,15 @@ import {
 } from "./balance_subject_analysis";
 import { formatNarrative } from "./narrative_format";
 
+import type { CompetitorReportSnapshot } from "./types";
+
 /** 蓝本叙事 → 按公司分主体卡片 */
-export function buildSec09SubjectGroups(markdown: string): SubjectAnalysisGroup[] {
+export function buildSec09SubjectGroups(
+  markdown: string,
+  snapshot?: CompetitorReportSnapshot,
+): SubjectAnalysisGroup[] {
   if (!markdown.trim()) return [];
-  return buildSubjectAnalysisGroups(markdown, []);
+  return buildSubjectAnalysisGroups(markdown, [], snapshot);
 }
 
 const TOPIC_DASH = /[—–\-－]/;

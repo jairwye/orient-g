@@ -35,7 +35,7 @@ import {
 } from "../lib/competitor_chart_colors";
 import { buildSubjectAnalysisGroups } from "../lib/balance_subject_analysis";
 import { buildTopicAnalysisGroups } from "../lib/topic_analysis";
-import { COMPANY_COLS, colToLabel } from "../lib/companies";
+import { companyColsForSnapshot, colToLabel, competitorTableUiProps, rowValueForCompany } from "../lib/companies";
 import {
   deriveAssetFpaInsights,
   deriveBalanceInsights,
@@ -77,7 +77,7 @@ function metricRowValue(
 ): number | null {
   const row = table?.rows.find((r) => String(r[FK.metric] ?? "") === metric);
   if (!row) return null;
-  return parseNum(row[col]);
+  return parseNum(rowValueForCompany(row, col));
 }
 
 function changeRowValue(
@@ -87,7 +87,7 @@ function changeRowValue(
 ): number | null {
   const row = table?.rows.find((r) => String(r[FK_CHANGE] ?? r[FK.subject] ?? "") === subject);
   if (!row) return null;
-  return parseNum(row[col]);
+  return parseNum(rowValueForCompany(row, col));
 }
 
 function assetRowValue(
@@ -97,7 +97,7 @@ function assetRowValue(
 ): number | null {
   const row = table?.rows.find((r) => String(r[FK.subject] ?? "").startsWith(subjectPrefix));
   if (!row) return null;
-  return parseNum(row[col]);
+  return parseNum(rowValueForCompany(row, col));
 }
 
 function buildMetricBars(
@@ -106,11 +106,12 @@ function buildMetricBars(
   snapshot: SectionProps["snapshot"],
   sortDesc = true,
 ) {
-  const rows = COMPANY_COLS.map((col) => {
+  const cols = companyColsForSnapshot(snapshot, table?.headers);
+  const rows = cols.map((col) => {
     const v = metricRowValue(table, metric, col);
     if (v == null) return null;
     return {
-      name: colToLabel(col),
+      name: colToLabel(col, snapshot),
       colKey: col,
       value: v,
       fill: colorForCompany(col, snapshot),
@@ -119,12 +120,17 @@ function buildMetricBars(
   return sortDesc ? rows.sort((a, b) => b.value - a.value) : rows;
 }
 
-function buildChangeBars(table: ReturnType<typeof getTable>, subject: string) {
-  return COMPANY_COLS.map((col) => {
+function buildChangeBars(
+  table: ReturnType<typeof getTable>,
+  subject: string,
+  snapshot: SectionProps["snapshot"],
+) {
+  const cols = companyColsForSnapshot(snapshot, table?.headers);
+  return cols.map((col) => {
     const delta = changeRowValue(table, subject, col);
     if (delta == null) return null;
     return {
-      name: colToLabel(col),
+      name: colToLabel(col, snapshot),
       colKey: col,
       delta,
       fill: delta >= 0 ? BUSINESS_CHART_COLORS.actual : "#ef4444",
@@ -215,8 +221,8 @@ export function Sec06Balance({ snapshot }: SectionProps) {
   const balanceAnalysisMarkdown = useMemo(() => narrativeMarkdown(blocks, "sec-06-2"), [blocks]);
 
   const subjectAnalysisGroups = useMemo(
-    () => buildSubjectAnalysisGroups(balanceAnalysisMarkdown, balanceInsights),
-    [balanceAnalysisMarkdown, balanceInsights],
+    () => buildSubjectAnalysisGroups(balanceAnalysisMarkdown, balanceInsights, snapshot),
+    [balanceAnalysisMarkdown, balanceInsights, snapshot],
   );
 
   const dupontAnalysisMarkdown = useMemo(() => narrativeMarkdown(blocks, "sec-06-4"), [blocks]);
@@ -227,34 +233,39 @@ export function Sec06Balance({ snapshot }: SectionProps) {
   );
 
   const topicAnalysisGroups = useMemo(
-    () => buildTopicAnalysisGroups(dupontAnalysisMarkdown, dupontTopicInsights),
-    [dupontAnalysisMarkdown, dupontTopicInsights],
+    () => buildTopicAnalysisGroups(dupontAnalysisMarkdown, dupontTopicInsights, snapshot),
+    [dupontAnalysisMarkdown, dupontTopicInsights, snapshot],
+  );
+
+  const balanceCols = useMemo(
+    () => companyColsForSnapshot(snapshot, assets?.headers ?? solvency?.headers),
+    [snapshot, assets?.headers, solvency?.headers],
   );
 
   const cashDebtData = useMemo(
     () =>
-      COMPANY_COLS.map((col) => {
-        const cash = assetRowValue(assets, "\u8d27\u5e01\u8d44\u91d1", col);
-        const debt = assetRowValue(assets, "\u77ed\u671f\u501f\u6b3e", col);
+      balanceCols.map((col) => {
+        const cash = assetRowValue(assets, "货币资金", col);
+        const debt = assetRowValue(assets, "短期借款", col);
         if (cash == null && debt == null) return null;
         return {
-          name: colToLabel(col),
+          name: colToLabel(col, snapshot),
           cash: (cash ?? 0) / 10000,
           debt: (debt ?? 0) / 10000,
         };
       })
         .filter(Boolean)
         .sort((a, b) => b!.cash - a!.cash),
-    [assets],
+    [assets, balanceCols, snapshot],
   );
 
   const changeCharts = useMemo(
     () =>
       CHANGE_CHART_SUBJECTS.map((subject) => ({
         subject,
-        data: buildChangeBars(changes, subject),
+        data: buildChangeBars(changes, subject, snapshot),
       })),
-    [changes],
+    [changes, snapshot],
   );
 
   const netCashData = useMemo(
@@ -267,19 +278,19 @@ export function Sec06Balance({ snapshot }: SectionProps) {
   );
   const liquidityCompareData = useMemo(
     () =>
-      COMPANY_COLS.map((col) => {
+      balanceCols.map((col) => {
         const current = metricRowValue(solvency, FK_METRIC.currentRatio, col);
         const quick = metricRowValue(solvency, FK_METRIC.quickRatio, col);
         if (current == null && quick == null) return null;
         return {
-          name: colToLabel(col),
+          name: colToLabel(col, snapshot),
           current: current ?? 0,
           quick: quick ?? 0,
         };
       })
         .filter(Boolean)
         .sort((a, b) => b!.current - a!.current),
-    [solvency],
+    [solvency, balanceCols, snapshot],
   );
 
   const turnoverData = useMemo(
@@ -288,18 +299,18 @@ export function Sec06Balance({ snapshot }: SectionProps) {
   );
   const arShareData = useMemo(
     () =>
-      COMPANY_COLS.map((col) => {
+      balanceCols.map((col) => {
         const raw = metricRowValue(solvency, FK_METRIC.arToCurrent, col);
         if (raw == null) return null;
         return {
-          name: colToLabel(col),
+          name: colToLabel(col, snapshot),
           value: toPercentPoints(raw),
           fill: colorForCompany(col, snapshot),
         };
       })
         .filter(Boolean)
         .sort((a, b) => b!.value - a!.value),
-    [solvency, snapshot],
+    [solvency, balanceCols, snapshot],
   );
 
   const roeData = useMemo(
@@ -365,6 +376,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
                   rows={assets.rows}
                   delayMs={40}
                   compact
+                  {...competitorTableUiProps(snapshot)}
                 />
               ) : null}
               {changes ? (
@@ -375,6 +387,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
                     rows={changes.rows}
                     delayMs={60}
                     compact
+                    {...competitorTableUiProps(snapshot)}
                   />
                 </div>
               ) : null}
@@ -437,6 +450,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
                   rows={solvency.rows}
                   delayMs={40}
                   compact
+                  {...competitorTableUiProps(snapshot)}
                   formatCell={(h, v, row) => {
                     if (h === FK.metric) return formatTableCell(h, v);
                     const metric = String(row?.[FK.metric] ?? "");
@@ -539,8 +553,9 @@ export function Sec06Balance({ snapshot }: SectionProps) {
                     rows={dupontRowsWithImplied.rows}
                     delayMs={140}
                     compact
+                    {...competitorTableUiProps(snapshot)}
                     formatCell={(h, v) => {
-                      if (h === FK.company) return formatTableCell(h, v);
+                      if (h === FK.company) return colToLabel(String(v ?? ""), snapshot);
                       if (h === "ROE" || h === "\u51c0\u5229\u7387" || h === CL.impliedRoe)
                         return formatPctPoints(toPercentPoints(parseNum(v) ?? 0));
                       if (String(h).includes("\u5468\u8f6c") || h === "\u6743\u76ca\u4e58\u6570")

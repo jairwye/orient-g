@@ -25,7 +25,7 @@ import {
   CHART_Y_AXIS,
   colorForCompany,
 } from "../lib/competitor_chart_colors";
-import { COMPANY_COLS, colToLabel } from "../lib/companies";
+import { companyColsForSnapshot, colToLabel, competitorTableUiProps, rowValueForCompany } from "../lib/companies";
 import { CL, FK, FK_AMOUNT_CHANGE } from "../lib/field_keys";
 import { formatPctPoints, parseNum, toPercentPoints } from "../lib/format";
 import { subTitleForSnap } from "../lib/navigation";
@@ -60,16 +60,21 @@ function narrativeMarkdown(blocks: SectionProps["snapshot"]["sections"][0]["bloc
   return hit.markdown?.trim() ?? "";
 }
 
-function buildAmountChangeBars(table: ReturnType<typeof getTable>, subject: string) {
+function buildAmountChangeBars(
+  table: ReturnType<typeof getTable>,
+  subject: string,
+  snapshot: SectionProps["snapshot"],
+) {
   const row = table?.rows.find((r) => String(r[FK_AMOUNT_CHANGE] ?? "") === subject);
   if (!row) return [];
-  return COMPANY_COLS.map((col) => {
-    const delta = parseNum(row[col]);
+  const cols = companyColsForSnapshot(snapshot, table?.headers);
+  return cols.map((col) => {
+    const delta = parseNum(rowValueForCompany(row, col));
     if (delta == null) return null;
     const isCostLike = subject === "销售费用" || subject === "管理费用" || subject === "研发费用" || subject === "营业成本";
     const good = isCostLike ? delta <= 0 : delta >= 0;
     return {
-      name: colToLabel(col),
+      name: colToLabel(col, snapshot),
       delta,
       fill: good ? BUSINESS_CHART_COLORS.actual : "#ef4444",
     };
@@ -90,8 +95,8 @@ export function Sec07Profit({ snapshot }: SectionProps) {
     return narrativeMarkdown(secBlocks, "sec-07-1");
   }, [snapshot]);
   const profitSubjectGroups = useMemo(
-    () => buildProfitSubjectGroups(profitAnalysisMarkdown, drivers),
-    [profitAnalysisMarkdown, drivers],
+    () => buildProfitSubjectGroups(profitAnalysisMarkdown, drivers, snapshot),
+    [profitAnalysisMarkdown, drivers, snapshot],
   );
 
   const feeAnalysisMarkdown = useMemo(() => {
@@ -99,18 +104,23 @@ export function Sec07Profit({ snapshot }: SectionProps) {
     return narrativeMarkdown(secBlocks, "sec-07-5");
   }, [snapshot]);
   const feeSubjectGroups = useMemo(
-    () => buildFeeSubjectGroups(feeAnalysisMarkdown),
-    [feeAnalysisMarkdown],
+    () => buildFeeSubjectGroups(feeAnalysisMarkdown, snapshot),
+    [feeAnalysisMarkdown, snapshot],
+  );
+
+  const feeCols = useMemo(
+    () => companyColsForSnapshot(snapshot, fees?.headers ?? feePctChg?.headers),
+    [snapshot, fees?.headers, feePctChg?.headers],
   );
 
   const feeStackData = useMemo(
     () =>
-      COMPANY_COLS.map((col) => {
-        const point: Record<string, string | number> = { name: colToLabel(col) };
+      feeCols.map((col) => {
+        const point: Record<string, string | number> = { name: colToLabel(col, snapshot) };
         let hasAny = false;
         for (const { key } of FEE_STACK) {
           const row = fees?.rows.find((r) => String(r[FK.metric] ?? "") === key);
-          const v = row ? pctPoints(parseNum(row[col])) : null;
+          const v = row ? pctPoints(parseNum(rowValueForCompany(row, col))) : null;
           if (v != null) {
             point[key] = v;
             hasAny = true;
@@ -118,46 +128,47 @@ export function Sec07Profit({ snapshot }: SectionProps) {
         }
         return hasAny ? point : null;
       }).filter(Boolean),
-    [fees?.rows],
+    [fees?.rows, feeCols, snapshot],
   );
 
   const grossMarginData = useMemo(
     () =>
-      COMPANY_COLS.map((col) => {
+      feeCols.map((col) => {
         const row = fees?.rows.find((r) => String(r[FK.metric] ?? "") === FK.grossMarginRate);
-        const v = row ? pctPoints(parseNum(row[col])) : null;
+        const v = row ? pctPoints(parseNum(rowValueForCompany(row, col))) : null;
         if (v == null) return null;
-        return { name: colToLabel(col), value: v, fill: colorForCompany(col, snapshot) };
+        return { name: colToLabel(col, snapshot), value: v, fill: colorForCompany(col, snapshot) };
       })
         .filter(Boolean)
         .sort((a, b) => b!.value - a!.value),
-    [fees?.rows, snapshot],
+    [fees?.rows, feeCols, snapshot],
   );
 
   const pctChangeCharts = useMemo(() => {
     if (!feePctChg?.rows.length) return [];
+    const cols = companyColsForSnapshot(snapshot, feePctChg.headers);
     return FEE_CHANGE_METRICS.map((metric) => {
       const row = feePctChg.rows.find((r) => String(r[FK.changePct] ?? "") === metric);
       if (!row) return null;
-      const data = COMPANY_COLS.map((col) => {
-        const raw = parseNum(row[col]);
+      const data = cols.map((col) => {
+        const raw = parseNum(rowValueForCompany(row, col));
         if (raw == null) return null;
-        return { name: colToLabel(col), delta: raw, fill: deltaFill(metric, raw) };
+        return { name: colToLabel(col, snapshot), delta: raw, fill: deltaFill(metric, raw) };
       })
         .filter(Boolean)
         .sort((a, b) => b!.delta - a!.delta);
       if (!data.length) return null;
       return { metric, data };
     }).filter(Boolean) as Array<{ metric: string; data: Array<{ name: string; delta: number; fill: string }> }>;
-  }, [feePctChg?.rows]);
+  }, [feePctChg?.rows, feePctChg?.headers, snapshot]);
 
   const amtChangeCharts = useMemo(
     () =>
       FEE_AMOUNT_ROWS.map((subject) => ({
         subject,
-        data: buildAmountChangeBars(feeAmtChg, subject),
+        data: buildAmountChangeBars(feeAmtChg, subject, snapshot),
       })).filter((x) => x.data.length > 0),
-    [feeAmtChg],
+    [feeAmtChg, snapshot],
   );
 
   const chartH = Math.max(240, (feeStackData.length || 8) * 34 + 52);
@@ -240,7 +251,7 @@ export function Sec07Profit({ snapshot }: SectionProps) {
           content: (
             <>
               {core ? (
-                <DataTable title={CL.profitCoreItems} headers={core.headers} rows={core.rows} delayMs={60} compact />
+                <DataTable title={CL.profitCoreItems} headers={core.headers} rows={core.rows} delayMs={60} compact {...competitorTableUiProps(snapshot)} />
               ) : null}
               <SubjectAnalysisBoard groups={profitSubjectGroups} snapshot={snapshot} delayMs={100} />
             </>
@@ -253,7 +264,7 @@ export function Sec07Profit({ snapshot }: SectionProps) {
           content: (
             <>
               {fees ? (
-                <DataTable title={CL.feeRates} headers={fees.headers} rows={fees.rows} delayMs={40} compact />
+                <DataTable title={CL.feeRates} headers={fees.headers} rows={fees.rows} delayMs={40} compact {...competitorTableUiProps(snapshot)} />
               ) : null}
               {feeRateCharts}
               {feePctChg ? (
@@ -264,6 +275,7 @@ export function Sec07Profit({ snapshot }: SectionProps) {
                     rows={feePctChg.rows}
                     delayMs={60}
                     compact
+                    {...competitorTableUiProps(snapshot)}
                   />
                 </div>
               ) : null}
@@ -276,6 +288,7 @@ export function Sec07Profit({ snapshot }: SectionProps) {
                     rows={feeAmtChg.rows}
                     delayMs={80}
                     compact
+                    {...competitorTableUiProps(snapshot)}
                   />
                 </div>
               ) : null}

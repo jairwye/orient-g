@@ -2,7 +2,7 @@
  * 竞品财报 — 财务分析视角（同业基准、驱动归因、质量分级）
  * 纯函数，从 snapshot 表推导可扫读的分析师结论。
  */
-import { COMPANY_COLS, SUBJECT_COL, colToLabel, rowValueForCompany } from "./companies";
+import { SUBJECT_COL, colToLabel, companyColsForSnapshot, rowValueForCompany } from "./companies";
 import { FK, FK_AMOUNT_CHANGE, FK_CF_ITEM, FK_CHANGE, FK_METRIC, CL } from "./field_keys";
 import { cfProfitRatioToPercentPoints, parseNum, round2, toPercentPoints } from "./format";
 import { getTable } from "./selectors";
@@ -45,6 +45,10 @@ export type AcquisitionModel = "buy" | "brand" | "channel" | "organic";
 function tableMetric(table: TableBlock | undefined, metric: string, col: string): number | null {
   const row = table?.rows.find((r) => String(r[FK.metric] ?? "") === metric);
   if (!row) return null;
+  return parseNum(rowValueForCompany(row, col));
+}
+
+function cellNum(row: Record<string, string | number | null | undefined> | undefined, col: string): number | null {
   return parseNum(rowValueForCompany(row, col));
 }
 
@@ -122,7 +126,7 @@ export function parseCashQualityPoints(snapshot: CompetitorReportSnapshot): Cash
   const ocfRow = cf.rows.find((r) => /经营.*(CF|现金流)/.test(String(r[FK.metric] ?? "")));
   const ratioRow = cf.rows.find((r) => /经营.*(CF|现金流)\/净利/.test(String(r[FK.metric] ?? "")));
 
-  return COMPANY_COLS.map((col) => {
+  return companyColsForSnapshot(snapshot).map((col) => {
     const profit = profitRow ? parseNum(rowValueForCompany(profitRow, col)) : null;
     const ocf = ocfRow ? parseNum(rowValueForCompany(ocfRow, col)) : null;
     if (profit == null && ocf == null) return null;
@@ -203,9 +207,9 @@ export function deriveAssetFpaInsights(snapshot: CompetitorReportSnapshot): Anal
   const ltiRow = assetRow(assets, "\u957f\u671f\u80a1\u6743\u6295\u8d44");
 
   if (cashRow && debtRow) {
-    const gaps = COMPANY_COLS.map((col) => {
-      const cash = parseNum(cashRow[col]) ?? 0;
-      const debt = parseNum(debtRow[col]) ?? 0;
+    const gaps = companyColsForSnapshot(snapshot).map((col) => {
+      const cash = cellNum(cashRow, col) ?? 0;
+      const debt = cellNum(debtRow, col) ?? 0;
       if (cash <= 0 && debt <= 0) return null;
       return { name: companyName(col), netWan: cash - debt, debtWan: debt, cashWan: cash };
     }).filter(Boolean) as Array<{ name: string; netWan: number; debtWan: number; cashWan: number }>;
@@ -222,9 +226,9 @@ export function deriveAssetFpaInsights(snapshot: CompetitorReportSnapshot): Anal
   }
 
   if (ltiRow) {
-    const ltiHeavy = COMPANY_COLS.map((col) => ({
+    const ltiHeavy = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      wan: parseNum(ltiRow[col]) ?? 0,
+      wan: cellNum(ltiRow, col) ?? 0,
     }))
       .filter((x) => x.wan > 50000)
       .sort((a, b) => b.wan - a.wan)[0];
@@ -240,9 +244,9 @@ export function deriveAssetFpaInsights(snapshot: CompetitorReportSnapshot): Anal
 
   const prepayRow = assetRow(assets, "\u9884\u4ed8\u6b3e\u9879");
   if (prepayRow) {
-    const prepayHeavy = COMPANY_COLS.map((col) => ({
+    const prepayHeavy = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      wan: parseNum(prepayRow[col]) ?? 0,
+      wan: cellNum(prepayRow, col) ?? 0,
     }))
       .filter((x) => x.wan > 50000)
       .sort((a, b) => b.wan - a.wan)[0];
@@ -268,9 +272,9 @@ export function deriveChangeFpaInsights(snapshot: CompetitorReportSnapshot): Ana
   const cashChgRow = changeRow(changes, "\u8d27\u5e01\u8d44\u91d1");
   const cashEndRow = assetRow(assets, "\u8d27\u5e01\u8d44\u91d1");
   if (cashChgRow && cashEndRow) {
-    const runways = COMPANY_COLS.map((col) => {
-      const cashWan = parseNum(cashEndRow[col]);
-      const chg = parseNum(cashChgRow[col]);
+    const runways = companyColsForSnapshot(snapshot).map((col) => {
+      const cashWan = cellNum(cashEndRow, col);
+      const chg = cellNum(cashChgRow, col);
       if (cashWan == null || chg == null || chg >= 0 || cashWan <= 0) return null;
       const monthlyBurn = Math.abs(chg) / 12;
       if (monthlyBurn <= 0) return null;
@@ -290,9 +294,9 @@ export function deriveChangeFpaInsights(snapshot: CompetitorReportSnapshot): Ana
 
   const stLoanChgRow = changeRow(changes, "\u77ed\u671f\u501f\u6b3e");
   if (stLoanChgRow) {
-    const spike = COMPANY_COLS.map((col) => ({
+    const spike = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      delta: parseNum(stLoanChgRow[col]),
+      delta: cellNum(stLoanChgRow, col),
     }))
       .filter((x) => x.delta != null && x.delta > 50000)
       .sort((a, b) => b!.delta! - a!.delta!)[0];
@@ -308,9 +312,9 @@ export function deriveChangeFpaInsights(snapshot: CompetitorReportSnapshot): Ana
 
   const arChgRow = changeRow(changes, "\u5e94\u6536\u8d26\u6b3e");
   if (arChgRow) {
-    const arDrop = COMPANY_COLS.map((col) => ({
+    const arDrop = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      delta: parseNum(arChgRow[col]),
+      delta: cellNum(arChgRow, col),
     }))
       .filter((x) => x.delta != null && x.delta < -2000)
       .sort((a, b) => a!.delta! - b!.delta!)[0];
@@ -332,7 +336,7 @@ export function deriveLiquidityFpaInsights(snapshot: CompetitorReportSnapshot): 
   const solvency = getTable(snapshot, "sec-06-3");
   const insights: AnalystInsight[] = [];
 
-  const ratios = COMPANY_COLS.map((col) => ({
+  const ratios = companyColsForSnapshot(snapshot).map((col) => ({
     name: companyName(col),
     v: tableMetric(solvency, FK_METRIC.currentRatio, col),
   })).filter((x) => x.v != null) as Array<{ name: string; v: number }>;
@@ -349,7 +353,7 @@ export function deriveLiquidityFpaInsights(snapshot: CompetitorReportSnapshot): 
     }
   }
 
-  const netCashRows = COMPANY_COLS.map((col) => ({
+  const netCashRows = companyColsForSnapshot(snapshot).map((col) => ({
     name: companyName(col),
     v: tableMetric(solvency, FK_METRIC.netCash, col),
   })).filter((x) => x.v != null) as Array<{ name: string; v: number }>;
@@ -367,7 +371,7 @@ export function deriveLiquidityFpaInsights(snapshot: CompetitorReportSnapshot): 
     }
   }
 
-  const arStress = COMPANY_COLS.map((col) => {
+  const arStress = companyColsForSnapshot(snapshot).map((col) => {
     const raw = tableMetric(solvency, FK_METRIC.arToCurrent, col);
     if (raw == null) return null;
     return { name: companyName(col), pct: toPercentPoints(raw) };
@@ -383,7 +387,7 @@ export function deriveLiquidityFpaInsights(snapshot: CompetitorReportSnapshot): 
     });
   }
 
-  const turnLeader = COMPANY_COLS.map((col) => {
+  const turnLeader = companyColsForSnapshot(snapshot).map((col) => {
     const t = tableMetric(solvency, FK_METRIC.assetTurnover, col);
     if (t == null) return null;
     return { name: companyName(col), t };
@@ -407,7 +411,7 @@ export function deriveProfitInsights(snapshot: CompetitorReportSnapshot): Analys
   const changes = getTable(snapshot, "sec-07-4");
   const insights: AnalystInsight[] = [];
 
-  const grossRows = COMPANY_COLS.map((col) => {
+  const grossRows = companyColsForSnapshot(snapshot).map((col) => {
     const g = tableMetric(fees, FK.grossMarginRate, col);
     const s = tableMetric(fees, FK.salesFeeRate, col);
     const a = tableMetric(fees, FK.adminFeeRate, col);
@@ -446,8 +450,8 @@ export function deriveProfitInsights(snapshot: CompetitorReportSnapshot): Analys
     const gmRow = changes.rows.find((r) => String(r[FK.changePct] ?? "") === FK.grossMarginRate);
     if (gmRow) {
       let best: { name: string; d: number } | null = null;
-      for (const col of COMPANY_COLS) {
-        const raw = parseNum(gmRow[col]);
+      for (const col of companyColsForSnapshot(snapshot)) {
+        const raw = cellNum(gmRow, col);
         if (raw == null) continue;
         const d = raw;
         if (!best || d > best.d) best = { name: companyName(col), d };
@@ -476,9 +480,9 @@ export function deriveProfitCoreInsights(snapshot: CompetitorReportSnapshot): An
   const profitRow = core?.rows.find((r) => String(r[FK.subject] ?? "").startsWith("\u51c0\u5229\u6da6"));
 
   if (salesRow && costRow) {
-    for (const col of COMPANY_COLS) {
-      const sales = parseNum(salesRow[col]) ?? 0;
-      const cost = parseNum(costRow[col]) ?? 0;
+    for (const col of companyColsForSnapshot(snapshot)) {
+      const sales = cellNum(salesRow, col) ?? 0;
+      const cost = cellNum(costRow, col) ?? 0;
       if (sales > cost && sales > 500000) {
         insights.push({
           label: "\u4e70\u91cf\u6210\u672c\u7ed3\u6784",
@@ -492,9 +496,9 @@ export function deriveProfitCoreInsights(snapshot: CompetitorReportSnapshot): An
   }
 
   if (profitRow) {
-    const losses = COMPANY_COLS.map((col) => ({
+    const losses = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      p: parseNum(profitRow[col]),
+      p: cellNum(profitRow, col),
     })).filter((x) => x.p != null && x.p < 0) as Array<{ name: string; p: number }>;
     if (losses.length) {
       const worst = losses.sort((a, b) => a.p - b.p)[0]!;
@@ -509,9 +513,9 @@ export function deriveProfitCoreInsights(snapshot: CompetitorReportSnapshot): An
 
   if (revRow && profitRow) {
     const yycqRev = parseNum(rowValueForCompany(revRow, SUBJECT_COL));
-    const top = COMPANY_COLS.map((col) => ({
+    const top = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      rev: revRow ? parseNum(revRow[col]) : null,
+      rev: revRow ? cellNum(revRow, col) : null,
     }))
       .filter((x) => x.rev != null && x.rev > 0)
       .sort((a, b) => b!.rev! - a!.rev!)[0];
@@ -559,8 +563,8 @@ export function deriveFeeRateChangeInsights(snapshot: CompetitorReportSnapshot):
   const rndRow = changes?.rows.find((r) => String(r[FK.changePct] ?? "") === FK.rndFeeRate);
   if (rndRow) {
     let maxUp: { name: string; d: number } | null = null;
-    for (const col of COMPANY_COLS) {
-      const raw = parseNum(rndRow[col]);
+    for (const col of companyColsForSnapshot(snapshot)) {
+      const raw = cellNum(rndRow, col);
       if (raw == null) continue;
       if (!maxUp || raw > maxUp.d) maxUp = { name: companyName(col), d: raw };
     }
@@ -577,8 +581,8 @@ export function deriveFeeRateChangeInsights(snapshot: CompetitorReportSnapshot):
   const salesRow = changes?.rows.find((r) => String(r[FK.changePct] ?? "") === FK.salesFeeRate);
   if (salesRow) {
     let bestCut: { name: string; d: number } | null = null;
-    for (const col of COMPANY_COLS) {
-      const raw = parseNum(salesRow[col]);
+    for (const col of companyColsForSnapshot(snapshot)) {
+      const raw = cellNum(salesRow, col);
       if (raw == null || raw >= 0) continue;
       if (!bestCut || raw < bestCut.d) bestCut = { name: companyName(col), d: raw };
     }
@@ -616,8 +620,8 @@ export function deriveFeeAmountInsights(snapshot: CompetitorReportSnapshot): Ana
   const gmRow = amounts?.rows.find((r) => String(r[FK_AMOUNT_CHANGE] ?? "") === "\u6bdb\u5229");
   if (gmRow) {
     let best: { name: string; d: number } | null = null;
-    for (const col of COMPANY_COLS) {
-      const raw = parseNum(gmRow[col]);
+    for (const col of companyColsForSnapshot(snapshot)) {
+      const raw = cellNum(gmRow, col);
       if (raw == null) continue;
       if (!best || raw > best.d) best = { name: companyName(col), d: raw };
     }
@@ -634,8 +638,8 @@ export function deriveFeeAmountInsights(snapshot: CompetitorReportSnapshot): Ana
   const salesRow = amounts?.rows.find((r) => String(r[FK_AMOUNT_CHANGE] ?? "") === "\u9500\u552e\u8d39\u7528");
   if (salesRow) {
     let cut: { name: string; d: number } | null = null;
-    for (const col of COMPANY_COLS) {
-      const raw = parseNum(salesRow[col]);
+    for (const col of companyColsForSnapshot(snapshot)) {
+      const raw = cellNum(salesRow, col);
       if (raw == null || raw >= 0) continue;
       if (!cut || raw < cut.d) cut = { name: companyName(col), d: raw };
     }
@@ -652,8 +656,8 @@ export function deriveFeeAmountInsights(snapshot: CompetitorReportSnapshot): Ana
   const rndRow = amounts?.rows.find((r) => String(r[FK_AMOUNT_CHANGE] ?? "") === "\u7814\u53d1\u8d39\u7528");
   if (rndRow) {
     let cut: { name: string; d: number } | null = null;
-    for (const col of COMPANY_COLS) {
-      const raw = parseNum(rndRow[col]);
+    for (const col of companyColsForSnapshot(snapshot)) {
+      const raw = cellNum(rndRow, col);
       if (raw == null || raw >= 0) continue;
       if (!cut || raw < cut.d) cut = { name: companyName(col), d: raw };
     }
@@ -682,9 +686,9 @@ export function deriveCfItemsInsights(snapshot: CompetitorReportSnapshot): Analy
   const ocfRow = cfItemRow(cf, "\u7ecf\u8425CF\u51c0\u989d");
   const icfRow = cfItemRow(cf, "\u6295\u8d44CF\u51c0\u989d");
   if (ocfRow) {
-    const leader = COMPANY_COLS.map((col) => ({
+    const leader = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      v: parseNum(ocfRow[col]),
+      v: cellNum(ocfRow, col),
     }))
       .filter((x) => x.v != null && x.v > 0)
       .sort((a, b) => b!.v! - a!.v!)[0];
@@ -696,9 +700,9 @@ export function deriveCfItemsInsights(snapshot: CompetitorReportSnapshot): Analy
         tone: "positive",
       });
     }
-    const neg = COMPANY_COLS.map((col) => ({
+    const neg = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      v: parseNum(ocfRow[col]),
+      v: cellNum(ocfRow, col),
     })).filter((x) => x.v != null && x.v < 0);
     if (neg.length) {
       insights.push({
@@ -711,9 +715,9 @@ export function deriveCfItemsInsights(snapshot: CompetitorReportSnapshot): Analy
   }
 
   if (icfRow) {
-    const outflow = COMPANY_COLS.map((col) => ({
+    const outflow = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      v: parseNum(icfRow[col]),
+      v: cellNum(icfRow, col),
     }))
       .filter((x) => x.v != null && x.v < -100000)
       .sort((a, b) => a!.v! - b!.v!)[0];
@@ -741,15 +745,15 @@ export function deriveRentInsights(snapshot: CompetitorReportSnapshot): AnalystI
   const insights: AnalystInsight[] = [];
   const perCapRow = rent?.rows.find((r) => String(r[FK.metric] ?? "") === FK_METRIC.rentPerCap);
   if (perCapRow) {
-    const high = COMPANY_COLS.map((col) => ({
+    const high = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      v: parseNum(perCapRow[col]),
+      v: cellNum(perCapRow, col),
     }))
       .filter((x) => x.v != null)
       .sort((a, b) => b!.v! - a!.v!)[0];
-    const low = COMPANY_COLS.map((col) => ({
+    const low = companyColsForSnapshot(snapshot).map((col) => ({
       name: companyName(col),
-      v: parseNum(perCapRow[col]),
+      v: cellNum(perCapRow, col),
     }))
       .filter((x) => x.v != null && x.v > 0)
       .sort((a, b) => a!.v! - b!.v!)[0];
@@ -778,9 +782,9 @@ export function deriveGovInsights(snapshot: CompetitorReportSnapshot): AnalystIn
   const gov = getTable(snapshot, "sec-09-3");
   const row2025 = gov?.rows.find((r) => String(r[FK.metric] ?? "").includes("2025"));
   if (!row2025) return [];
-  const leader = COMPANY_COLS.map((col) => ({
+  const leader = companyColsForSnapshot(snapshot).map((col) => ({
     name: companyName(col),
-    v: parseNum(row2025[col]),
+    v: cellNum(row2025, col),
   }))
     .filter((x) => x.v != null)
     .sort((a, b) => b!.v! - a!.v!)[0];
@@ -831,9 +835,9 @@ export function deriveCurrencyInsights(snapshot: CompetitorReportSnapshot): Anal
   const cur = getTable(snapshot, "sec-09-6");
   const fxRow = cur?.rows.find((r) => String(r[FK.metric] ?? "").includes("\u5916\u5e01\u5360\u6bd4"));
   if (!fxRow) return [];
-  const high = COMPANY_COLS.map((col) => ({
+  const high = companyColsForSnapshot(snapshot).map((col) => ({
     name: companyName(col),
-    pct: fxRow[col] != null ? toPercentPoints(parseNum(fxRow[col]) ?? 0) : null,
+    pct: rowValueForCompany(fxRow, col) != null ? toPercentPoints(cellNum(fxRow, col) ?? 0) : null,
   }))
     .filter((x) => x.pct != null)
     .sort((a, b) => b!.pct! - a!.pct!)[0];
@@ -853,9 +857,9 @@ export function deriveInvestmentInsights(snapshot: CompetitorReportSnapshot): An
   const inv = getTable(snapshot, "sec-09-7");
   const totalRow = inv?.rows.find((r) => String(r[FK.subject] ?? "").startsWith("\u5408\u8ba1"));
   if (!totalRow) return [];
-  const leader = COMPANY_COLS.map((col) => ({
+  const leader = companyColsForSnapshot(snapshot).map((col) => ({
     name: companyName(col),
-    v: parseNum(totalRow[col]),
+    v: cellNum(totalRow, col),
   }))
     .filter((x) => x.v != null && x.v > 0)
     .sort((a, b) => b!.v! - a!.v!)[0];
@@ -959,9 +963,9 @@ export function deriveRoiInsights(snapshot: CompetitorReportSnapshot): AnalystIn
   const adRow = roi?.rows.find((r) => String(r[FK.metric] ?? "") === FK_METRIC.adSalesRatio);
 
   if (roiRow && adRow) {
-    const pairs = COMPANY_COLS.map((col) => {
-      const r = parseNum(roiRow[col]);
-      const ad = parseNum(adRow[col]);
+    const pairs = companyColsForSnapshot(snapshot).map((col) => {
+      const r = cellNum(roiRow, col);
+      const ad = cellNum(adRow, col);
       if (r == null || ad == null) return null;
       return { name: companyName(col), roi: r, adShare: toPercentPoints(ad) };
     }).filter(Boolean) as Array<{ name: string; roi: number; adShare: number }>;
@@ -998,7 +1002,7 @@ export function acquisitionModel(adSharePct: number): { model: AcquisitionModel;
 
 export function computeOperatingMargins(snapshot: CompetitorReportSnapshot) {
   const fees = getTable(snapshot, "sec-07-3");
-  return COMPANY_COLS.map((col) => {
+  return companyColsForSnapshot(snapshot).map((col) => {
     const g = tableMetric(fees, FK.grossMarginRate, col);
     const s = tableMetric(fees, FK.salesFeeRate, col);
     const a = tableMetric(fees, FK.adminFeeRate, col);

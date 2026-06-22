@@ -26,9 +26,11 @@ for (let i = 0; i < COMPANY_COLS.length - 1; i += 1) {
   if (id) LABEL_ALIASES[label] = id;
 }
 
-export function resolveCompanyId(name: string): string | null {
+export function resolveCompanyId(name: string, snapshot?: CompetitorReportSnapshot): string | null {
   const key = name.trim();
   if (LABEL_ALIASES[key]) return LABEL_ALIASES[key];
+  const fromSnap = snapshot?.companies.find((c) => c.label === key || c.short === key || c.id === key);
+  if (fromSnap) return fromSnap.id;
   const hit = COMPANY_ORDER.find((id) => key.includes(id) || false);
   return hit ?? null;
 }
@@ -41,7 +43,7 @@ export function colorForCompany(
   const id =
     COMPANY_COLORS[idOrLabel]
       ? idOrLabel
-      : resolveCompanyId(idOrLabel) ??
+      : resolveCompanyId(idOrLabel, snapshot) ??
         snapshot?.companies.find((c) => c.label === idOrLabel || c.short === idOrLabel)?.id;
   if (id && COMPANY_COLORS[id]) return COMPANY_COLORS[id];
   const palette = Object.values(COMPANY_COLORS);
@@ -61,9 +63,9 @@ export function shadeCompanyColor(baseHex: string, level: number): string {
   return `#${clamp(blend(r)).toString(16).padStart(2, "0")}${clamp(blend(g)).toString(16).padStart(2, "0")}${clamp(blend(b)).toString(16).padStart(2, "0")}`;
 }
 
-export function chartOpacity(companyLabel: string, highlight: string | null): number {
+export function chartOpacity(companyLabel: string, highlight: string | null, snapshot?: CompetitorReportSnapshot): number {
   if (!highlight || highlight === "__all__") return 1;
-  return companyLabel === highlight || resolveCompanyId(companyLabel) === resolveCompanyId(highlight)
+  return companyLabel === highlight || resolveCompanyId(companyLabel, snapshot) === resolveCompanyId(highlight, snapshot)
     ? 1
     : 0.15;
 }

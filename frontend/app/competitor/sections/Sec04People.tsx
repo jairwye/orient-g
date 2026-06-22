@@ -24,7 +24,7 @@ import {
   CHART_Y_AXIS,
   colorForCompany,
 } from "../lib/competitor_chart_colors";
-import { COMPANY_COLS, colToLabel, companyDisplayLabel, rowValueForCompany } from "../lib/companies";
+import { companyColsForSnapshot, colToLabel, companyDisplayLabel, rowValueForCompany } from "../lib/companies";
 import { CL, FK } from "../lib/field_keys";
 import { formatDecimal2, formatPctPoints, formatTableCell, parseNum, toPercentPoints } from "../lib/format";
 import { LaborCostTable } from "../components/LaborCostTable";
@@ -121,9 +121,11 @@ function findPerCapProfitRow(rows: Record<string, string | number | null>[] | un
 function buildMetricBarData(
   metricRow: Record<string, string | number | null> | undefined,
   snapshot: SectionProps["snapshot"],
+  tableHeaders?: string[],
 ) {
   if (!metricRow) return [];
-  return COMPANY_COLS.map((col) => {
+  const cols = companyColsForSnapshot(snapshot, tableHeaders);
+  return cols.map((col) => {
     const value = parseNum(rowValueForCompany(metricRow, col));
     if (value == null) return null;
     return {
@@ -137,10 +139,12 @@ function buildMetricBarData(
 function buildHeadcountAmpData(
   rows: Record<string, string | number | null>[] | undefined,
   snapshot: SectionProps["snapshot"],
+  tableHeaders?: string[],
 ) {
   const ampRow = rows?.find((r) => String(r[FK.metric] ?? "") === METRIC_HEADCOUNT_AMP);
   if (!ampRow) return [];
-  return COMPANY_COLS.map((col) => {
+  const cols = companyColsForSnapshot(snapshot, tableHeaders);
+  return cols.map((col) => {
     const raw = rowValueForCompany(ampRow, col);
     const n = parseNum(raw);
     if (n == null) return null;
@@ -182,9 +186,9 @@ export function Sec04People({ snapshot }: SectionProps) {
   const revRow = findPerCapRevRow(efficiency?.rows);
   const profRow = findPerCapProfitRow(efficiency?.rows);
 
-  const perCapRevData = buildMetricBarData(revRow, snapshot);
-  const perCapProfitData = buildMetricBarData(profRow, snapshot);
-  const headcountAmpData = buildHeadcountAmpData(headcount?.rows, snapshot);
+  const perCapRevData = buildMetricBarData(revRow, snapshot, efficiency?.headers);
+  const perCapProfitData = buildMetricBarData(profRow, snapshot, efficiency?.headers);
+  const headcountAmpData = buildHeadcountAmpData(headcount?.rows, snapshot, headcount?.headers);
 
   const headcountAmpChart = (
     <PanelChart caption={CL.headcountAmpChart} chartClassName="h-60 w-full sm:h-72">

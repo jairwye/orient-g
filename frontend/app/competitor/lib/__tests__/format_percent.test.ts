@@ -16,6 +16,9 @@ describe("toPercentPoints", () => {
     expect(toPercentPoints(-214.6)).toBe(-214.6);
     expect(toPercentPoints(41.4)).toBe(41.4);
     expect(toPercentPoints(122.1)).toBe(122.1);
+    expect(toPercentPoints(5.1)).toBe(5.1);
+    expect(toPercentPoints(5.0)).toBe(5.0);
+    expect(toPercentPoints(4.9)).toBe(4.9);
   });
 
   it("旧 snapshot 大百分比被 /100 后", () => {
@@ -41,6 +44,12 @@ describe("formatTableCell percent strings", () => {
     expect(formatTableCell("经营CF增长率", "-214.6%")).toBe("-214.6%");
     expect(formatTableCell("同比", "+18.0%")).toBe("+18.0%");
     expect(formatTableCell("经营CF/净利", "41.4%")).toBe("41.4%");
+  });
+
+  it("占比列数值已是百分点", () => {
+    expect(formatTableCell("占比", 5.0)).toBe("5%");
+    expect(formatTableCell("占比", 5.1)).toBe("5.1%");
+    expect(formatTableCell("占比", "4.9%")).toBe("4.9%");
   });
 
   it("非百分列数字串保留蓝本小数位", () => {
