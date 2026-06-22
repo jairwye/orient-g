@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { competitorReportHref } from "../lib/navigation";
 import { VerticalPageHeader } from "../components/VerticalPageHeader";
@@ -21,7 +21,11 @@ export default function VerticalComparePage() {
   const competitorSnapshot = competitorState.status === "ready" ? competitorState.data : undefined;
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollReady = state.status === "ready";
-  const snapIds = state.status === "ready" ? allVerticalSnapIds(state.data) : [];
+  const readyData = state.status === "ready" ? state.data : null;
+  const snapIds = useMemo(
+    () => (readyData ? allVerticalSnapIds(readyData) : []),
+    [readyData],
+  );
   const { activeSnapId, navigate } = useSnapScrollObserver(snapIds, scrollRef, scrollReady);
 
   useEffect(() => {

@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { ChapterPanel } from "../components/ChapterPanel";
 import { FadeInView } from "../components/FadeInView";
-import { runtimeCompanyDisplayName } from "../lib/companies";
 import { colorForCompany } from "../lib/competitor_chart_colors";
 import type { SectionProps } from "../lib/section_ui";
 import { useVerticalReport } from "../lib/useVerticalReport";

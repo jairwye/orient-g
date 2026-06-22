@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { formatTableCell, formatTableCellForRow } from "../lib/format";
+import { formatTableCellForRow } from "../lib/format";
 import { resolveTableHeaderKeys } from "../lib/table_header_keys";
 import { FadeInView } from "./FadeInView";
 type Props = {

@@ -248,13 +248,11 @@ export async function runFolderIncrementalUpload(
     return outcomes;
   }
 
-  let uploadDone = 0;
   const uploadResults = await mapPool(
     toUpload,
     KB_UPLOAD_CONCURRENCY,
     async ({ file, hash }) => uploadOneFile(folderId, file, hash, headers),
     (done, total) => {
-      uploadDone = done;
       onProgress({
         phase: "uploading",
         current: done,
