@@ -2,7 +2,7 @@
  * 竞品财报 — 财务分析视角（同业基准、驱动归因、质量分级）
  * 纯函数，从 snapshot 表推导可扫读的分析师结论。
  */
-import { COMPANY_COLS, colToLabel, rowValueForCompany } from "./companies";
+import { COMPANY_COLS, SUBJECT_COL, colToLabel, rowValueForCompany } from "./companies";
 import { FK, FK_AMOUNT_CHANGE, FK_CF_ITEM, FK_CHANGE, FK_METRIC, CL } from "./field_keys";
 import { cfProfitRatioToPercentPoints, parseNum, round2, toPercentPoints } from "./format";
 import { getTable } from "./selectors";
@@ -508,7 +508,7 @@ export function deriveProfitCoreInsights(snapshot: CompetitorReportSnapshot): An
   }
 
   if (revRow && profitRow) {
-    const yycqRev = parseNum(revRow["YYCQ"]);
+    const yycqRev = parseNum(rowValueForCompany(revRow, SUBJECT_COL));
     const top = COMPANY_COLS.map((col) => ({
       name: companyName(col),
       rev: revRow ? parseNum(revRow[col]) : null,
@@ -519,7 +519,7 @@ export function deriveProfitCoreInsights(snapshot: CompetitorReportSnapshot): An
       insights.push({
         label: "\u6536\u5165\u89c4\u6a21",
         headline: `${top.name} \u8425\u6536 ${(top.rev! / 10000).toFixed(0)} \u4ebf\u9886\u5148`,
-        detail: `\u6e38\u827a\u6625\u79cb ${(yycqRev / 10000).toFixed(1)} \u4ebf\uff0c\u89c4\u6a21\u5dee\u5f02\u51b3\u5b9a\u8d39\u7528\u7387\u53ef\u627f\u53d7\u533a\u95f4`,
+        detail: `\u672c\u516c\u53f8 ${(yycqRev / 10000).toFixed(1)} \u4ebf\uff0c\u89c4\u6a21\u5dee\u5f02\u51b3\u5b9a\u8d39\u7528\u7387\u53ef\u627f\u53d7\u533a\u95f4`,
         tone: "neutral",
       });
     }
@@ -900,11 +900,11 @@ export function deriveProductsInsights(snapshot: CompetitorReportSnapshot): Anal
     const co = String(row[FK.company] ?? "");
     byCo.set(co, (byCo.get(co) ?? 0) + 1);
   }
-  const yycq = byCo.get("YYCQ") ?? byCo.get("\u6e38\u827a\u6625\u79cb") ?? 0;
+  const yycq = byCo.get(SUBJECT_COL) ?? byCo.get("YYCQ") ?? 0;
   return [
     {
       label: "\u4ea7\u54c1\u77e9\u9635",
-      headline: `\u6e38\u827a\u6625\u79cb\u8fd0\u8425\u4ea7\u54c1 ${yycq > 0 ? "多 SKU" : "见表"}`,
+      headline: `\u672c\u516c\u53f8\u8fd0\u8425\u4ea7\u54c1 ${yycq > 0 ? "多 SKU" : "见表"}`,
       detail: "\u84dd\u672c\uff1a7 \u6b3e IP \u53cc\u7aef\u5747\u8861\uff0c\u4f46\u5728\u7814\u4ec5 1 \u9879\u2014\u7ba1\u7ebf\u5355\u8584",
       tone: yycq >= 5 ? "neutral" : "warning",
     },

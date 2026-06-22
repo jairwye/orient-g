@@ -30,19 +30,19 @@ description: |
 | `references/evidence_locations.md` | 各制度下证据位点优先级（人类可读） |
 | `resources/qc_checklist.md` | 成稿前质检 |
 
-## 竞品池（竞品财报25，2026-05）
+## 竞品池（公开仓库中性代号，2026-05）
 
-| 简称 | 制度 | 代码 |
+| 代号 | 制度 | 说明 |
 | --- | --- | --- |
-| 三七 | cn_sz_main | 002555.SZ |
-| 完美 | cn_sz_main | 002624.SZ |
-| 掌趣 | cn_sz_main | 300315.SZ（创业板） |
-| 华清 | cn_neeq | 834195.NQ |
-| 绿岸 | cn_neeq | 430229.NQ |
-| 塔人 | cn_neeq | 837014.NQ |
-| 像素 | cn_neeq | 836333.NQ |
+| 可比公司A | cn_sz_main | A 股深主板示例 |
+| 可比公司B | cn_sz_main | A 股深主板示例 |
+| 可比公司C | cn_sz_main | 创业板体例 |
+| 可比公司D | cn_neeq | 新三板示例 |
+| 可比公司E | cn_neeq | 新三板示例 |
+| 可比公司F | cn_neeq | 新三板示例 |
+| 可比公司G | cn_neeq | 新三板示例 |
 
-完整别名与 ticker 见 `disclosure_regimes.yaml` → `entities`。
+完整别名见 `disclosure_regimes.yaml` → `entities`（内网部署可覆盖为真实主体映射）。
 
 ## 与 xlsx 子技能边界
 

@@ -1,7 +1,8 @@
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import type { CompetitorReportSnapshot } from "./types";
+import { COMPANY_COLS, SUBJECT_COL } from "./companies";
 
-/** UI spec §4 八公司色板 — YYCQ 独占经营蓝；其余明度更高、深色底可读 */
+/** UI spec §4 八公司色板 — 本公司独占经营蓝；其余明度更高、深色底可读 */
 export const COMPANY_COLORS: Record<string, string> = {
   yycq: BUSINESS_CHART_COLORS.current,
   "37": "#818CF8",
@@ -17,15 +18,13 @@ export const COMPANY_ORDER = ["yycq", "37", "wm", "zq", "tr", "hq", "xs", "la"] 
 
 const LABEL_ALIASES: Record<string, string> = {
   YYCQ: "yycq",
-  游艺春秋: "yycq",
-  三七互娱: "37",
-  完美世界: "wm",
-  掌趣科技: "zq",
-  塔人网络: "tr",
-  华清飞扬: "hq",
-  像素软件: "xs",
-  绿岸网络: "la",
+  [SUBJECT_COL]: "yycq",
 };
+for (let i = 0; i < COMPANY_COLS.length - 1; i += 1) {
+  const label = COMPANY_COLS[i + 1]!;
+  const id = COMPANY_ORDER[i + 1];
+  if (id) LABEL_ALIASES[label] = id;
+}
 
 export function resolveCompanyId(name: string): string | null {
   const key = name.trim();

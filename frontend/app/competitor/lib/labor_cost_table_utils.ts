@@ -1,4 +1,4 @@
-import { labelToCol, rowValueForCompany } from "./companies";
+import { labelToCol, rowValueForCompany, SUBJECT_COL } from "./companies";
 import { FK } from "./field_keys";
 import { formatDecimal2 } from "./format";
 
@@ -46,7 +46,7 @@ export function getLaborCostCellValue(
 ): string | number | null | undefined {
   if (header === metricKey) return row[metricKey];
   const col = labelToCol(header);
-  if (col === "YYCQ") return rowValueForCompany(row, "YYCQ");
+  if (col === SUBJECT_COL) return rowValueForCompany(row, SUBJECT_COL);
   return row[header] ?? row[col];
 }
 

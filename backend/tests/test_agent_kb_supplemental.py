@@ -21,7 +21,7 @@ PREFETCH_BREAKDOWN = {
     "evidence_pack": {
         "task_type": "breakdown",
         "coverage_score": 1.0,
-        "retrieval_queries": ["出一份华清销售费用明细"],
+        "retrieval_queries": ["出一份可比E销售费用明细"],
         "gaps": [],
     },
 }
@@ -33,14 +33,14 @@ def test_needs_supplemental_when_hermes_zero_kb_ask():
         prefetch_result=PREFETCH_BREAKDOWN,
         hermes_kb_ask_count=0,
         hermes_reply="",
-        user_query="华清销售费用",
+        user_query="可比E销售费用",
     )
     assert not needs_hermes_supplemental(
         agent_route=AgentRoute.hermes_full,
         prefetch_result=PREFETCH_BREAKDOWN,
         hermes_kb_ask_count=2,
         hermes_reply="",
-        user_query="华清销售费用",
+        user_query="可比E销售费用",
     )
     assert not needs_hermes_supplemental(
         agent_route=AgentRoute.fast,
@@ -72,7 +72,7 @@ def test_tier2_supplemental_when_hermes_estimates_and_pack_has_breakdown():
         prefetch_result=prefetch,
         hermes_kb_ask_count=0,
         hermes_reply=bad_hermes,
-        user_query="出一份华清25、24两年销售费用明细的对比分析报告",
+        user_query="出一份可比E25、24两年销售费用明细的对比分析报告",
     )
 
 
@@ -96,7 +96,7 @@ def test_tier2_no_supplemental_when_hermes_has_exact_line_items():
         prefetch_result=prefetch,
         hermes_kb_ask_count=0,
         hermes_reply=good,
-        user_query="出一份华清25、24两年销售费用明细的对比分析报告",
+        user_query="出一份可比E25、24两年销售费用明细的对比分析报告",
     )
 
 
@@ -119,14 +119,14 @@ def test_lite_skips_supplemental_when_pack_and_hermes_sufficient():
         "职工薪酬 10,802,366.11 市场及推广 2,889,547.75\n"
     )
     assert hermes_reply_sufficient_against_pack(
-        good, prefetch_result=prefetch, user_query="华清25、24两年销售费用明细对比"
+        good, prefetch_result=prefetch, user_query="可比E25、24两年销售费用明细对比"
     )
     assert not needs_hermes_supplemental(
         agent_route=AgentRoute.hermes_lite,
         prefetch_result=prefetch,
         hermes_kb_ask_count=0,
         hermes_reply=good,
-        user_query="华清25、24两年销售费用明细对比",
+        user_query="可比E25、24两年销售费用明细对比",
     )
 
 
@@ -157,7 +157,7 @@ def test_tier2_no_supplemental_when_only_speculation():
         prefetch_result=prefetch,
         hermes_kb_ask_count=0,
         hermes_reply=hermes,
-        user_query="出一份华清25、24两年管理费用明细的对比分析报告",
+        user_query="出一份可比E25、24两年管理费用明细的对比分析报告",
     )
 
 
@@ -239,14 +239,14 @@ def test_lite_needs_supplemental_when_hermes_has_speculation():
         "* **原因**：可能系公司减少了审计、法律或咨询等外部专业服务采购。\n"
     )
     assert not hermes_reply_sufficient_against_pack(
-        bad, prefetch_result=prefetch, user_query="华清25、24两年管理费用明细对比"
+        bad, prefetch_result=prefetch, user_query="可比E25、24两年管理费用明细对比"
     )
     assert needs_hermes_supplemental(
         agent_route=AgentRoute.hermes_lite,
         prefetch_result=prefetch,
         hermes_kb_ask_count=0,
         hermes_reply=bad,
-        user_query="出一份华清25、24两年管理费用明细的对比分析报告",
+        user_query="出一份可比E25、24两年管理费用明细的对比分析报告",
     )
 
 
@@ -268,7 +268,7 @@ def test_tier2_analyst_short_but_sufficient_skips_supplemental():
         "| 销售费用 | 13,722,360.23 | 25,081,092.51 |\n"
         "职工薪酬 10,802,366.11 市场及推广 2,889,547.75\n"
     )
-    q = "出一份华清25、24两年销售费用明细的对比分析报告"
+    q = "出一份可比E25、24两年销售费用明细的对比分析报告"
     assert not needs_hermes_supplemental(
         agent_route=AgentRoute.hermes_full,
         prefetch_result=prefetch,
@@ -286,10 +286,10 @@ def test_supplemental_max_queries_by_route():
 def test_plan_supplemental_full_prefers_narrative_and_caps():
     pack = {
         **PREFETCH_BREAKDOWN["evidence_pack"],
-        "retrieval_queries": ["出一份华清销售费用明细"],
+        "retrieval_queries": ["出一份可比E销售费用明细"],
     }
     qs = plan_supplemental_queries(
-        "华清25、24两年销售费用明细对比分析报告",
+        "可比E25、24两年销售费用明细对比分析报告",
         evidence_pack=pack,
         max_queries=2,
         prefetch_tier="full",
@@ -304,12 +304,12 @@ def test_plan_supplemental_full_prefers_narrative_and_caps():
 def test_plan_supplemental_finance_full_skips_narrative_filter():
     pack = {
         "task_type": "compare",
-        "retrieval_queries": ["华清飞扬 应收账款 2024 2025 对比"],
+        "retrieval_queries": ["可比公司E 应收账款 2024 2025 对比"],
         "finance_meta": {"active": True, "subject_type": "balance_sheet"},
         "gaps": ["证据中缺少资产负债表科目行"],
     }
     qs = plan_supplemental_queries(
-        "华清飞扬 2024 2025 应收账款期末余额对比",
+        "可比公司E 2024 2025 应收账款期末余额对比",
         evidence_pack=pack,
         max_queries=4,
         prefetch_tier="full",
@@ -344,12 +344,12 @@ def test_prefetch_defers_hermes_draft_for_all_tier12():
 
 def test_plan_supplemental_skips_used_queries():
     qs = plan_supplemental_queries(
-        "华清25、24两年销售费用明细对比",
+        "可比E25、24两年销售费用明细对比",
         evidence_pack=PREFETCH_BREAKDOWN["evidence_pack"],
         max_queries=3,
     )
     assert qs
-    assert "出一份华清销售费用明细" not in qs
+    assert "出一份可比E销售费用明细" not in qs
     assert any("附注" in q or "销售费用" in q for q in qs)
 
 
@@ -381,7 +381,7 @@ def test_needs_fast_path_narrative_supplemental_on_finance_gap():
             "gaps": ["未命中营业收入等科目的变动原因/重大变动说明（仅有金额不够）"],
         },
     }
-    q = "华清2025年与2024年营业收入对比及变动说明"
+    q = "可比E2025年与2024年营业收入对比及变动说明"
     assert needs_fast_path_narrative_supplemental(
         prefetch_result=prefetch, user_query=q, enabled_skills=skill
     )
@@ -403,7 +403,7 @@ def test_run_supplemental_merges_citations(mock_ask):
     }
     merged, tools = run_supplemental_kb_asks(
         user_token="tok",
-        user_query="华清25、24两年销售费用明细对比",
+        user_query="可比E25、24两年销售费用明细对比",
         prefetch_result=dict(PREFETCH_BREAKDOWN),
         kb_scope={"selected_folder_ids": ["f1"]},
         attached_doc_ids=None,
@@ -475,7 +475,7 @@ def test_lite_tier_answer_requirements_include_evidence_constraint():
 
     req = hermes_answer_requirements(
         tier="lite",
-        user_query="华清25、24两年销售费用明细对比分析报告",
+        user_query="可比E25、24两年销售费用明细对比分析报告",
     )
     assert "禁止估算" in req
     assert "citations" in req or "orientg_kb_ask" in req

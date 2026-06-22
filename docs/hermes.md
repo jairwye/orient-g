@@ -130,13 +130,13 @@ update 后确认 `%USERPROFILE%\.hermes\config.yaml` 中 `mcp_servers.orientg` �
 ```yaml
 mcp_servers:
   orientg:
-    command: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g/.venv/Scripts/python.exe"
+    command: "%USERPROFILE%/Projects/orient-g/.venv/Scripts/python.exe"
     args:
       - "-m"
       - "backend.mcp.orientg_server"
-    cwd: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g"
+    cwd: "%USERPROFILE%/Projects/orient-g"
     env:
-      PYTHONPATH: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g"
+      PYTHONPATH: "%USERPROFILE%/Projects/orient-g"
       ORIENTG_USER_TOKEN: "${ORIENTG_USER_TOKEN}"
     timeout: 180
     connect_timeout: 60
@@ -220,7 +220,7 @@ hermes chat
 # 例如：用 orientg 知识库检索财务制度
 
 # 2) Orient-G MCP 冒烟（可不启 Hermes）
-cd E:\jair\SynologyDrive\游艺春秋\Projects\orient-g
+cd %USERPROFILE%\Projects\orient-g
 .\.venv\Scripts\python.exe scripts\smoke_orientg_mcp.py --ensure-user
 
 # 3) /agent（需 2.4 Gateway + 2.5；浏览器登录即可，勿在 .hermes\.env 写死 JWT）

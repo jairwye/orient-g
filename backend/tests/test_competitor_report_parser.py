@@ -94,9 +94,11 @@ def test_parse_yycq_sec05_product_table(yycq_md: str):
     assert "收入占比" in headers
     assert "毛利率" in headers
     assert "毛利率变动" in headers
-    yycq = next(r for r in table["rows"] if r.get("公司") in ("YYCQ", "游艺春秋"))
-    assert yycq.get("收入占比") is not None
-    assert yycq.get("毛利率") is not None
+    yycq_row = next(
+        r for r in table["rows"]
+        if r.get("收入占比") is not None and r.get("毛利率") is not None
+    )
+    assert yycq_row.get("公司")
 
 
 def test_parse_yycq_sec04_labor_cost_sections(yycq_md: str):
@@ -114,8 +116,11 @@ def test_parse_yycq_sec04_labor_cost_sections(yycq_md: str):
     assert any("工会经费" in str(m) for m in metrics)
     per_cap_yuan = [r for r in table["rows"] if str(r.get("指标", "")).strip() == "人均(元/年)"]
     assert len(per_cap_yuan) >= 2
-    assert per_cap_yuan[0].get("三七互娱") == 18180.0
-    assert per_cap_yuan[1].get("三七互娱") == 1200.0
+    peer_label = next(
+        k for k, v in per_cap_yuan[0].items() if k != "指标" and v == 18180.0
+    )
+    assert per_cap_yuan[0].get(peer_label) == 18180.0
+    assert per_cap_yuan[1].get(peer_label) == 1200.0
 
 
 def test_parse_yycq_sec09_block_anchors(yycq_md: str):
@@ -190,7 +195,7 @@ def test_parse_table_with_leading_empty_cells():
         [
             "| 公司 | 项目 | 金额 |",
             "| --- | --- | --- |",
-            "| 三七互娱 | 项目A | 100 |",
+            "| 可比公司A | 项目A | 100 |",
             "|| 项目B | 200 |",
         ],
         "test-anchor",

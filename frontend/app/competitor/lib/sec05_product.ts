@@ -41,7 +41,7 @@ function pickMisalignedMarginChange(row: Sec05ProductRow): string | number | nul
 /**
  * 蓝本 sec-05-1：
  * - **紧凑 8 列**（收入/占比/成本/毛利率/收入增减率/毛利率变动）：直接引用；
- * - **宽 12 列**：游艺春秋等完整行；其余公司压缩行需还原 毛利率 / 收入增减率 / 毛利率变动。
+ * - **宽 12 列**：本公司等完整行；其余公司压缩行需还原 毛利率 / 收入增减率 / 毛利率变动。
  */
 export function normalizeSec05ProductRow(
   row: Sec05ProductRow,

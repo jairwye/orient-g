@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CompanyPeekCarousel } from "./CompanyPeekCarousel";
 import { DataTable } from "./DataTable";
 import { colorForCompany } from "../lib/competitor_chart_colors";
-import { colToLabel, labelToCol } from "../lib/companies";
+import { colToLabel, companyDisplayLabel, labelToCol } from "../lib/companies";
 import { CL } from "../lib/field_keys";
 import { peekCarouselDwellMs } from "../lib/peek_carousel_dwell";
 import { sec09FormatCell } from "../lib/sec09_table_format";
@@ -13,7 +13,7 @@ import { useSnapFocused } from "../lib/use_snap_focused";
 import { usePeekCarouselHeight } from "../lib/use_peek_carousel_height";
 import type { CompetitorReportSnapshot, TableBlock } from "../lib/types";
 
-const DEFAULT_COMPANY = "三七互娱";
+const DEFAULT_COMPANY = "可比公司A";
 const COMPANY_KEY_SUMMARY = "公司";
 const COMPANY_KEY_DETAIL = "竞企名称";
 const SNAP_ID = "sec-09-i";
@@ -100,7 +100,7 @@ export function Sec09OperatingProductsExplorer({ summary, detail, snapshot }: Pr
     () =>
       companies.map((co) => ({
         id: co,
-        title: `${co === "YYCQ" ? "游艺春秋" : co} · ${CL.operatingProductsDetail}`,
+        title: `${companyDisplayLabel(co, snapshot)} · ${CL.operatingProductsDetail}`,
         content: (
           <DataTable
             embedded
@@ -113,7 +113,7 @@ export function Sec09OperatingProductsExplorer({ summary, detail, snapshot }: Pr
           />
         ),
       })),
-    [companies, detail],
+    [companies, detail, snapshot],
   );
 
   return (

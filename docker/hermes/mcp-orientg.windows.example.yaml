@@ -12,13 +12,13 @@
 
 mcp_servers:
   orientg:
-    command: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g/.venv/Scripts/python.exe"
+    command: "%USERPROFILE%/Projects/orient-g/.venv/Scripts/python.exe"
     args:
       - "-m"
       - "backend.mcp.orientg_server"
-    cwd: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g"
+    cwd: "%USERPROFILE%/Projects/orient-g"
     env:
-      PYTHONPATH: "E:/jair/SynologyDrive/游艺春秋/Projects/orient-g"
+      PYTHONPATH: "%USERPROFILE%/Projects/orient-g"
       ORIENTG_USER_TOKEN: "${ORIENTG_USER_TOKEN}"
     timeout: 180
     connect_timeout: 60

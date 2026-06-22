@@ -989,7 +989,7 @@ export default function AiInteractionPage() {
       description:
         "按 A 股/新三板/港股/SEC 披露制度检索年报证据；对比时按科目类型（资产负债表/利润表/现金流）路由，非默认利润表。",
       trigger_hint: "勾选后须选择知识库文件夹（如竞品财报25）；工作流「竞品财报分析」默认勾选。",
-      example: "华清飞扬 2024、2025 应收账款期末余额对比",
+      example: "可比公司E 2024、2025 应收账款期末余额对比",
     },
   ];
   const ALL_TOOLS: ToolConfig[] = [
@@ -1041,7 +1041,7 @@ export default function AiInteractionPage() {
         "针对七家竞品年报 KB：自动勾选财报 Skill、切换智能体视图，并默认选中「竞品财报25」文件夹。",
       start_hint:
         "请先确认左侧知识库范围已包含竞品财报文件夹；未选范围时发送将提示先选 KB。建议使用智能体标准/深度模式。",
-      example_prompt: "华清飞扬 2024、2025 应收账款期末余额对比，并说明两期变动。",
+      example_prompt: "可比公司E 2024、2025 应收账款期末余额对比，并说明两期变动。",
       default_enabled_skill_ids: [FINANCE_ANNUAL_REPORT_SKILL_ID],
     },
   ];

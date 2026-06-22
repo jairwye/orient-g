@@ -33,7 +33,7 @@ describe("isSec05CompactHeader", () => {
 describe("normalizeSec05ProductRow", () => {
   it("紧凑 8 列行保持不变", () => {
     const row = {
-      公司: "三七互娱",
+      公司: "可比公司A",
       产品类型: "移动游戏",
       "收入(万)": 1552908,
       收入占比: 97.3,
@@ -50,7 +50,7 @@ describe("normalizeSec05ProductRow", () => {
 
   it("完整 12 列行保持不变", () => {
     const row = {
-      公司: "游艺春秋",
+      公司: "本公司",
       产品类型: "移动游戏",
       "收入(万)": 14042,
       收入占比: 71.3,
@@ -69,7 +69,7 @@ describe("normalizeSec05ProductRow", () => {
 
   it("12 列压缩行：毛利率变动错位到收入增减额", () => {
     const row = {
-      公司: "三七互娱",
+      公司: "可比公司A",
       产品类型: "移动游戏",
       收入占比: 97.3,
       成本占比: 76.4,
@@ -98,7 +98,7 @@ describe("normalizeSec05ProductRow", () => {
 
   it("压缩行：毛利率变动落在收入增减率列", () => {
     const row = {
-      公司: "三七互娱",
+      公司: "可比公司A",
       产品类型: "移动游戏",
       "收入(万)": 1552908,
       收入占比: 97.3,
@@ -115,7 +115,7 @@ describe("normalizeSec05ProductRow", () => {
 
   it("压缩行：负毛利率", () => {
     const row = {
-      公司: "掌趣科技",
+      公司: "可比公司C",
       产品类型: "其他",
       [SEC05_COST_SHARE]: -16.5,
       [FK.grossMargin]: -3.4,

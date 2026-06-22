@@ -528,7 +528,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
-                  <p className="mt-2 text-xs text-zinc-500">橙线=10% 关注线；蓝本塔人 13.4% 需结合账龄判断。</p>
+                  <p className="mt-2 text-xs text-zinc-500">橙线=10% 关注线；蓝本可比公司D 13.4% 需结合账龄判断。</p>
                 </ChartPanel>
               </div>
               {dupont ? (

@@ -59,7 +59,7 @@ def test_hermes_delta_deferred_to_thinking_before_supplemental(mock_sup, mock_st
             token="tok",
             uname="finance_test",
             tenant_id="tenant1",
-            messages=[{"role": "user", "content": "华清25、24两年销售费用明细对比"}],
+            messages=[{"role": "user", "content": "可比E25、24两年销售费用明细对比"}],
             kb_scope_payload={"selected_folder_ids": ["f1"]},
             attached=[],
             body=type("B", (), {"allow_kb_write": False, "enabled_skills": None, "model": None, "hermes_session_id": None, "orientg_chat_session_id": None})(),
@@ -99,7 +99,7 @@ BREAKDOWN_PREFETCH = {
 def test_tier2_deferred_draft_skips_supplemental_when_rich_hermes(mock_sup, mock_stream):
     """过程稿 defer 时须用累积正文做 supplemental 判定，勿因 done.reply 为空误触发本地 synth。"""
     long_draft = (
-        "## 华清飞扬管理费用对比分析报告\n\n"
+        "## 可比公司E管理费用对比分析报告\n\n"
         "结论：管理费用 44,933,044.34 元。\n\n"
         "| 管理费用 | 44,933,044.34 | 52,950,207.05 |\n"
         "| 职工薪酬 | 30,678,824.83 | 32,439,022.86 |\n\n"
@@ -120,7 +120,7 @@ def test_tier2_deferred_draft_skips_supplemental_when_rich_hermes(mock_sup, mock
             token="tok",
             uname="finance_test",
             tenant_id="tenant1",
-            messages=[{"role": "user", "content": "出一份华清25、24两年管理费用明细的对比分析报告"}],
+            messages=[{"role": "user", "content": "出一份可比E25、24两年管理费用明细的对比分析报告"}],
             kb_scope_payload={"selected_folder_ids": ["f1"]},
             attached=[],
             body=type("B", (), {"allow_kb_write": False, "enabled_skills": None, "model": None, "hermes_session_id": None, "orientg_chat_session_id": None})(),
@@ -147,7 +147,7 @@ def test_hermes_full_error_does_not_local_fallback(mock_stream):
             token="tok",
             uname="finance_test",
             tenant_id="tenant1",
-            messages=[{"role": "user", "content": "华清25、24两年研发费用明细对比"}],
+            messages=[{"role": "user", "content": "可比E25、24两年研发费用明细对比"}],
             kb_scope_payload={"selected_folder_ids": ["f1"]},
             attached=[],
             body=type("B", (), {"allow_kb_write": False, "enabled_skills": None, "model": None, "hermes_session_id": None, "orientg_chat_session_id": None})(),
@@ -166,7 +166,7 @@ def test_hermes_full_error_does_not_local_fallback(mock_stream):
 @patch("backend.routers.agent.stream_agent_chat")
 def test_hermes_lite_error_salvages_rich_draft_over_synth(mock_stream, mock_synth):
     long_draft = (
-        "## 华清飞扬管理费用对比分析报告\n\n"
+        "## 可比公司E管理费用对比分析报告\n\n"
         "| 指标 | 2025年 | 2024年 |\n|---|---|---|\n"
         "| 管理费用合计 | 44,933,044.34 | 52,950,207.05 |\n"
         "| 职工薪酬 | 30,678,824.83 | 32,439,022.86 |\n"
@@ -188,7 +188,7 @@ def test_hermes_lite_error_salvages_rich_draft_over_synth(mock_stream, mock_synt
             token="tok",
             uname="finance_test",
             tenant_id="tenant1",
-            messages=[{"role": "user", "content": "华清25、24两年管理费用明细对比"}],
+            messages=[{"role": "user", "content": "可比E25、24两年管理费用明细对比"}],
             kb_scope_payload={"selected_folder_ids": ["f1"]},
             attached=[],
             body=type("B", (), {"allow_kb_write": False, "enabled_skills": None, "model": None, "hermes_session_id": None, "orientg_chat_session_id": None})(),

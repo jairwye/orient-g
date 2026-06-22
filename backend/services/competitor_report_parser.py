@@ -12,14 +12,14 @@ SECTION_ID_RE = re.compile(r"^(sec-\d{2})")
 SEPARATOR_ROW_RE = re.compile(r"^[\s:\-|]+$")
 
 COMPANY_LABELS = [
-    ("yycq", "游艺春秋", "YYCQ"),
-    ("37", "三七互娱", "三七互娱"),
-    ("wm", "完美世界", "完美世界"),
-    ("zq", "掌趣科技", "掌趣科技"),
-    ("tr", "塔人网络", "塔人网络"),
-    ("hq", "华清飞扬", "华清飞扬"),
-    ("xs", "像素软件", "像素软件"),
-    ("la", "绿岸网络", "绿岸网络"),
+    ("yycq", "本公司", "YYCQ"),
+    ("37", "可比公司A", "可比公司A"),
+    ("wm", "可比公司B", "可比公司B"),
+    ("zq", "可比公司C", "可比公司C"),
+    ("tr", "可比公司D", "可比公司D"),
+    ("hq", "可比公司E", "可比公司E"),
+    ("xs", "可比公司F", "可比公司F"),
+    ("la", "可比公司G", "可比公司G"),
 ]
 
 LABEL_TO_COMPANY: dict[str, tuple[str, str, str | None]] = {}
@@ -340,7 +340,7 @@ def _extract_companies(
             cid, _canonical, short = info
             if cid not in seen:
                 seen.add(cid)
-                # 展示名与蓝本原文一致（YYCQ 或 游艺春秋）
+                # 展示名与蓝本原文一致（本公司 或 YYCQ）
                 entry: dict[str, Any] = {"id": cid, "label": key}
                 if short and short != key:
                     entry["short"] = short

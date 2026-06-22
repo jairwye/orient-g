@@ -57,7 +57,7 @@ function findCompaniesInText(text: string): string[] {
   return ordered;
 }
 
-/** 从标题（含「净现金——掌趣科技…」）提取主体 */
+/** 从标题（含「净现金——可比公司C…」）提取主体 */
 export function detectCompanyInTitle(title: string): string | null {
   const prefix = detectCompanyPrefix(title);
   if (prefix) return prefix;

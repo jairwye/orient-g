@@ -15,21 +15,13 @@ import { ChartPanel } from "./ChartPanel";
 import { CompetitorChartTooltip, competitorBarTooltipProps } from "./CompetitorChartTooltip";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS, colorForCompany } from "../lib/competitor_chart_colors";
-import { colToLabel, labelToCol } from "../lib/companies";
+import { colToLabel, labelToCol, PEER_COMPANY_COLS } from "../lib/companies";
 import { formatPctPoints, parseNum, toPercentPoints } from "../lib/format";
 import type { CompetitorReportSnapshot, TableBlock } from "../lib/types";
 
 const CUSTOMER_TYPES = ["前五客户", "前五供应商"] as const;
 
-const CUSTOMER_COMPANY_ORDER = [
-  "三七互娱",
-  "完美世界",
-  "掌趣科技",
-  "塔人网络",
-  "华清飞扬",
-  "像素软件",
-  "绿岸网络",
-] as const;
+const CUSTOMER_COMPANY_ORDER = PEER_COMPANY_COLS;
 
 function buildConcentrationRows(tables: TableBlock[]) {
   const rows: Array<{ company: string; type: string; name: string; pct: number }> = [];

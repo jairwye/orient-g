@@ -29,7 +29,7 @@ type Props = {
   rowLabelHeader?: string;
   /** 表头展示文案（行键仍用 headers 原值） */
   headerDisplay?: (header: string) => string;
-  /** 单元格取值（默认 row[header]；宽表 YYCQ/游艺春秋 等需别名时使用） */
+  /** 单元格取值（默认 row[header]；宽表 本公司/YYCQ 等需别名时使用） */
   getCellValue?: (
     header: string,
     row: Record<string, string | number | null>,

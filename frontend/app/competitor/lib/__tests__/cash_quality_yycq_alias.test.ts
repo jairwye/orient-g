@@ -1,11 +1,12 @@
 import { parseCashQualityPoints } from "../finance_analysis";
+import { SUBJECT_COL } from "../companies";
 import type { CompetitorReportSnapshot } from "../types";
 
-function snapshotWithYycqLabelHeader(): CompetitorReportSnapshot {
+function snapshotWithSubjectLabelHeader(): CompetitorReportSnapshot {
   return {
     version: 1,
     meta: {},
-    companies: [{ id: "yycq", label: "游艺春秋", short: "YYCQ" }],
+    companies: [{ id: "yycq", label: "本公司", short: "YYCQ" }],
     sections: [
       {
         id: "sec-08",
@@ -14,11 +15,11 @@ function snapshotWithYycqLabelHeader(): CompetitorReportSnapshot {
           {
             kind: "table",
             anchor: "sec-08-2",
-            headers: ["指标", "游艺春秋", "三七互娱"],
+            headers: ["指标", "本公司", "可比公司A"],
             rows: [
-              { 指标: "净利润(万)", 游艺春秋: 5698, 三七互娱: 289895 },
-              { 指标: "经营CF(万)", 游艺春秋: 2864, 三七互娱: 353833 },
-              { 指标: "经营CF/净利", 游艺春秋: "41.4%", 三七互娱: "122.1%" },
+              { 指标: "净利润(万)", 本公司: 5698, 可比公司A: 289895 },
+              { 指标: "经营CF(万)", 本公司: 2864, 可比公司A: 353833 },
+              { 指标: "经营CF/净利", 本公司: "41.4%", 可比公司A: "122.1%" },
             ],
           },
         ],
@@ -27,13 +28,13 @@ function snapshotWithYycqLabelHeader(): CompetitorReportSnapshot {
   } as CompetitorReportSnapshot;
 }
 
-describe("parseCashQualityPoints YYCQ alias", () => {
-  it("表头为「游艺春秋」时仍解析出游艺春秋分级点", () => {
-    const points = parseCashQualityPoints(snapshotWithYycqLabelHeader());
-    const yycq = points.find((p) => p.colKey === "YYCQ");
-    expect(yycq).toBeDefined();
-    expect(yycq!.name).toBe("游艺春秋");
-    expect(yycq!.profit).toBe(5698);
-    expect(yycq!.ocf).toBe(2864);
+describe("parseCashQualityPoints subject alias", () => {
+  it("表头为本公司时仍解析出本公司分级点", () => {
+    const points = parseCashQualityPoints(snapshotWithSubjectLabelHeader());
+    const subject = points.find((p) => p.colKey === SUBJECT_COL);
+    expect(subject).toBeDefined();
+    expect(subject!.name).toBe("本公司");
+    expect(subject!.profit).toBe(5698);
+    expect(subject!.ocf).toBe(2864);
   });
 });

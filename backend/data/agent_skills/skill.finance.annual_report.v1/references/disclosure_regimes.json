@@ -3,43 +3,36 @@
   "default_regime": "cn_sz_main",
   "fallback_regime_order": ["cn_sz_main", "cn_neeq", "hk_main", "sec_us"],
   "entities": {
-    "三七互娱": {
+    "可比公司A": {
       "regime": "cn_sz_main",
-      "ticker": "002555.SZ",
-      "aliases": ["三七", "三七互娱", "37互娱"],
-      "notes": "原中小板，现并入深主板体系"
+      "aliases": ["可比A", "可比公司A"],
+      "notes": "A 股深主板示例实体"
     },
-    "完美世界": {
+    "可比公司B": {
       "regime": "cn_sz_main",
-      "ticker": "002624.SZ",
-      "aliases": ["完美", "完美世界"]
+      "aliases": ["可比B", "可比公司B"]
     },
-    "掌趣科技": {
+    "可比公司C": {
       "regime": "cn_sz_main",
-      "ticker": "300315.SZ",
-      "aliases": ["掌趣", "掌趣科技"],
+      "aliases": ["可比C", "可比公司C"],
       "board": "chinext",
       "notes": "深交所创业板；年报体例与 cn_sz_main 同构"
     },
-    "华清飞扬": {
+    "可比公司E": {
       "regime": "cn_neeq",
-      "ticker": "834195.NQ",
-      "aliases": ["华清", "华清飞扬"]
+      "aliases": ["可比E", "可比公司E"]
     },
-    "绿岸网络": {
+    "可比公司G": {
       "regime": "cn_neeq",
-      "ticker": "430229.NQ",
-      "aliases": ["绿岸", "绿岸网络"]
+      "aliases": ["可比G", "可比公司G"]
     },
-    "塔人网络": {
+    "可比公司D": {
       "regime": "cn_neeq",
-      "ticker": "837014.NQ",
-      "aliases": ["塔人", "塔人网络"]
+      "aliases": ["可比D", "可比公司D"]
     },
-    "像素软件": {
+    "可比公司F": {
       "regime": "cn_neeq",
-      "ticker": "836333.NQ",
-      "aliases": ["像素", "像素软件"]
+      "aliases": ["可比F", "可比公司F"]
     }
   },
   "regimes": {

@@ -230,7 +230,7 @@ type CompetitorReportSnapshot = {
   };
   companies: Array<{
     id: string;                    // 稳定 slug，如 "yycq" | "37"
-    label: string;                 // 显示名，如「游艺春秋」
+    label: string;                 // 显示名，如「本公司」
     short?: string;                // 如 "YYCQ"
     color?: string;                // 可选；缺省走 UI 色板
   }>;

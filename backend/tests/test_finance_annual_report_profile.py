@@ -33,15 +33,15 @@ def test_manifest_skill_loads_disclosure_regimes():
 @pytest.mark.parametrize(
     "entity,expected",
     [
-        ("华清", "cn_neeq"),
-        ("华清飞扬", "cn_neeq"),
-        ("三七", "cn_sz_main"),
-        ("三七互娱", "cn_sz_main"),
-        ("掌趣", "cn_sz_main"),
-        ("像素软件", "cn_neeq"),
-        ("塔人", "cn_neeq"),
-        ("绿岸", "cn_neeq"),
-        ("完美世界", "cn_sz_main"),
+        ("可比E", "cn_neeq"),
+        ("可比公司E", "cn_neeq"),
+        ("可比A", "cn_sz_main"),
+        ("可比公司A", "cn_sz_main"),
+        ("可比C", "cn_sz_main"),
+        ("可比公司F", "cn_neeq"),
+        ("可比D", "cn_neeq"),
+        ("可比G", "cn_neeq"),
+        ("可比公司B", "cn_sz_main"),
     ],
 )
 def test_resolve_regime_competitor_pool(entity, expected):
@@ -64,7 +64,7 @@ def test_finance_chunk_score_demotes_other_receivable_for_ar_query():
         finance_chunk_score_delta,
     )
 
-    q = "华清2025年末与2024年末应收账款余额对比"
+    q = "可比公司E2025年末与2024年末应收账款余额对比"
     ctx = build_finance_retrieval_context(["skill.finance.annual_report.v1"], q)
     assert ctx and ctx.get("subject_type") == "balance_sheet"
     wrong = "其他应收款 2025年12月31日 781,351.15 2024年12月31日 4,346,082.12"
@@ -76,8 +76,8 @@ def test_plan_retrieval_queries_finance_bs_drops_pnl_noise():
     from backend.services.finance_annual_report_profile import plan_retrieval_queries_finance
     from backend.services.kb_retrieval_plan import TaskType
 
-    q = "华清2025年末与2024年末应收账款余额对比"
-    qs = plan_retrieval_queries_finance(q, TaskType.compare, entity="华清", max_queries=8, prefetch_tier="lite")
+    q = "可比公司E2025年末与2024年末应收账款余额对比"
+    qs = plan_retrieval_queries_finance(q, TaskType.compare, entity="可比E", max_queries=8, prefetch_tier="lite")
     assert any("应收账款" in x and "资产负债表" in x for x in qs)
     assert not any("营业收入" in x or "销售费用" in x for x in qs)
 
@@ -86,6 +86,6 @@ def test_plan_retrieval_queries_finance_revenue_adds_narrative():
     from backend.services.finance_annual_report_profile import plan_retrieval_queries_finance
     from backend.services.kb_retrieval_plan import TaskType
 
-    q = "华清2025年与2024年营业收入对比及变动说明"
-    qs = plan_retrieval_queries_finance(q, TaskType.compare, entity="华清", max_queries=10, prefetch_tier="lite")
+    q = "可比公司E2025年与2024年营业收入对比及变动说明"
+    qs = plan_retrieval_queries_finance(q, TaskType.compare, entity="可比E", max_queries=10, prefetch_tier="lite")
     assert any("重大变动" in x or "经营情况讨论" in x for x in qs)

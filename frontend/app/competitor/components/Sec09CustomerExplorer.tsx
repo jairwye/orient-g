@@ -12,7 +12,7 @@ import { usePeekCarouselHeight } from "../lib/use_peek_carousel_height";
 import type { AnchorBlock } from "../lib/selectors";
 import type { CompetitorReportSnapshot, TableBlock } from "../lib/types";
 
-const DEFAULT_COMPANY = "三七互娱";
+const DEFAULT_COMPANY = "可比公司A";
 const SNAP_ID = "sec-09-m";
 
 type CompanyTable = { company: string; table: Pick<TableBlock, "headers" | "rows"> };

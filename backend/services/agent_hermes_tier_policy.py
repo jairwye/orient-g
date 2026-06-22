@@ -183,8 +183,8 @@ def hermes_orientg_context_extras(
             extras["orientg_kb_ask_suggested_max"] = 2
             if not narrative_qs:
                 narrative_qs = [
-                    f"{ent or '华清飞扬'} 2025 2024 销售费用 附注 明细",
-                    f"{ent or '华清飞扬'} 销售费用 职工薪酬 市场及推广",
+                    f"{ent or '可比公司E'} 2025 2024 销售费用 附注 明细",
+                    f"{ent or '可比公司E'} 销售费用 职工薪酬 市场及推广",
                 ]
         elif query_wants_analyst_report(user_query):
             extras["orientg_kb_ask_suggested"] = True

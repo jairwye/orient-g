@@ -36,7 +36,7 @@ export const FK = {
   perCapProfit: "\u4eba\u5747\u521b\u5229",
   tag: "\u6807\u7b7e",
   oneLine: "\u4e00\u53e5\u8bdd\u7814\u5224",
-  yycqLabel: "\u6e38\u827a\u6625\u79cb",
+  yycqLabel: "\u672c\u516c\u53f8",
   riskLow: "\u4f4e",
   riskMid: "\u4e2d",
   riskHigh: "\u9ad8",

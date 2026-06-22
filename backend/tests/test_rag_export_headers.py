@@ -13,7 +13,7 @@ from backend.services.rag_packages import _attachment_content_disposition, expor
 
 
 def test_attachment_content_disposition_supports_unicode():
-    header = _attachment_content_disposition("三七互娱-2024年_cn_kb.zip")
+    header = _attachment_content_disposition("可比公司A-2024年_cn_kb.zip")
     # Starlette 响应头必须是 latin-1；含 filename* 供现代浏览器显示中文
     Response(content=b"x", headers={"Content-Disposition": header})
     assert "filename*=" in header
@@ -35,7 +35,7 @@ def test_export_package_zip_with_chinese_name(tmp_path, monkeypatch):
     def fake_pkg_row(tid: str, pid: str):
         return {
             "package_id": pid,
-            "name": "三七互娱-2024年",
+            "name": "可比公司A-2024年",
             "storage_path": storage_rel,
         }
 
@@ -44,7 +44,7 @@ def test_export_package_zip_with_chinese_name(tmp_path, monkeypatch):
 
     data, filename = export_package_zip(tenant_id, package_id, "cn_kb")
     assert filename.endswith("_cn_kb.zip")
-    assert "三七" in filename
+    assert "可比公司" in filename
     assert len(data) > 0
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         names = z.namelist()

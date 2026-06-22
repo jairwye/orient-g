@@ -22,7 +22,7 @@ def test_narrative_ok_when_partial_reason_in_parenthetical():
             "category": "note",
             "subject": "附注-研发",
             "mode": "fast",
-            "query": "根据附注说明华清两年研发支出构成变化",
+            "query": "根据附注说明可比E两年研发支出构成变化",
             "tier_line": "执行过程(Tier 0（本地证据综合） · 标准 · Tier 0（Orient-G 本地证据综合，未走 Hermes）)",
             "citations": 10,
             "notes": "cdp-unattended",
@@ -51,7 +51,7 @@ def test_inventory_deep_honest_missing_passes():
             "category": "bs",
             "subject": "存货",
             "mode": "deep",
-            "query": "华清2025年末与2024年末存货对比",
+            "query": "可比E2025年末与2024年末存货对比",
             "tier_line": "执行过程(Tier 2（Hermes 深度） · 深度（Hermes 全编排）)",
             "citations": 0,
             "notes": "cdp-unattended",
@@ -81,7 +81,7 @@ def test_inventory_deep_report_row_reconciles_pass():
             "category": "bs",
             "subject": "存货",
             "mode": "deep",
-            "query": "华清2025年末与2024年末存货对比",
+            "query": "可比E2025年末与2024年末存货对比",
             "tier_line": "执行过程(Tier 2（Hermes 深度） · 深度（Hermes 全编排）)",
             "citations": 0,
             "notes": "cdp-unattended",
@@ -102,14 +102,14 @@ def test_inventory_deep_report_row_reconciles_pass():
 def test_inventory_standard_process_leak_fails():
     head = (
         "根据检索结果，Evidence Pack中缺少合并资产负债表中\"存货\"科目的两期期末余额数据。"
-        "让我通过 KB检索补充。\n结论\nOrient-G知识库中无法获取华清存货的2025年末与2024年末数据。"
+        "让我通过 KB检索补充。\n结论\nOrient-G知识库中无法获取可比E存货的2025年末与2024年末数据。"
     )
     row = validate_row(
         {
             "category": "bs",
             "subject": "存货",
             "mode": "standard",
-            "query": "华清2025年末与2024年末存货对比",
+            "query": "可比E2025年末与2024年末存货对比",
             "tier_line": "执行过程(Tier 1（Hermes 受限） · 标准（Hermes lite + Evidence Pack）)",
             "citations": 12,
             "notes": "cdp-unattended",
@@ -134,7 +134,7 @@ def test_deep_citations_zero_with_long_money_fails_stream():
             "category": "cf",
             "subject": "投资活动现金流",
             "mode": "deep",
-            "query": "华清2025年与2024年投资活动现金流量对比",
+            "query": "可比E2025年与2024年投资活动现金流量对比",
             "tier_line": "执行过程(Tier 2（Hermes 深度） · 深度（Hermes 全编排）)",
             "citations": 0,
             "notes": "cdp-unattended",
@@ -161,7 +161,7 @@ def test_bad_est_with_table_fails():
             "category": "bs",
             "subject": "货币资金",
             "mode": "standard",
-            "query": "华清2025年末与2024年末货币资金对比",
+            "query": "可比E2025年末与2024年末货币资金对比",
             "tier_line": "执行过程(Tier 1（Hermes 受限） · 标准（Hermes lite + Evidence Pack）)",
             "citations": 10,
             "notes": "cdp-unattended",

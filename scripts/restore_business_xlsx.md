@@ -5,7 +5,7 @@
 ## 1. Synology Drive 历史版本（优先）
 
 1. 打开 **Synology Drive** 网页或客户端。
-2. 进入：`游艺春秋/Projects/orient-g/uploads/`
+2. 进入：`Projects/orient-g/uploads/`（相对你的克隆根目录）
 3. 若存在 `business.xlsx`：右键 → **浏览历史版本** / **版本历史**，选 **2026-05-25 15:43 之前** 的版本还原。
 4. 若文件已被删：在 Drive **回收站** 中查找 `business.xlsx` 后还原。
 
