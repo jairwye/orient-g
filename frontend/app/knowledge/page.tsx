@@ -30,6 +30,11 @@ import {
 import { FileText, Folder, Search } from "lucide-react";
 import { KbBrowseTree } from "./components/KbBrowseTree";
 import { folderChildrenOf, folderTreeBadgeCount, kbKindRootFolders } from "./lib/kb_tree_model";
+import {
+  formatFolderUploadSummary,
+  runFolderIncrementalUpload,
+  type FolderUploadProgress,
+} from "./lib/kb_folder_upload";
 
 type MyDoc = {
   doc_id: string;
@@ -152,6 +157,7 @@ export default function KnowledgePage({
   const [shareCompany, setShareCompany] = useState(false);
   const [folderShareTarget, setFolderShareTarget] = useState<"company" | "department" | "project">("company");
   const [folderShareAccessKind, setFolderShareAccessKind] = useState<"public" | "lead">("public");
+  const [shareManagement, setShareManagement] = useState(false);
   const [folderMoveOpen, setFolderMoveOpen] = useState(false);
   const [folderMoveFolder, setFolderMoveFolder] = useState<FolderItem | null>(null);
   const [folderMoveTarget, setFolderMoveTarget] = useState<"private" | "company" | "department" | "project">("private");
@@ -166,7 +172,7 @@ export default function KnowledgePage({
   const [folderDetail, setFolderDetail] = useState<FolderResourcesResponse | null>(null);
   const [folderLoading, setFolderLoading] = useState(false);
   const [folderUploadBusy, setFolderUploadBusy] = useState(false);
-  const [folderUploadProgress, setFolderUploadProgress] = useState<{ current: number; total: number; pct: number } | null>(null);
+  const [folderUploadProgress, setFolderUploadProgress] = useState<FolderUploadProgress | null>(null);
   const folderFileInputRef = useRef<HTMLInputElement>(null);
   const [isPageVisible, setIsPageVisible] = useState(true);
 
@@ -920,34 +926,51 @@ export default function KnowledgePage({
     setMsg(null);
     try {
       const isFolder = Boolean(shareFolder);
-      const url = isFolder
-        ? `/api/knowledge/folders/${encodeURIComponent(shareFolder!.folder_id)}/share-add-scope`
-        : `/api/knowledge/my-documents/${encodeURIComponent(shareDoc!.doc_id)}/share`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        credentials: "include",
-        body: JSON.stringify(
-          isFolder
-            ? {
-                target: folderShareTarget,
-                access_kind: folderShareAccessKind,
-                department_ids: shareDepts,
-                project_ids: shareProjs,
-              }
-            : {
-          kb_kind: shareKind,
-          department_ids: shareDepts,
-          project_ids: shareProjs,
-          company_public: shareCompany,
-              }
-        ),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "共享失败");
+      const folderSharePayload = {
+        access_kind: folderShareAccessKind,
+        department_ids: shareDepts,
+        project_ids: shareProjs,
+      };
+      if (isFolder) {
+        const url = `/api/knowledge/folders/${encodeURIComponent(shareFolder!.folder_id)}/share-add-scope`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          credentials: "include",
+          body: JSON.stringify({ target: folderShareTarget, ...folderSharePayload }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "共享失败");
+        if (shareManagement) {
+          const res2 = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            credentials: "include",
+            body: JSON.stringify({ target: "management", ...folderSharePayload }),
+          });
+          const data2 = await res2.json().catch(() => ({}));
+          if (!res2.ok) throw new Error(typeof data2.detail === "string" ? data2.detail : "管理层共享失败");
+        }
+      } else {
+        const url = `/api/knowledge/my-documents/${encodeURIComponent(shareDoc!.doc_id)}/share`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          credentials: "include",
+          body: JSON.stringify({
+            kb_kind: shareKind,
+            department_ids: shareDepts,
+            project_ids: shareProjs,
+            company_public: shareCompany,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "共享失败");
+      }
       setMsg({ type: "success", text: isFolder ? "已更新文件夹共享目标。" : "已更新共享目标。" });
       setShareDoc(null);
       setShareFolder(null);
+      setShareManagement(false);
       await loadAll();
       if (activeFolderId) await loadFolderDetail(activeFolderId);
     } catch (e) {
@@ -1065,40 +1088,35 @@ export default function KnowledgePage({
       if (!files.length || !activeFolderId) return;
       const fid = activeFolderId;
       setFolderUploadBusy(true);
-      let ok = 0;
-      let fail = 0;
-      const total = files.length;
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        setFolderUploadProgress({ current: i + 1, total, pct: Math.round(((i + 1) / total) * 100) });
-        try {
-          const doc_id = await new Promise<string>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/api/knowledge/my-documents/upload");
-            const headers = getAuthHeaders();
-            for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
-            const form = new FormData();
-            form.append("file", file);
-            form.append("folder_id", fid);
-            xhr.onload = () => {
-              if (xhr.status >= 200 && xhr.status < 300) {
-                try { const d = JSON.parse(xhr.responseText); resolve(d.doc_id || ""); } catch { resolve(""); }
-              } else { reject(new Error(`HTTP ${xhr.status}`)); }
-            };
-            xhr.onerror = () => reject(new Error("网络错误"));
-            xhr.send(form);
-          });
-          if (doc_id) ok++; else fail++;
-        } catch {
-          fail++;
+      setFolderUploadProgress({
+        phase: "hashing",
+        current: 0,
+        total: files.length,
+        pct: 0,
+        label: "准备上传…",
+      });
+      try {
+        const outcomes = await runFolderIncrementalUpload(
+          fid,
+          files,
+          getAuthHeaders(),
+          setFolderUploadProgress,
+        );
+        const created = outcomes.filter((o) => o.status === "created").length;
+        const summary = formatFolderUploadSummary(outcomes);
+        if (created > 0 || outcomes.some((o) => o.status === "skipped")) {
+          setMsg({ type: "success", text: summary });
+        } else {
+          setMsg({ type: "error", text: summary });
         }
+        await loadAll();
+        if (activeFolderId) await loadFolderDetail(activeFolderId);
+      } catch (err) {
+        setMsg({ type: "error", text: err instanceof Error ? err.message : "上传失败" });
+      } finally {
+        setFolderUploadProgress(null);
+        setFolderUploadBusy(false);
       }
-      setFolderUploadProgress(null);
-      if (ok > 0) setMsg({ type: "success", text: `已上传 ${ok} 个文件到文件夹` + (fail > 0 ? `（${fail} 个失败）` : "") });
-      else setMsg({ type: "error", text: `全部 ${fail} 个文件上传失败` });
-      setFolderUploadBusy(false);
-      await loadAll();
-      if (activeFolderId) await loadFolderDetail(activeFolderId);
     },
     [activeFolderId, loadAll, loadFolderDetail],
   );
@@ -1600,7 +1618,7 @@ export default function KnowledgePage({
               {folderUploadProgress ? (
                 <div className="mb-3 rounded border border-zinc-700 bg-zinc-950/40 px-3 py-2">
                   <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-                    <span>上传中…</span>
+                    <span>{folderUploadProgress.label}</span>
                     <span>{folderUploadProgress.current}/{folderUploadProgress.total}</span>
                   </div>
                   <div className="h-1.5 w-full rounded-full bg-zinc-800">
@@ -2128,6 +2146,18 @@ export default function KnowledgePage({
                       </div>
                     </div>
                   ) : null}
+
+                  <div>
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-200">
+                      <input
+                        type="checkbox"
+                        checked={shareManagement}
+                        onChange={(e) => setShareManagement(e.target.checked)}
+                      />
+                      同时分享给管理层
+                    </label>
+                    <p className="mt-1 text-xs text-zinc-500">勾选后，拥有「管理层」角色的用户可读该文件夹内文档。</p>
+                  </div>
 
                   <div className="text-xs text-zinc-500">提示：共享以文件夹为单位，文件夹内所有文档权限一致。</div>
 

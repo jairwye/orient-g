@@ -196,9 +196,12 @@ def test_parse_cell_value():
     warnings: list[str] = []
     assert parse_cell_value("1,234.5", "sec-01-2", "营收", warnings) == 1234.5
     assert parse_cell_value("(100)", "sec-01-2", "净利", warnings) == -100
-    assert parse_cell_value("12%", "sec-01-2", "rate", warnings) == 12
-    assert parse_cell_value("-214.6%", "sec-08-2", "经营CF增长率", warnings) == -214.6
-    assert parse_cell_value("41.4%", "sec-08-2", "经营CF/净利", warnings) == 41.4
+    assert parse_cell_value("12%", "sec-01-2", "rate", warnings) == "12%"
+    assert parse_cell_value("-214.6%", "sec-08-2", "经营CF增长率", warnings) == "-214.6%"
+    assert parse_cell_value("41.4%", "sec-08-2", "经营CF/净利", warnings) == "41.4%"
+    assert parse_cell_value("+18.0%", "sec-08-2", "经营CF增长率", warnings) == "+18.0%"
+    assert parse_cell_value("93.0%", "sec-09-2", "可比公司A", warnings) == "93.0%"
+    assert parse_cell_value("0.4%", "sec-09-8", "1年以上占比", warnings) == "0.4%"
     assert parse_cell_value("-", "sec-01-2", "x", warnings) is None
 
 
@@ -232,6 +235,25 @@ def test_parse_table_with_leading_empty_cells():
     assert table["rows"][1]["公司"] in (None, "", "—")
     assert table["rows"][1]["项目"] == "项目B"
     assert table["rows"][1]["金额"] == 200
+
+
+def test_parse_table_duplicate_headers():
+    warnings: list[str] = []
+    table = _parse_table(
+        [
+            "| 产品分类 | 占比（%） | 占比（%） | 同比变化（%） |",
+            "| --- | --- | --- | --- |",
+            "| 移动游戏 | 92.0 | 7.6 | -3.8 |",
+        ],
+        "test-dup",
+        warnings,
+    )
+    assert table is not None
+    assert table["headers"] == ["产品分类", "占比（%）", "占比（%）", "同比变化（%）"]
+    assert table["header_keys"] == ["产品分类", "占比（%）", "占比（%）__2", "同比变化（%）"]
+    row = table["rows"][0]
+    assert row["占比（%）"] == 92.0
+    assert row["占比（%）__2"] == 7.6
 
 
 def test_parse_two_col_table_with_double_pipe_rows():

@@ -91,10 +91,10 @@ function splitByCompany(text: string, snapshot?: CompetitorReportSnapshot): Subj
 }
 
 function parseTopicChunk(title: string, rest: string): { topic: string; body: string } | null {
-  const dash = title.split(TOPIC_DASH);
-  if (dash.length >= 2) {
-    const topic = dash[0]!.trim();
-    const lead = dash.slice(1).join("—").trim();
+  const dashParts = title.split(TOPIC_DASH).map((s) => s.trim()).filter(Boolean);
+  if (dashParts.length >= 2) {
+    const topic = dashParts[0]!;
+    const lead = dashParts.slice(1).join("");
     const body = [lead, rest].filter(Boolean).join(" ").trim();
     return body ? { topic, body } : null;
   }
@@ -102,6 +102,150 @@ function parseTopicChunk(title: string, rest: string): { topic: string; body: st
   const body = rest.trim();
   if (!topic || !body) return null;
   return { topic, body };
+}
+
+/** sec-09-11 简要分析：按 snapshot 中 zq / la 展示名拆分 */
+function splitBriefAnalysisByCompany(
+  body: string,
+  snapshot?: CompetitorReportSnapshot,
+): SubjectAnalysisGroup[] {
+  const text = body.trim();
+  if (!text) return [];
+
+  const zqLabel = snapshot?.companies.find((c) => c.id === "zq")?.label?.trim();
+  const laLabel = snapshot?.companies.find((c) => c.id === "la")?.label?.trim();
+  const groups: SubjectAnalysisGroup[] = [];
+
+  if (zqLabel) {
+    const zqIdx = text.indexOf(zqLabel);
+    if (zqIdx >= 0) {
+      const laIdx = laLabel ? text.indexOf(laLabel) : -1;
+      const end = laIdx > zqIdx ? laIdx : text.length;
+      groups.push({
+        company: zqLabel,
+        colKey: colKeyForDisplayLabel(zqLabel, snapshot),
+        bullets: [{ text: text.slice(zqIdx, end).trim() }],
+      });
+    }
+  }
+
+  if (laLabel) {
+    const laIdx = text.indexOf(laLabel);
+    if (laIdx >= 0) {
+      let laText = text.slice(laIdx);
+      const abroadIdx = laText.indexOf("境外版本");
+      if (abroadIdx > 0) laText = laText.slice(0, abroadIdx).trim();
+      groups.push({
+        company: laLabel,
+        colKey: colKeyForDisplayLabel(laLabel, snapshot),
+        bullets: [{ text: laText.trim() }],
+      });
+    }
+  }
+
+  if (groups.length) return groups;
+  return splitByCompany(body, snapshot);
+}
+
+function isBriefAnalysisTopic(topic: string): boolean {
+  return topic === "简要分析" || topic.startsWith("简要分析");
+}
+
+function isGameNameMappingTopic(topic: string): boolean {
+  return topic === "游戏名称对应" || topic.startsWith("游戏名称对应");
+}
+
+function isRegionDistributionTopic(topic: string): boolean {
+  return topic === "发行地区" || topic.startsWith("发行地区");
+}
+
+/** 游戏名称对应：蓝本原文整段引用，不按公司拆行 */
+function splitGameNameMapping(body: string): SubjectAnalysisGroup[] {
+  const text = body.trim();
+  if (!text) return [];
+  return [{ company: "", colKey: "", bullets: [{ text }] }];
+}
+
+/** 发行地区：连续两公司名以「和」连接时合并为一行，其余按主体分行 */
+function regionCompanyBlocks(
+  sent: string,
+  labelsByLength: string[],
+): Array<{ label: string; startIndex: number }> {
+  type Hit = { label: string; index: number };
+  const hits: Hit[] = [];
+  for (const label of labelsByLength) {
+    let start = 0;
+    while (start < sent.length) {
+      const idx = sent.indexOf(label, start);
+      if (idx === -1) break;
+      const overlaps = hits.some((h) => idx >= h.index && idx < h.index + h.label.length);
+      if (!overlaps) hits.push({ label, index: idx });
+      start = idx + label.length;
+    }
+  }
+  hits.sort((a, b) => a.index - b.index);
+
+  const blocks: Array<{ label: string; startIndex: number }> = [];
+  let i = 0;
+  while (i < hits.length) {
+    const h = hits[i]!;
+    const next = hits[i + 1];
+    if (next && /^和\s*/.test(sent.slice(h.index + h.label.length, next.index))) {
+      blocks.push({ label: "", startIndex: h.index });
+      i += 2;
+      continue;
+    }
+    blocks.push({ label: h.label, startIndex: h.index });
+    i += 1;
+  }
+  return blocks;
+}
+
+function splitRegionSentence(
+  sent: string,
+  snapshot: CompetitorReportSnapshot | undefined,
+  labelsByLength: string[],
+): SubjectAnalysisGroup[] {
+  const blocks = regionCompanyBlocks(sent, labelsByLength);
+  if (!blocks.length) {
+    return [{ company: "", colKey: "", bullets: [{ text: sent }] }];
+  }
+
+  return blocks.map((block, i) => {
+    const end = blocks[i + 1]?.startIndex ?? sent.length;
+    const fragment = sent.slice(block.startIndex, end).trim();
+    const displayCo = block.label;
+    let bulletText = fragment;
+    if (displayCo && fragment.startsWith(displayCo)) {
+      bulletText =
+        fragment.slice(displayCo.length).replace(/^[，,：:\s的]+/, "").trim() || fragment;
+    }
+    return {
+      company: displayCo,
+      colKey: displayCo ? colKeyForDisplayLabel(displayCo, snapshot) : "",
+      bullets: [{ text: displayCo ? bulletText : fragment }],
+    };
+  });
+}
+
+function splitRegionDistribution(
+  body: string,
+  snapshot?: CompetitorReportSnapshot,
+): SubjectAnalysisGroup[] {
+  let text = body.trim();
+  const subtitle = text.match(/^[^。；]{2,30}[。；]\s*/);
+  if (subtitle) {
+    const hasCompany = getCompanyContext(snapshot).labelsByLength.some(
+      (l) => l.length >= 2 && subtitle[0]!.includes(l),
+    );
+    if (!hasCompany) text = text.slice(subtitle[0]!.length).trim();
+  }
+  const labelsByLength = [...getCompanyContext(snapshot).labelsByLength];
+  const sentences = text.split(/(?<=[。；!！?？])\s*/).filter((s) => s.trim());
+  if (!sentences.length) {
+    return [{ company: "", colKey: "", bullets: [{ text: body.trim() }] }];
+  }
+  return sentences.flatMap((s) => splitRegionSentence(s.trim(), snapshot, labelsByLength));
 }
 
 /** 账龄、运营产品、主要游戏等：主题卡片内按公司分行 */
@@ -125,7 +269,16 @@ export function buildTopicSubjectGroups(
     if (!parsed) continue;
     if (/^分析——/.test(parsed.topic) && !TOPIC_DASH.test(bold[1].replace(/^分析——/, ""))) continue;
 
-    const subjects = splitByCompany(parsed.body, snapshot);
+    let subjects: SubjectAnalysisGroup[];
+    if (isBriefAnalysisTopic(parsed.topic)) {
+      subjects = splitBriefAnalysisByCompany(parsed.body, snapshot);
+    } else if (isGameNameMappingTopic(parsed.topic)) {
+      subjects = splitGameNameMapping(parsed.body);
+    } else if (isRegionDistributionTopic(parsed.topic)) {
+      subjects = splitRegionDistribution(parsed.body, snapshot);
+    } else {
+      subjects = splitByCompany(parsed.body, snapshot);
+    }
     if (subjects.length) out.push({ topic: parsed.topic, subjects });
   }
 

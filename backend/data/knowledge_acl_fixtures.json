@@ -20,6 +20,13 @@
       "name": "公司财务规章制度"
     },
     {
+      "collection_id": "c_management_public_1",
+      "type": "public",
+      "space_type": "ManagementPublic",
+      "tenant_id": "tenant1",
+      "name": "管理层资料库"
+    },
+    {
       "collection_id": "c_contracts_public_1",
       "type": "public",
       "space_type": "CompanyPublic",

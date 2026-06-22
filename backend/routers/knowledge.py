@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -43,6 +44,7 @@ from backend.services.kb_folders import (
     create_folder,
     delete_folder,
     ensure_private_folder,
+    folder_visible_to_user,
     get_folder,
     list_folder_resources,
     list_folders,
@@ -59,6 +61,17 @@ from backend.services.kb_folders import (
 
 router = APIRouter()
 ALGORITHM = "HS256"
+_ENQUEUE_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0)
+
+
+def _enqueue_user_doc_with_retry(tenant_id: str, owner_username: str, doc_id: str) -> bool:
+    for i, delay in enumerate(_ENQUEUE_RETRY_DELAYS_S):
+        ok, _ = enqueue_user_doc_task(tenant_id, owner_username, doc_id)
+        if ok:
+            return True
+        if i < len(_ENQUEUE_RETRY_DELAYS_S) - 1:
+            time.sleep(delay)
+    return False
 
 KB_KIND_CHOICES = [
     "Private",
@@ -71,20 +84,21 @@ KB_KIND_CHOICES = [
     "MultiProjectPublic",
     "MultiProjectLead",
     "CompanyPublic",
+    "ManagementPublic",
 ]
 
 
-def _is_admin(username: str) -> bool:
+def _is_system_admin(username: str) -> bool:
     u = get_user(username) or {}
     roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
-    return "admin" in roles or "管理层" in roles
+    return "admin" in roles
 
 
 def _require_bigpdf_task_owner_or_admin(task: dict[str, Any], username: str) -> None:
     owner = str(task.get("owner_username") or "").strip()
     if owner and owner == username:
         return
-    if _is_admin(username):
+    if _is_system_admin(username):
         return
     raise HTTPException(status_code=403, detail="forbidden")
 
@@ -330,9 +344,6 @@ def knowledge_options(request: Request):
     except Exception:
         folders_out = []
         default_folder_ids = []
-    except Exception:
-        folders_out = []
-        default_folder_ids = []
 
     # 为每个 collection 补充文档数
     try:
@@ -509,17 +520,11 @@ def kb_folder_resources(folder_id: str, request: Request):
     f = get_folder(tenant_id, folder_id=folder_id)
     if not f:
         raise HTTPException(status_code=404, detail="not found")
-    owner = str(f.get("owner_username") or "").strip()
-    # 可见性：若 folder 有 owner，则仅 owner；否则按其 collection_ids 是否在 allowed_col_ids
     token = _get_token_from_request(request) or ""
     scope = compute_acl_scope(token, fixtures=fixtures)
     allowed_col_ids = set(scope["allowed_collection_ids"])
-    if owner and owner != un:
+    if not folder_visible_to_user(f, username=un, allowed_collection_ids=allowed_col_ids):
         raise HTTPException(status_code=403, detail="forbidden")
-    if not owner:
-        cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
-        if not any(cid in allowed_col_ids for cid in cids):
-            raise HTTPException(status_code=403, detail="forbidden")
 
     try:
         prune_stale_folder_doc_bindings(tenant_id, folder_id=folder_id)
@@ -727,13 +732,11 @@ def kb_share_folder(folder_id: str, request: Request, body: ShareFolderBody):
 
 
 def _sync_folder_doc_collection_assignments(tenant_id: str, folder_id: str, collection_ids: list[str]) -> int:
-    resources = list_folder_resources(tenant_id, folder_id=folder_id)
-    doc_ids = [r["resource_id"] for r in resources if r.get("resource_type") == "doc"]
-    from backend.services.kb_acl_store import set_resource_assignments
+    from backend.services.kb_folders import merge_collections_into_subtree_docs
 
-    for did in doc_ids:
-        set_resource_assignments(tenant_id, resource_type="doc", resource_id=str(did), collection_ids=collection_ids)
-    return len(doc_ids)
+    return merge_collections_into_subtree_docs(
+        tenant_id, folder_id=folder_id, collection_ids=list(collection_ids or [])
+    )
 
 
 @router.post("/folders/{folder_id}/move-to-kb")
@@ -782,7 +785,7 @@ def kb_move_folder_to_kb(folder_id: str, request: Request, body: ShareFolderBody
 
 
 class ShareFolderScopeBody(BaseModel):
-    target: str  # company|department|project
+    target: str  # company|department|project|management
     access_kind: str = "public"  # public|lead（仅 department/project 生效）
     department_ids: list[str] = []
     project_ids: list[str] = []
@@ -966,7 +969,7 @@ def kb_admin_reindex(request: Request, body: ReindexBody):
         raise HTTPException(status_code=401, detail="not authenticated")
     u = get_user(un) or {}
     roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
-    if "admin" not in roles and "管理层" not in roles:
+    if "admin" not in roles:
         raise HTTPException(status_code=403, detail="forbidden")
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
@@ -1003,7 +1006,7 @@ def kb_admin_backfill_folders(request: Request):
         raise HTTPException(status_code=401, detail="not authenticated")
     u = get_user(un) or {}
     roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
-    if "admin" not in roles and "管理层" not in roles:
+    if "admin" not in roles:
         raise HTTPException(status_code=403, detail="forbidden")
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
@@ -1029,6 +1032,7 @@ def knowledge_kb_kinds(request: Request):
         "MultiProjectPublic": "多项目公共库",
         "MultiProjectLead": "多项目负责人库",
         "CompanyPublic": "公司公共库",
+        "ManagementPublic": "管理层资料库",
     }
     return {"items": [{"kb_kind": k, "label": labels.get(k, k)} for k in KB_KIND_CHOICES]}
 
@@ -1044,34 +1048,46 @@ def knowledge_my_documents(request: Request):
     return {"items": items}
 
 
+class ExistingSourceHashesBody(BaseModel):
+    source_hashes: list[str] = []
+
+
+@router.post("/folders/{folder_id}/existing-source-hashes")
+def kb_folder_existing_source_hashes(folder_id: str, request: Request, body: ExistingSourceHashesBody):
+    """批量查询 folder 子树内已存在的 source_hash（增量上传预检）。"""
+    un = _get_username_from_request(request)
+    if not un:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    fixtures = load_fixtures()
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    f = get_folder(tenant_id, folder_id=folder_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="not found")
+    token = _get_token_from_request(request) or ""
+    scope = compute_acl_scope(token, fixtures=fixtures)
+    allowed_col_ids = set(scope["allowed_collection_ids"])
+    if not folder_visible_to_user(f, username=un, allowed_collection_ids=allowed_col_ids):
+        raise HTTPException(status_code=403, detail="forbidden")
+    items = kb_docs.map_source_hashes_in_folder_subtree(
+        tenant_id,
+        folder_id,
+        body.source_hashes or [],
+    )
+    return {"items": items}
+
+
 @router.post("/my-documents/upload")
 async def knowledge_upload_my_document(
     request: Request,
     file: UploadFile = File(...),
     folder_id: str | None = Form(None),
+    source_hash: str | None = Form(None),
 ):
     un = _get_username_from_request(request)
     if not un:
         raise HTTPException(status_code=401, detail="not authenticated")
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
-    raw = await file.read()
-    if len(raw) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件过大（最大 20MB）")
-    try:
-        info = kb_docs.upload_user_document_async(tenant_id, un, filename=file.filename or "upload", raw=raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-    did = str(info.get("doc_id") or "")
-    if not did:
-        raise HTTPException(status_code=500, detail="上传失败：缺少 doc_id")
-    ok, _ = enqueue_user_doc_task(tenant_id, un, did)
-    if not ok:
-        kb_docs.mark_document_failed(tenant_id, did, "队列已满，稍后重试")
-        raise HTTPException(status_code=503, detail="队列已满，请稍后重试")
-
-    # folder-first：若前端指定 folder_id，则绑定到该文件夹（覆盖默认私有文件夹绑定）
     fid = (folder_id or "").strip()
     if fid:
         f = get_folder(tenant_id, folder_id=fid)
@@ -1080,8 +1096,50 @@ async def knowledge_upload_my_document(
         owner = str(f.get("owner_username") or "").strip()
         if owner and owner != un:
             raise HTTPException(status_code=403, detail="forbidden")
-        bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=str(info.get("doc_id") or ""))
-    return {"ok": True, **info, "queued": True}
+
+    raw = await file.read()
+    max_bytes = kb_docs.MY_DOC_UPLOAD_MAX_BYTES
+    if len(raw) > max_bytes:
+        raise HTTPException(status_code=400, detail="文件过大（最大 20MB）")
+
+    computed_hash = kb_docs.compute_source_hash(raw)
+    client_hash = kb_docs.normalize_source_hash(source_hash)
+    if client_hash and client_hash != computed_hash:
+        raise HTTPException(status_code=400, detail="source_hash 与文件内容不一致")
+
+    if fid:
+        existing_id = kb_docs.find_doc_id_by_source_hash_in_folder_subtree(tenant_id, fid, computed_hash)
+        if existing_id:
+            return {
+                "ok": True,
+                "skipped": True,
+                "skip_reason": "duplicate_hash",
+                "doc_id": existing_id,
+                "source_hash": computed_hash,
+                "queued": False,
+            }
+
+    try:
+        info = kb_docs.upload_user_document_async(tenant_id, un, filename=file.filename or "upload", raw=raw)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    did = str(info.get("doc_id") or "")
+    if not did:
+        raise HTTPException(status_code=500, detail="上传失败：缺少 doc_id")
+    if not _enqueue_user_doc_with_retry(tenant_id, un, did):
+        kb_docs.mark_document_failed(tenant_id, did, "队列已满，稍后重试")
+        raise HTTPException(status_code=503, detail="队列已满，请稍后重试")
+
+    if fid:
+        bind_resource_to_folder(tenant_id, folder_id=fid, resource_type="doc", resource_id=did)
+    return {
+        "ok": True,
+        "skipped": False,
+        **info,
+        "source_hash": computed_hash,
+        "queued": True,
+    }
 
 
 @router.delete("/my-documents/{doc_id}")
@@ -1169,17 +1227,11 @@ def kb_parse_folder(folder_id: str, request: Request):
     if not f:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 可见性：与 kb_folder_resources 一致
-    owner = str(f.get("owner_username") or "").strip()
     token = _get_token_from_request(request) or ""
     scope = compute_acl_scope(token, fixtures=fixtures)
     allowed_col_ids = set(scope["allowed_collection_ids"])
-    if owner and owner != un:
+    if not folder_visible_to_user(f, username=un, allowed_collection_ids=allowed_col_ids):
         raise HTTPException(status_code=403, detail="forbidden")
-    if not owner:
-        cids = [str(x) for x in (f.get("collection_ids") or []) if str(x).strip()]
-        if not any(cid in allowed_col_ids for cid in cids):
-            raise HTTPException(status_code=403, detail="forbidden")
 
     resources = list_folder_resources(tenant_id, folder_id=folder_id)
     doc_ids = [str(r.get("resource_id") or "").strip() for r in (resources or []) if r.get("resource_type") == "doc"]
@@ -1647,7 +1699,7 @@ def bigpdf_cancel_task_enhanced(task_id: str, request: Request, force: bool = Fa
         # Check permission: admin or owner
         u = get_user(un) or {}
         roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
-        is_admin = "admin" in roles or "管理层" in roles
+        is_admin = "admin" in roles
         if not is_admin and running["owner_username"] != un:
             raise HTTPException(status_code=403, detail="无权操作")
 
@@ -1694,7 +1746,7 @@ def bigpdf_force_cancel(request: Request):
     # Permission check: admin or owner
     u = get_user(un) or {}
     roles = [str(x).strip().lower() for x in (u.get("roles") or [])]
-    is_admin = "admin" in roles or "管理层" in roles
+    is_admin = "admin" in roles
     if not is_admin and running["owner_username"] != un:
         raise HTTPException(status_code=403, detail="无权操作")
 

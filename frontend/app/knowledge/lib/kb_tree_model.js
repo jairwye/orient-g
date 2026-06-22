@@ -12,6 +12,19 @@ export function folderKbKind(f) {
 }
 
 /**
+ * 文件夹在左侧树中应出现的知识库类型（支持加法式共享：部门 + 管理层等）。
+ * @param {{ kind?: string | null; share_kinds?: string[] | null } | null | undefined} f
+ */
+export function folderShareKinds(f) {
+  const fromApi = f?.share_kinds;
+  if (Array.isArray(fromApi) && fromApi.length) {
+    return fromApi.map((k) => String(k || "").trim()).filter(Boolean);
+  }
+  const primary = folderKbKind(f);
+  return primary ? [primary] : [KB_KIND_PRIVATE];
+}
+
+/**
  * 子树文档总数（检索/勾选范围用，勿用于树节点角标）。
  * @param {{ subtree_doc_count?: number; resource_counts?: { doc?: number } } | null | undefined} f
  */
@@ -66,12 +79,12 @@ export function kbKindRootFolders(folders, kbKind) {
   );
   return (folders || [])
     .filter((f) => {
-      if (folderKbKind(f) !== kind) return false;
+      if (!folderShareKinds(f).includes(kind)) return false;
       const parentId = String(f.parent_folder_id || "").trim();
       if (!parentId) return true;
       const parent = byId.get(parentId);
       if (!parent) return true;
-      return folderKbKind(parent) !== kind;
+      return !folderShareKinds(parent).includes(kind);
     })
     .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh"));
 }

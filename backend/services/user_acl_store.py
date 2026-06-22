@@ -7,6 +7,16 @@ from sqlalchemy import text
 
 from backend.database import get_db
 
+ROLE_MANAGEMENT = "管理层"
+
+
+def is_system_admin_role(roles: list[str] | None) -> bool:
+    return any(str(r).strip().lower() == "admin" for r in (roles or []))
+
+
+def is_management_role(roles: list[str] | None) -> bool:
+    return any(str(r).strip() == ROLE_MANAGEMENT for r in (roles or []))
+
 
 def _roles_to_json(roles: list[str]) -> str:
     return json.dumps([str(x).strip() for x in (roles or []) if str(x).strip()], ensure_ascii=False)

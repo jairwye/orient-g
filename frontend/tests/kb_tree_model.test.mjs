@@ -22,6 +22,20 @@ test("folderChildrenAt groups by parent_folder_id", () => {
   assert.deepEqual(folderChildrenAt(folders, "a").map((f) => f.folder_id), ["b"]);
 });
 
+test("kbKindRootFolders uses share_kinds for additive management share", () => {
+  const folders = [
+    {
+      folder_id: "dept_root",
+      name: "竞品财报25",
+      kind: "DeptPublic",
+      share_kinds: ["DeptPublic", "ManagementPublic"],
+      parent_folder_id: null,
+    },
+  ];
+  assert.deepEqual(kbKindRootFolders(folders, "DeptPublic").map((f) => f.folder_id), ["dept_root"]);
+  assert.deepEqual(kbKindRootFolders(folders, "ManagementPublic").map((f) => f.folder_id), ["dept_root"]);
+});
+
 test("folderChildrenOf includes cross-kind children (华清25 under 竞品财报25)", () => {
   const folders = [
     { folder_id: "dept_root", name: "竞品财报25", kind: "DeptPublic", parent_folder_id: null },

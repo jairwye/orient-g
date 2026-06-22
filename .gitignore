@@ -142,3 +142,7 @@ backend/tests/fixtures/competitor_report_yycq.md
 backend/scripts/finance_matrix_browser_queue.json
 backend/scripts/_browser_row_tmp*
 backend/scripts/_*
+backend/scripts/repair_jingpin_management_share.py
+backend/scripts/cleanup_finance_test_users.py
+backend/uploads/
+scripts/vertical_report_from_pdf.py

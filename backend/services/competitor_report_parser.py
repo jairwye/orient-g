@@ -27,7 +27,6 @@ for cid, label, short in COMPANY_LABELS:
     LABEL_TO_COMPANY[label] = (cid, label, short)
     if short:
         LABEL_TO_COMPANY[short] = (cid, label, short)
-LABEL_TO_COMPANY["游艺春秋"] = ("yycq", "本公司", "YYCQ")
 
 _COMPANY_HEADER_SKIP = frozenset({"公司", "指标", "科目", "排名"})
 _WIDE_TABLE_MARKERS = frozenset({"指标", "科目", "项目", "事项"})
@@ -248,6 +247,21 @@ def _align_row_cells(row: list[str], header: list[str]) -> list[str]:
     return aligned
 
 
+def _header_cell_keys(header_row: list[str]) -> list[str]:
+    """重复表头列生成唯一 row 键（占比（%）、占比（%）__2）。"""
+    seen: dict[str, int] = {}
+    keys: list[str] = []
+    for raw in header_row:
+        h = raw.strip() if raw else ""
+        if not h:
+            keys.append("")
+            continue
+        n = seen.get(h, 0)
+        seen[h] = n + 1
+        keys.append(h if n == 0 else f"{h}__{n + 1}")
+    return keys
+
+
 def _parse_table(
     table_lines: list[str],
     anchor: str,
@@ -264,25 +278,49 @@ def _parse_table(
     if len(rows_raw) > 1 and _is_separator_row(rows_raw[1]):
         body_start = 2
     data_rows = rows_raw[body_start:]
-    headers = [h for h in header if h]
+    cell_keys = _header_cell_keys(header)
+    headers = [h.strip() for h in header if h and h.strip()]
+    header_keys = [k for h, k in zip(header, cell_keys) if h and h.strip()]
     rows: list[dict[str, Any]] = []
     for row in data_rows:
         row = _align_row_cells(row, header)
         obj: dict[str, Any] = {}
-        for h, c in zip(header, row):
-            if not h:
+        for key, c in zip(cell_keys, row):
+            if not key:
                 continue
-            obj[h] = parse_cell_value(c, anchor, h, warnings)
+            label = key.split("__", 1)[0]
+            obj[key] = parse_cell_value(c, anchor, label, warnings)
         if any(v is not None and v != "" for v in obj.values()):
             rows.append(obj)
     if not rows:
         return None
-    return {"kind": "table", "anchor": anchor, "headers": headers, "rows": rows}
+    return {
+        "kind": "table",
+        "anchor": anchor,
+        "headers": headers,
+        "header_keys": header_keys,
+        "rows": rows,
+    }
 
 
 def _is_separator_row(cells: list[str]) -> bool:
     joined = "".join(cells)
     return bool(joined) and SEPARATOR_ROW_RE.match(joined.replace(" ", ""))
+
+
+def _percent_literal(cell: str) -> str | None:
+    """蓝本百分数字面量原样入库（93.0%、+18.0%、-62.2%），供前端直接引用。"""
+    s = re.sub(r"\s+", "", cell.strip())
+    if not s.endswith("%"):
+        return None
+    inner = s[:-1].replace(",", "").replace("，", "")
+    if inner.startswith("+"):
+        inner = inner[1:]
+    if inner.startswith("(") and inner.endswith(")"):
+        inner = "-" + inner[1:-1]
+    if re.match(r"^-?\d+(\.\d+)?$", inner):
+        return s
+    return None
 
 
 def parse_cell_value(cell: str, anchor: str, header: str, warnings: list[str]) -> str | float | None:
@@ -293,7 +331,9 @@ def parse_cell_value(cell: str, anchor: str, header: str, warnings: list[str]) -
     if dual is not None:
         warnings.append(f"{anchor} [{header}]: dual value '{cell}' → using first segment '{dual[0]}'")
         cell = dual[0]
-    pct = cell.endswith("%")
+    lit = _percent_literal(cell)
+    if lit is not None:
+        return lit
     inner = cell.rstrip("%").strip()
     inner = inner.replace(",", "").replace("，", "")
     if inner.startswith("+"):
@@ -302,10 +342,9 @@ def parse_cell_value(cell: str, anchor: str, header: str, warnings: list[str]) -
         inner = "-" + inner[1:-1]
     if re.match(r"^-?\d+(\.\d+)?$", inner):
         val = float(inner)
-        # 带 % 的蓝本数字即百分点，直接入库（-214.6%、41.4% 不再 /100）
         return val
     if re.match(r"^-?\d+(\.\d+)?x$", inner, re.I):
-        return float(inner[:-1])
+        return re.sub(r"\s+", "", cell.strip())
     if re.match(r"^-?\d+(\.\d+)?$", inner.replace("亿", "").replace("万", "")):
         try:
             if "亿" in cell:
@@ -362,7 +401,7 @@ def _extract_companies(
             cid, _canonical, short = info
             if cid not in seen:
                 seen.add(cid)
-                # 展示名与蓝本原文一致（本公司 / YYCQ / 游艺春秋）
+                # 展示名与蓝本原文一致（本公司 / YYCQ / 蓝本列名）
                 entry: dict[str, Any] = {"id": cid, "label": key}
                 if short and short != key:
                     entry["short"] = short

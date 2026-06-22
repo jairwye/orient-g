@@ -4,7 +4,7 @@
  */
 import { SUBJECT_COL, colToLabel, companyColsForSnapshot, rowValueForCompany } from "./companies";
 import { FK, FK_AMOUNT_CHANGE, FK_CF_ITEM, FK_CHANGE, FK_METRIC, CL } from "./field_keys";
-import { cfProfitRatioToPercentPoints, parseNum, round2, toPercentPoints } from "./format";
+import { cfProfitRatioToPercentPoints, parseNum, round2, sharePercentPoints, toPercentPoints } from "./format";
 import { getTable } from "./selectors";
 import type { CompetitorReportSnapshot, TableBlock } from "./types";
 
@@ -882,10 +882,10 @@ export function deriveArAgingInsights(snapshot: CompetitorReportSnapshot): Analy
   for (const row of ar.rows) {
     const co = String(row[FK.company] ?? "");
     const overPct = parseNum(row["1\u5e74\u4ee5\u4e0a\u5360\u6bd4"]);
-    if (overPct != null && toPercentPoints(overPct) >= 40) {
+    if (overPct != null && sharePercentPoints(overPct) >= 40) {
       insights.push({
         label: "\u8d26\u9f84\u98ce\u9669",
-        headline: `${co} 1 \u5e74\u4ee5\u4e0a\u5e94\u6536\u5360\u6bd4 ${toPercentPoints(overPct).toFixed(1)}%`,
+        headline: `${co} 1 \u5e74\u4ee5\u4e0a\u5e94\u6536\u5360\u6bd4 ${sharePercentPoints(overPct).toFixed(1)}%`,
         detail: "\u84dd\u672c\uff1a\u5854\u4eba\u7f51\u7edc\u5df2\u5927\u989d\u8ba1\u63d0\uff0c\u5229\u6da6\u589e\u957f\u9700\u201c\u6324\u6c34\u5206\u201d",
         tone: "warning",
       });

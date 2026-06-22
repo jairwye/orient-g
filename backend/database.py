@@ -881,6 +881,7 @@ def init_kb_documents_tables() -> None:
         "MultiProjectPublic",
         "MultiProjectLead",
         "CompanyPublic",
+        "ManagementPublic",
     ]
     with engine.connect() as conn:
         chk2 = conn.execute(
@@ -899,6 +900,7 @@ def init_kb_documents_tables() -> None:
             "MultiProjectPublic": {"allow_project_member": True},
             "MultiProjectLead": {"allow_project_lead": True},
             "CompanyPublic": {"allow_all": True},
+            "ManagementPublic": {"allow_management": True, "allow_owner": True},
         }
 
         # 1) 若表为空，先插入全部 kb_kind 行（带默认 policy）
@@ -945,6 +947,22 @@ def init_kb_documents_tables() -> None:
                     ),
                     {"t": tenant_id, "k": kb_kind, "j": json.dumps(defaults[kb_kind], ensure_ascii=False)},
                 )
+        conn.commit()
+
+        # 3) 补齐新增 kb_kind 行（已有租户升级时）
+        for k in kinds:
+            if k not in defaults:
+                continue
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO kb_kind_default_read_policy (tenant_id, kb_kind, policy_json)
+                    VALUES (:t, :k, :j)
+                    ON CONFLICT (tenant_id, kb_kind) DO NOTHING
+                    """
+                ),
+                {"t": tenant_id, "k": k, "j": json.dumps(defaults[k], ensure_ascii=False)},
+            )
         conn.commit()
 
     with engine.connect() as conn:

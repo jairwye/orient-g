@@ -39,6 +39,68 @@ function isAnalysisTitle(title: string): boolean {
   return /^分析/.test(title.trim());
 }
 
+/** 跨主体小结（按分号拆句、按「A和B」拆并列主体） */
+function isSynthesisTitle(title: string): boolean {
+  return /^(综合判断|小结|总结)/.test(title.trim());
+}
+
+function detectCompanyAtStart(text: string, labels: string[]): string | null {
+  const t = text.trim();
+  for (const label of labels) {
+    if (t.startsWith(label)) return label;
+  }
+  return null;
+}
+
+function stripCompanyLeadText(text: string, company: string): string {
+  let body = text.trim();
+  if (body.startsWith(company)) {
+    body = body.slice(company.length).replace(/^[，,：:\s]+/, "").trim();
+  }
+  return body || text.trim();
+}
+
+/** 综合判断等：按；拆句，再处理「A和B」并列 */
+function splitSynthesisClauses(text: string, opts: FormatNarrativeOptions): NarrativePart[] {
+  const labels = [...narrativeLabels(opts)].sort((a, b) => b.length - a.length);
+  const clauses = text
+    .split(/[；;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const parts: NarrativePart[] = [];
+
+  for (const clause of clauses) {
+    const andIdx = clause.indexOf("和");
+    if (andIdx > -1) {
+      const left = clause.slice(0, andIdx).trim();
+      const right = clause.slice(andIdx + 1).trim();
+      const coLeft = detectCompanyAtStart(left, labels);
+      const coRight = detectCompanyAtStart(right, labels);
+      if (coLeft && coRight && coLeft !== coRight) {
+        const leftBody = stripCompanyLeadText(left, coLeft);
+        const rightBody = stripCompanyLeadText(right, coRight);
+        const sharedTail = rightBody.replace(/^[-+]?[\d.,%]+/, "").trim();
+        parts.push({
+          kind: "company",
+          company: coLeft,
+          text: sharedTail ? `${leftBody}${sharedTail}` : leftBody,
+        });
+        parts.push({ kind: "company", company: coRight, text: rightBody });
+        continue;
+      }
+    }
+
+    const co = detectCompanyAtStart(clause, labels);
+    if (co) {
+      parts.push({ kind: "company", company: co, text: stripCompanyLeadText(clause, co) });
+    } else {
+      parts.push({ kind: "paragraph", text: clause });
+    }
+  }
+
+  return parts.length ? parts : [{ kind: "paragraph", text: text.trim() }];
+}
+
 function shouldEmitSectionTitle(title: string, stripAnalysisPrefix: boolean): boolean {
   if (!title.trim()) return false;
   if (stripAnalysisPrefix && isAnalysisTitle(title)) return false;
@@ -59,6 +121,10 @@ function appendSectionBody(
       out.push({ kind: "section", title });
     }
     out.push(...numbered);
+    return;
+  }
+  if (isSynthesisTitle(title)) {
+    out.push(...splitSynthesisClauses(body, opts));
     return;
   }
   if (!splitCompanies) {
@@ -83,6 +149,15 @@ function appendSectionBody(
   }
 }
 
+/** 公司名是否为新主体句首（非句中对比引用） */
+function isCompanySubjectStart(text: string, index: number): boolean {
+  if (index === 0) return true;
+  let i = index - 1;
+  while (i >= 0 && /\s/.test(text[i]!)) i -= 1;
+  if (i < 0) return true;
+  return /[。；！？\n]/.test(text[i]!);
+}
+
 /** 按文中公司名出现位置切分为主体块（同公司多次出现合并） */
 function splitCompanyMentions(text: string, opts: FormatNarrativeOptions): NarrativePart[] {
   const labels = [...narrativeLabels(opts)].sort((a, b) => b.length - a.length);
@@ -94,6 +169,10 @@ function splitCompanyMentions(text: string, opts: FormatNarrativeOptions): Narra
     while (start < text.length) {
       const idx = text.indexOf(label, start);
       if (idx === -1) break;
+      if (!isCompanySubjectStart(text, idx)) {
+        start = idx + label.length;
+        continue;
+      }
       const overlaps = hits.some((h) => idx >= h.index && idx < h.index + h.len);
       if (!overlaps) hits.push({ index: idx, company: label, len: label.length });
       start = idx + label.length;

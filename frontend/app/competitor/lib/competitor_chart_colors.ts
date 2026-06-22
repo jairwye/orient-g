@@ -18,7 +18,6 @@ export const COMPANY_ORDER = ["yycq", "37", "wm", "zq", "tr", "hq", "xs", "la"] 
 
 const LABEL_ALIASES: Record<string, string> = {
   YYCQ: "yycq",
-  游艺春秋: "yycq",
   [SUBJECT_COL]: "yycq",
 };
 for (let i = 0; i < COMPANY_COLS.length - 1; i += 1) {

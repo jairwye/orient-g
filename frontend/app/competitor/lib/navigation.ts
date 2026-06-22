@@ -83,6 +83,11 @@ export const NAV_SECTIONS: NavSection[] = [
       { id: "sec-09-o", title: "关联方变更" },
     ],
   },
+  {
+    id: "sec-10",
+    title: "详情链接",
+    subs: [{ id: "sec-10-a", title: "纵向对比入口" }],
+  },
 ];
 
 export const ALL_SNAP_IDS = NAV_SECTIONS.flatMap((s) => s.subs.map((sub) => sub.id));

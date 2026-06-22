@@ -13,6 +13,7 @@ from backend.services.competitor_report_parser import (
     parse_markdown,
 )
 from backend.services.competitor_report_store import load_meta, save_snapshot, snapshot_for_api
+from backend.services.vertical_report_store import load_vertical_report
 
 router = APIRouter()
 
@@ -112,3 +113,13 @@ def competitor_summary(request: Request):
         "company_count": meta.get("company_count", 0),
         "has_report": True,
     }
+
+
+@router.get("/vertical-report")
+def competitor_vertical_report(request: Request):
+    """返回各公司纵向分析报告（结构化 JSON）。"""
+    _require_view_business_dashboard(request)
+    doc = load_vertical_report()
+    if not doc:
+        raise HTTPException(status_code=404, detail="no_vertical_report")
+    return JSONResponse(content=doc, headers={"Cache-Control": "no-store, no-cache"})

@@ -31,7 +31,7 @@ import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS, colorForCompany } from "../lib/competitor_chart_colors";
 import { companyColsForSnapshot, colToLabel, rowValueForCompany } from "../lib/companies";
 import { CL, FK, FK_METRIC } from "../lib/field_keys";
-import { formatDecimal2, formatPctPoints, parseNum, toPercentPoints } from "../lib/format";
+import { formatDecimal2, formatPctPoints, parseNum, sharePercentPoints, toPercentPoints } from "../lib/format";
 import { subTitleForSnap } from "../lib/navigation";
 import { buildSec09SubjectGroups } from "../lib/sec09_subject_analysis";
 import { buildTopicSubjectGroups } from "../lib/sec09_topic_subject_analysis";
@@ -218,7 +218,7 @@ export function Sec09Others({ snapshot }: SectionProps) {
         const co = String(row[FK.company] ?? "");
         const pct = parseNum(row["1\u5e74\u4ee5\u4e0a\u5360\u6bd4"]);
         if (pct == null) return null;
-        return { name: colToLabel(co, snapshot), value: toPercentPoints(pct) };
+        return { name: colToLabel(co, snapshot), value: sharePercentPoints(pct) };
       })
       .filter(Boolean)
       .sort((a, b) => b!.value - a!.value);

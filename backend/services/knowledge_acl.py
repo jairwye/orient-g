@@ -29,8 +29,13 @@ from backend.services.kb_acl_store import (
     get_project_policy,
     get_resource_owner_map,
 )
-from backend.services.user_acl_store import get_user, get_user_acl_overrides
-from backend.services.user_acl_store import get_user_collection_write_overrides
+from backend.services.user_acl_store import (
+    get_user,
+    get_user_acl_overrides,
+    get_user_collection_write_overrides,
+    is_management_role,
+    is_system_admin_role,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -236,8 +241,8 @@ def compute_acl_scope(
             "writable_table_ids": [],
         }
 
-    # 管理类角色：在最小验收阶段默认放开所有知识库，便于你验证 citation/deny 链路
-    if any(r.lower() in {"admin", "管理层"} for r in ctx.roles):
+    # 系统 admin：运维全库 bypass；管理层走常规 scope + ManagementPublic 规则
+    if is_system_admin_role(ctx.roles):
         all_collection_ids = [c["collection_id"] for c in fixtures.get("collections") or []]
         all_doc_ids = [d["doc_id"] for d in fixtures.get("documents") or []]
         all_chunk_ids: list[str] = []
@@ -314,6 +319,7 @@ def compute_acl_scope(
                 "MultiDeptLead",
                 "MultiProjectPublic",
                 "MultiProjectLead",
+                "ManagementPublic",
             }:
                 pass
             elif str(c.get("tenant_id") or "") == ctx.tenant_id:
@@ -399,7 +405,12 @@ def compute_acl_scope(
         if ok:
             allowed_collection_ids.append(str(cid_m))
 
-    allowed_collection_ids = [x for x in allowed_collection_ids if x]
+    if is_management_role(ctx.roles):
+        for c in collections:
+            if str(c.get("space_type") or "") == "ManagementPublic" and c.get("collection_id"):
+                allowed_collection_ids.append(str(c["collection_id"]))
+
+    allowed_collection_ids = sorted(set(x for x in allowed_collection_ids if x))
 
     # allowed_doc_ids/allowed_chunk_ids/allowed_table_ids：从 DB 的 resource->collection assignment 计算
     allowed_doc_ids_set: set[str] = set()
@@ -448,6 +459,14 @@ def compute_acl_scope(
         )
     except Exception:
         pass
+
+    if is_management_role(ctx.roles):
+        try:
+            from backend.services import kb_documents as _kbd_mgmt_acl
+
+            allowed_doc_ids_set.update(_kbd_mgmt_acl.list_doc_ids_with_management_acl(ctx.tenant_id))
+        except Exception:
+            pass
 
     allowed_doc_ids = sorted(allowed_doc_ids_set)
     allowed_table_ids = sorted(allowed_table_ids_set)

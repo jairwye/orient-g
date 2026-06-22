@@ -79,6 +79,60 @@ def resolve_share_collection_ids(
             if str(c.get("space_type") or "") == "MultiProjectLead":
                 cols.append(str(c.get("collection_id")))
                 break
+    elif kind == "ManagementPublic":
+        for c in collections:
+            if c.get("type") == "public" and str(c.get("space_type") or "") == "ManagementPublic":
+                cid = c.get("collection_id")
+                if cid:
+                    cols.append(str(cid))
+                break
 
     return sorted(set([x for x in cols if x]))
+
+
+_PUBLIC_KINDS = {
+    "CompanyPublic",
+    "ManagementPublic",
+    "MultiDeptPublic",
+    "MultiDeptLead",
+    "MultiProjectPublic",
+    "MultiProjectLead",
+}
+
+
+def infer_kb_kind_for_collection(c: dict[str, Any]) -> str | None:
+    t = str(c.get("type") or "").strip()
+    st = str(c.get("space_type") or "").strip()
+    if t == "public" and st in _PUBLIC_KINDS:
+        return st
+    if t == "department":
+        return "DeptPublic"
+    if t == "project":
+        return "ProjectPublic"
+    return None
+
+
+def build_collection_kind_map(fixtures: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for c in fixtures.get("collections") or []:
+        cid = str(c.get("collection_id") or "").strip()
+        if not cid:
+            continue
+        kind = infer_kb_kind_for_collection(c if isinstance(c, dict) else {})
+        if kind:
+            out[cid] = kind
+    return out
+
+
+def share_kinds_for_collection_ids(fixtures: dict[str, Any], collection_ids: list[str]) -> list[str]:
+    cmap = build_collection_kind_map(fixtures)
+    kinds: list[str] = []
+    seen: set[str] = set()
+    for cid in collection_ids or []:
+        k = cmap.get(str(cid).strip())
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        kinds.append(k)
+    return kinds
 

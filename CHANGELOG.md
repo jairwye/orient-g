@@ -15,7 +15,8 @@
 
 - **Agent Skill**：`skill.finance.annual_report.v1`（竞品财报年报检索/对比）；`finance_annual_report_profile` 缓存与 Tier 0 narrative 补检索。
 - **浏览器矩阵验收**：CDP runner 每案 token 注入、validate 收紧（citations/过程稿/inline cite）；规制 §13 复测提示词。
-- **竞品财报 sec-09 深化（1.2.3.c）**：蓝本对齐为 **9 章**（`sec-01`～`sec-09`）；解析器 `||` 合并单元格容错、`sec-09-10`～`15` 诊断；上传响应 `sec09_anchor_stats`；sec-09 Explorer/TopicSubject 组件；AI 内网 `workflowQuickPicks`。
+- **竞品财报纵向对比**：`GET /api/competitor/vertical-report`；`/competitor/vertical` scroll-snap 页；MD 置于 `uploads/competitor/vertical_report.md`。
+- **知识库增量上传**：文件夹级 hash 预检（`existing-source-hashes`）、子树 doc 计数；管理层 additive ACL share。
 
 ### Changed
 

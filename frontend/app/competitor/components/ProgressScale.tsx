@@ -7,10 +7,13 @@ import { collectSnapMetrics, collectSnapOffsets, resolveActiveSnap, resolveScrol
 type Props = {
   activeSnapId: string;
   onNavigate: (id: string) => void;
+  /** 自定义刻度条目；默认竞品财报九屏导航 */
+  entries?: import("../lib/navigation").ScaleEntry[];
 };
 
-export function ProgressScale({ activeSnapId, onNavigate }: Props) {
-  const entries = useMemo(() => buildScaleEntries(), []);
+export function ProgressScale({ activeSnapId, onNavigate, entries: entriesProp }: Props) {
+  const defaultEntries = useMemo(() => buildScaleEntries(), []);
+  const entries = entriesProp ?? defaultEntries;
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   /** hover 优先；否则当前屏圆点 inline 展开文案 */
   const expandedId = hoveredId ?? activeSnapId;

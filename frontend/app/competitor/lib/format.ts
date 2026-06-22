@@ -76,6 +76,39 @@ export function sharePercentPoints(n: number): number {
   return round2(n);
 }
 
+/** 占比/费比/持股列：蓝本数值即百分点，不做 <1 小数比例换算 */
+export function isSharePercentColumnKey(key: string): boolean {
+  const k = key.trim();
+  return k.includes("占比") || k.includes("费比") || k.includes("持股比例");
+}
+
+export function isDateColumnKey(key: string): boolean {
+  return /变更日|日期/.test(key.trim());
+}
+
+/** 蓝本日期字面量原样展示（2025/5/22、2025年、2025-06-13） */
+export function blueprintDateLiteral(val: string | number | null | undefined): string | null {
+  if (typeof val !== "string") return null;
+  const t = val.trim();
+  if (!t || t === "—" || t === "-") return null;
+  if (/^\d{4}年/.test(t)) return t;
+  if (/^\d{4}[\/\-.]\d{1,2}([\/\-.]\d{1,2})?$/.test(t)) return t;
+  return null;
+}
+
+/** 按列类型将 snapshot 数值格式化为百分数字符串 */
+export function formatPercentForCell(
+  columnKey: string,
+  n: number | null | undefined,
+  metric?: string,
+): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const useShare =
+    isSharePercentColumnKey(columnKey) || (metric != null && isSharePercentColumnKey(metric));
+  const points = useShare ? sharePercentPoints(n) : toPercentPoints(n);
+  return formatPercentFromPoints(points);
+}
+
 /** 百分点 → 展示串：与蓝本一致，不补尾零 */
 export function formatPercentFromPoints(points: number): string {
   if (!Number.isFinite(points)) return "—";
@@ -97,11 +130,61 @@ export function isPercentColumnKey(key: string): boolean {
   if (k.includes("经营CF/净利") || k.includes("经营现金流/净利") || k.includes("CF/净利")) return true;
   if (k.includes("净利率") || k.includes("收益率")) return true;
   if (k.includes("费比") || k.includes("持股比例") || k.includes("股权变动")) return true;
-  if (k.endsWith("率") && !k.includes("增长")) return true;
+  if (k.includes("收现比")) return true;
+  if (k.endsWith("率") && !k.includes("增长") && !/周转|乘数/.test(k)) return true;
   return false;
 }
 
+/** 宽表行指标（指标/项目列）是否应按百分数展示 */
+export function isPercentMetricLabel(metric: string): boolean {
+  const m = metric.trim();
+  if (!m) return false;
+  if (/综合ROI|^ROI/i.test(m)) return false;
+  if (/周转率|权益乘数|乘数/.test(m)) return false;
+  if (isPercentColumnKey(m)) return true;
+  if (m.includes("占比") || m.includes("比率") || m.includes("费比") || m.includes("收现比")) return true;
+  if (m.includes("/") && /费|CF|净利|销售|资产|负债|现金|收入/.test(m)) return true;
+  return false;
+}
+
+/** 宽表行指标是否应为倍数（x） */
+export function isTimesMetricLabel(metric: string): boolean {
+  const m = metric.trim();
+  return /综合ROI|ROI/i.test(m) || /权益乘数/.test(m) || /周转率/.test(m);
+}
+
+const ROW_METRIC_KEYS = ["指标", "项目", "科目", "事项", "metric"] as const;
+
+export function rowMetricLabel(
+  row?: Record<string, string | number | null>,
+  labelKey?: string,
+): string {
+  if (!row) return "";
+  if (labelKey && row[labelKey] != null) return String(row[labelKey]).trim();
+  for (const k of ROW_METRIC_KEYS) {
+    if (row[k] != null && String(row[k]).trim()) return String(row[k]).trim();
+  }
+  return "";
+}
+
 const PRESERVE_TEXT = /家|亿|扭亏|减亏|约|—|-/;
+
+/** 蓝本单元格含 % 时原样展示（+18.0%、93.0% 等，不走 toPercentPoints 重算） */
+export function blueprintPercentLiteral(val: string | number | null | undefined): string | null {
+  if (typeof val !== "string") return null;
+  const t = val.trim().replace(/\s+/g, "");
+  if (!t || t === "—" || t === "-") return null;
+  if (t.endsWith("%")) return t;
+  return null;
+}
+
+/** 蓝本倍数 x 字面量原样展示（12.3x） */
+export function blueprintTimesLiteral(val: string | number | null | undefined): string | null {
+  if (typeof val !== "string") return null;
+  const t = val.trim().replace(/\s+/g, "");
+  if (/^-?[\d,]+(\.\d+)?[xX]$/.test(t)) return t;
+  return null;
+}
 
 /** 蓝本中的纯数字串（保留小数位，如 8.8、1,234.5） */
 function blueprintNumericLiteral(raw: string): string | null {
@@ -150,12 +233,22 @@ export function formatTableCell(
   val: string | number | null | undefined,
 ): string {
   if (val == null || val === "") return "—";
+  const pctLiteral = blueprintPercentLiteral(val);
+  if (pctLiteral) return pctLiteral;
+  const timesLiteral = blueprintTimesLiteral(val);
+  if (timesLiteral) return timesLiteral;
   const col = columnKey.trim();
+  if (isDateColumnKey(col)) {
+    const dateLiteral = blueprintDateLiteral(val);
+    if (dateLiteral) return dateLiteral;
+    if (typeof val === "string" && val.trim()) return val.trim();
+  }
   if (
     col.includes("期间") ||
     col.includes("方案") ||
     col.includes("备注") ||
     col.includes("性质") ||
+    isDateColumnKey(col) ||
     /名称|项目|游戏|版号|ISBN|品类|渠道|运营|收费|客商|公司名称/.test(col)
   ) {
     return String(val).trim() || "—";
@@ -165,21 +258,58 @@ export function formatTableCell(
     if (!t || t === "—" || t === "-") return "—";
     if (PRESERVE_TEXT.test(t) && !/^-?\d/.test(t)) return t;
     if (/^\d{4}年/.test(t)) return t;
+    if (blueprintDateLiteral(t)) return t;
     if (t.endsWith("%")) {
       return t.replace(/\s+/g, "");
     }
     if (!isPercentColumnKey(columnKey)) {
       const numericLiteral = blueprintNumericLiteral(t);
-      if (numericLiteral != null) return numericLiteral;
+      if (numericLiteral != null) {
+        const n = parseNum(numericLiteral);
+        if (n != null) return formatDecimal2(n);
+        return numericLiteral;
+      }
     }
     if (t.includes("亿") || t.includes("约")) return t;
     const parsed = parseNum(t);
     if (parsed == null) return t;
-    if (isPercentColumnKey(columnKey)) return formatPct(parsed);
+    if (isPercentColumnKey(columnKey)) return formatPercentForCell(columnKey, parsed);
     return formatDecimal2(parsed);
   }
-  if (isPercentColumnKey(columnKey)) return formatPct(val);
+  if (isPercentColumnKey(columnKey)) return formatPercentForCell(columnKey, val);
   return formatDecimal2(val);
+}
+
+/** 宽表：结合行指标（广告/销售费用等）决定 % / x / 数值格式 */
+export function formatTableCellForRow(
+  columnKey: string,
+  val: string | number | null | undefined,
+  row?: Record<string, string | number | null>,
+  rowLabelKey?: string,
+): string {
+  const pctLiteral = blueprintPercentLiteral(val);
+  if (pctLiteral) return pctLiteral;
+  const timesLiteral = blueprintTimesLiteral(val);
+  if (timesLiteral) return timesLiteral;
+
+  const metric = rowMetricLabel(row, rowLabelKey);
+  if (metric && isTimesMetricLabel(metric)) {
+    if (val == null || val === "") return "—";
+    if (typeof val === "string") {
+      const t = val.trim();
+      if (t.endsWith("x") || t.endsWith("X")) return t.replace(/\s+/g, "");
+    }
+    const n = typeof val === "number" ? val : parseNum(val);
+    if (n != null) return `${formatDecimal2(n)}x`;
+    return String(val);
+  }
+  if (metric && isPercentMetricLabel(metric)) {
+    if (val == null || val === "") return "—";
+    const n = typeof val === "number" ? val : parseNum(val);
+    if (n != null) return formatPercentForCell(columnKey, n, metric);
+    return formatTableCell(columnKey, val);
+  }
+  return formatTableCell(columnKey, val);
 }
 
 /** 千分位；小数位与数值一致，不补尾零 */
@@ -189,7 +319,11 @@ export function formatDisplayNumber(val: string | number | null | undefined): st
     const t = val.trim();
     if (PRESERVE_TEXT.test(t) && !/^-?\d/.test(t)) return t;
     const numericLiteral = blueprintNumericLiteral(t);
-    if (numericLiteral != null) return numericLiteral;
+    if (numericLiteral != null) {
+      const n = parseNum(numericLiteral);
+      if (n != null) return formatDecimal2(n);
+      return numericLiteral;
+    }
   }
   const n = typeof val === "number" ? val : parseNum(val);
   if (n == null) return String(val);

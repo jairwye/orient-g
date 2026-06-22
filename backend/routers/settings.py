@@ -1043,7 +1043,8 @@ def kb_meta_default_read_policies_put(body: KbKindPoliciesPutBody, request: Requ
 
 
 class SpecialDocAclPutItem(BaseModel):
-    doc_id: str
+    folder_id: str | None = None
+    doc_id: str | None = None  # 兼容旧客户端；优先 folder_id
     acl: dict = Field(default_factory=dict)
 
 
@@ -1056,64 +1057,7 @@ def kb_meta_special_docs_get(request: Request):
     _require_admin(request)
     fixtures = _load_kb_acl_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
-    trig = set(kb_docs_admin.SPECIAL_ADMIN_COLLECTION_IDS)
-    collections = fixtures.get("collections") or []
-    col_by_id = {str((c or {}).get("collection_id") or ""): (c or {}) for c in collections if str((c or {}).get("collection_id") or "")}
-    raw = kb_docs_admin.list_docs_touching_collections(tenant_id, trig)
-    items: list[dict] = []
-    for r in raw:
-        overlap = set(r["collection_ids"]) & trig
-        if not overlap:
-            continue
-        did = r["doc_id"]
-        overlap_sorted = sorted(overlap)
-        special_collections = []
-        for cid in overlap_sorted:
-            c = col_by_id.get(str(cid)) or {}
-            name = (c.get("name") or "").strip() if isinstance(c.get("name"), str) else ""
-            space_type = (c.get("space_type") or "").strip() if isinstance(c.get("space_type"), str) else ""
-            label = name or space_type or str(cid)
-            special_collections.append({"collection_id": str(cid), "label": label, "space_type": space_type, "name": name})
-        share_scope = _summarize_doc_share_scope(did, tenant_id)
-
-        # 若没有 share 记录（或未写入 ids），对 Multi* 用 collection scope 兜底展示范围（只读展示）
-        if isinstance(share_scope, dict):
-            dep_ids = share_scope.get("department_ids") or []
-            proj_ids = share_scope.get("project_ids") or []
-            if not dep_ids and not proj_ids:
-                for sc in special_collections:
-                    st = str((sc or {}).get("space_type") or "").strip()
-                    cid = str((sc or {}).get("collection_id") or "").strip()
-                    if not cid or st not in {"MultiDeptPublic", "MultiDeptLead", "MultiProjectPublic", "MultiProjectLead"}:
-                        continue
-                    scope = get_collection_scope(tenant_id, cid) or {}
-                    if st in {"MultiDeptPublic", "MultiDeptLead"}:
-                        dep_ids = [str(x).strip() for x in (scope.get("department_ids") or []) if str(x).strip()]
-                    if st in {"MultiProjectPublic", "MultiProjectLead"}:
-                        proj_ids = [str(x).strip() for x in (scope.get("project_ids") or []) if str(x).strip()]
-                    if dep_ids or proj_ids:
-                        share_scope = {
-                            "kinds": [st],
-                            "department_ids": sorted(set(dep_ids)),
-                            "project_ids": sorted(set(proj_ids)),
-                        }
-                        break
-        acl = kb_docs_admin.get_special_doc_acl(tenant_id, did)
-        # CompanyPublic：特殊文档权限默认全员可读（避免后台出现“公司公共库但全不勾”的困惑）
-        if "c_company_public_1" in overlap_sorted and (not isinstance(acl, dict) or len(acl) == 0):
-            acl = {"allow_all": True}
-        items.append(
-            {
-                "doc_id": did,
-                "title": kb_docs_admin.resolve_doc_title(tenant_id, did, fixtures),
-                "collection_ids": r["collection_ids"],
-                "special_collection_ids": overlap_sorted,
-                "special_collections": special_collections,
-                "acl": acl,
-                # 只读展示：Multi* 共享时选择的部门/项目范围（按文档 share 记录合并）
-                "share_scope": share_scope,
-            }
-        )
+    items = kb_docs_admin.list_special_folder_acl_items(tenant_id, fixtures)
     return {"tenant_id": tenant_id, "items": items}
 
 
@@ -1122,9 +1066,13 @@ def kb_meta_special_docs_put(body: SpecialDocAclPutBody, request: Request):
     _require_admin(request)
     fixtures = _load_kb_acl_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
+    total = 0
     for it in body.items or []:
+        fid = str((it.folder_id or "").strip())
         did = str((it.doc_id or "").strip())
-        if not did:
-            continue
-        kb_docs_admin.set_special_doc_acl(tenant_id, did, it.acl or {})
-    return {"ok": True}
+        if fid:
+            total += kb_docs_admin.apply_special_folder_acl(tenant_id, fid, it.acl or {}, fixtures)
+        elif did:
+            kb_docs_admin.set_special_doc_acl(tenant_id, did, it.acl or {})
+            total += 1
+    return {"ok": True, "updated_docs": total}

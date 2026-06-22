@@ -7,7 +7,11 @@ from typing import Any
 from sqlalchemy import text
 
 from backend.database import get_db
-from backend.services.kb_collections import dynamic_private_collection_id, resolve_share_collection_ids
+from backend.services.kb_collections import (
+    dynamic_private_collection_id,
+    resolve_share_collection_ids,
+    share_kinds_for_collection_ids,
+)
 
 
 def _new_folder_id(prefix: str = "f") -> str:
@@ -139,9 +143,25 @@ def list_folders(tenant_id: str) -> list[dict[str, Any]]:
             }
         )
     subtree_counts = compute_subtree_doc_counts(out)
+    try:
+        from backend.services.knowledge_acl import load_fixtures
+
+        fixtures = load_fixtures()
+    except Exception:
+        fixtures = {}
     for item in out:
         fid = str(item.get("folder_id") or "").strip()
         item["subtree_doc_count"] = subtree_counts.get(fid, 0)
+        cids = list(item.get("collection_ids") or [])
+        sk = share_kinds_for_collection_ids(fixtures, cids)
+        primary = str(item.get("kind") or "").strip() or "Private"
+        merged_kinds: list[str] = []
+        seen_k: set[str] = set()
+        for k in [primary, *sk]:
+            if k and k not in seen_k:
+                seen_k.add(k)
+                merged_kinds.append(k)
+        item["share_kinds"] = merged_kinds
     return out
 
 
@@ -651,6 +671,50 @@ def backfill_uploaded_docs_to_private_folders(tenant_id: str) -> dict[str, int]:
     return {"bound_docs": total}
 
 
+def _append_share_scope(scope: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    out = dict(scope or {})
+    history: list[dict[str, Any]] = []
+    raw_hist = out.get("share_scopes")
+    if isinstance(raw_hist, list):
+        history = [x for x in raw_hist if isinstance(x, dict)]
+    legacy = out.get("share_add")
+    if isinstance(legacy, dict) and legacy not in history:
+        history.append(legacy)
+    history.append(entry)
+    out["share_scopes"] = history
+    out["share_add"] = entry
+    return out
+
+
+def _kind_after_additive_share(folder: dict[str, Any], kb_kind: str, target: str) -> str:
+    """管理层为加法式共享：不覆盖已有部门/项目/公司库的树归属。"""
+    if (target or "").strip().lower() == "management":
+        cur = str(folder.get("kind") or "").strip()
+        if cur and cur not in {"", "Private", "ManagementPublic"}:
+            return cur
+    return kb_kind
+
+
+def merge_collections_into_subtree_docs(
+    tenant_id: str,
+    *,
+    folder_id: str,
+    collection_ids: list[str],
+) -> int:
+    from backend.services.kb_acl_store import merge_resource_assignments
+
+    tid = (tenant_id or "").strip() or "tenant1"
+    fid = (folder_id or "").strip()
+    cols = [str(x).strip() for x in (collection_ids or []) if str(x).strip()]
+    if not fid or not cols:
+        return 0
+    n = 0
+    for did in collect_subtree_doc_ids(tid, fid):
+        merge_resource_assignments(tid, resource_type="doc", resource_id=did, collection_ids=cols)
+        n += 1
+    return n
+
+
 def share_folder_to_kb_kind(
     tenant_id: str,
     fixtures: dict[str, Any],
@@ -796,6 +860,13 @@ def share_folder_add_scope(
     elif tgt == "project":
         kb_kind = "ProjectLead" if ak == "lead" else "ProjectPublic"
         extra.extend(resolve_share_collection_ids(fixtures, tid, kb_kind=kb_kind, department_ids=[], project_ids=project_ids, company_public=False))
+    elif tgt == "management":
+        kb_kind = "ManagementPublic"
+        extra.extend(
+            resolve_share_collection_ids(
+                fixtures, tid, kb_kind="ManagementPublic", department_ids=[], project_ids=[], company_public=False
+            )
+        )
     else:
         raise ValueError("invalid target")
 
@@ -803,15 +874,16 @@ def share_folder_add_scope(
     merged = sorted(set([pcid, *cur, *[x for x in extra if x]]))
     set_folder_collections(tid, folder_id=fid, collection_ids=merged)
 
-    scope = {
-        "share_add": {
-            "target": tgt,
-            "access_kind": ak,
-            "department_ids": department_ids,
-            "project_ids": project_ids,
-            "company_public": bool(company_public) or kb_kind == "CompanyPublic",
-        }
+    existing_scope = f.get("scope") if isinstance(f.get("scope"), dict) else {}
+    share_entry = {
+        "target": tgt,
+        "access_kind": ak,
+        "department_ids": department_ids,
+        "project_ids": project_ids,
+        "company_public": bool(company_public) or kb_kind == "CompanyPublic",
     }
+    scope = _append_share_scope(existing_scope, share_entry)
+    kind_to_set = _kind_after_additive_share(f, kb_kind, tgt)
     with get_db() as db:
         db.execute(
             text(
@@ -821,9 +893,29 @@ def share_folder_add_scope(
                 WHERE tenant_id=:t AND folder_id=:fid
                 """
             ),
-            {"t": tid, "fid": fid, "k": kb_kind, "sj": json.dumps(scope, ensure_ascii=False)},
+            {"t": tid, "fid": fid, "k": kind_to_set, "sj": json.dumps(scope, ensure_ascii=False)},
         )
+    if tgt == "management":
+        apply_management_share_acl(tid, folder_id=fid, shared_by=owner)
     return merged
+
+
+def apply_management_share_acl(tenant_id: str, *, folder_id: str, shared_by: str) -> None:
+    from backend.services import kb_documents as kbd
+
+    tid = (tenant_id or "").strip() or "tenant1"
+    for did in collect_subtree_doc_ids(tid, folder_id):
+        kbd.merge_special_doc_acl(tid, did, {"allow_management": True, "allow_owner": True})
+        kbd.add_management_doc_share(did, shared_by)
+
+
+def revoke_management_share_acl_for_folder(tenant_id: str, *, folder_id: str) -> None:
+    from backend.services import kb_documents as kbd
+
+    tid = (tenant_id or "").strip() or "tenant1"
+    for did in collect_subtree_doc_ids(tid, folder_id):
+        kbd.clear_management_special_acl(tid, did)
+        kbd.revoke_management_doc_share(did)
 
 
 def unshare_folder_to_private(tenant_id: str, *, folder_id: str) -> list[str]:
@@ -842,6 +934,7 @@ def unshare_folder_to_private(tenant_id: str, *, folder_id: str) -> list[str]:
     if not owner:
         raise ValueError("folder has no owner")
     pcid = dynamic_private_collection_id(owner)
+    revoke_management_share_acl_for_folder(tid, folder_id=fid)
     set_folder_collections(tid, folder_id=fid, collection_ids=[pcid])
     with get_db() as db:
         db.execute(

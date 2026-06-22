@@ -1,7 +1,7 @@
 import type { CompetitorReportSnapshot, TableBlock } from "./types";
 import { FK } from "./field_keys";
 
-/** 本公司列 canonical 名；表头亦可能写 YYCQ / 游艺春秋 或蓝本原文列名 */
+/** 本公司列 canonical 名；表头亦可能写 YYCQ 或蓝本原文列名 */
 export const SUBJECT_COL = "本公司" as const;
 
 /** 竞品财报 MD 表头中的公司列名（canonical；匿名蓝本用 本公司 / 可比公司A…） */
@@ -16,7 +16,7 @@ export const COMPANY_COLS = [
   "可比公司G",
 ] as const;
 
-const SUBJECT_ALIASES = new Set<string>([SUBJECT_COL, "YYCQ", "游艺春秋"]);
+const SUBJECT_ALIASES = new Set<string>([SUBJECT_COL, "YYCQ"]);
 
 const TABLE_NON_COMPANY_HEADERS = new Set<string>([
   FK.metric,
@@ -92,7 +92,7 @@ export function companyColsForSnapshot(
 
 /** 主体列在蓝本中的全部可能行键（含表头原文，不写死内网历史列名） */
 export function subjectDataKeys(snapshot?: CompetitorReportSnapshot): string[] {
-  const keys = new Set<string>([SUBJECT_COL, "YYCQ", "游艺春秋"]);
+  const keys = new Set<string>([SUBJECT_COL, "YYCQ"]);
   const yycq = snapshot?.companies?.find((c) => c.id === "yycq");
   if (yycq?.label?.trim() && !isLikelyMetricHeader(yycq.label)) keys.add(yycq.label.trim());
   if (yycq?.short?.trim()) keys.add(yycq.short.trim());
@@ -149,7 +149,7 @@ export function companyDisplayLabel(
     }
     return raw || labelToCol(raw);
   }
-  // 蓝本已写 YYCQ / 游艺春秋 时原样展示；仅匿名「本公司」映射为宽表主体列名
+  // 蓝本已写 YYCQ 或历史列名时原样展示；仅匿名「本公司」映射为宽表主体列名
   if (raw !== SUBJECT_COL && raw !== "本公司") return raw;
   if (snapshot) return subjectUiLabel(snapshot);
   return "YYCQ";
@@ -245,7 +245,7 @@ export function colKeyForDisplayLabel(label: string, snapshot?: CompetitorReport
 
 export function companyMatchLabels(snapshot?: CompetitorReportSnapshot): string[] {
   const ctx = getCompanyContext(snapshot);
-  const extras = [SUBJECT_COL, "YYCQ", "游艺春秋", "本公司"];
+  const extras = [SUBJECT_COL, "YYCQ", "本公司"];
   const fromSnap =
     snapshot?.companies
       .flatMap((c) => [c.label, c.short].filter(Boolean) as string[])

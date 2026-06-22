@@ -52,8 +52,11 @@ describe("companyDisplayLabel", () => {
     expect(companyDisplayLabel("本公司", snapYycqShort)).toBe("YYCQ");
   });
 
-  it("蓝本行内写 游艺春秋 时原样展示", () => {
-    expect(companyDisplayLabel("游艺春秋", snapSubjectLabel)).toBe("游艺春秋");
+  it("蓝本历史列名原样展示", () => {
+    const snap = {
+      companies: [{ id: "yycq", label: "历史列名A", short: "YYCQ" }],
+    } as CompetitorReportSnapshot;
+    expect(companyDisplayLabel("历史列名A", snap)).toBe("历史列名A");
   });
 
   it("蓝本宽表第一列为历史列名时页面展示该列名", () => {

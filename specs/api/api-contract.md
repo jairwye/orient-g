@@ -271,6 +271,13 @@ type CompetitorReportSnapshot = {
 - **说明**：展示路由固定 `/competitor`；数据存 `{upload_dir}/competitor/report.snapshot.json`；与 `finance_path` 无关。
 - **数值**：带 `%` 的表单元格解析为**百分点**（如 `41.4%` → `41.4`），非 0～1 小数；`parser_version >= 1.1.0` 起生效，旧 snapshot 须重新上传。
 
+### 4.3 纵向对比报告（`view_business_dashboard`）
+
+- **路径**：`GET /api/competitor/vertical-report`
+- **响应**：`VerticalReportSnapshot`（按公司 `## N. 公司名` 分章，内含 `sections` / `blocks` 与行业汇析相同的 table/narrative 块形状）
+- **404**：`{ "detail": "no_vertical_report" }` — 未找到 `uploads/competitor/vertical_report.md` 且开发 fixture 不可用
+- **说明**：展示路由 `/competitor/vertical`；文件名中性约定 `vertical_report.md`；公司 `id` 按章节顺序映射 canonical peer slug（`37`/`wm`/…），**展示名**来自 MD 原文
+
 ---
 
 ## 5. 流程文档规则（读写）
@@ -310,6 +317,25 @@ type CompetitorReportSnapshot = {
 - **文档与表的“读权限”默认随知识库（collection）归属决定**（assignment）。
 - **文档所有者永远可读**（在管理后台默认可读模板中强制勾选并置灰）。
 - **MultiDept/MultiProject 的可读范围**由“共享时选择的部门/项目范围（share_scope）”决定（管理后台只读展示）。
+- **ManagementPublic（管理层资料库）**：非全员；仅 `roles` 含「管理层」的用户可读。文件夹 `share-add-scope` 传 `target: "management"` 后，文件夹内文档绑定 `c_management_public_1`，并写入 `kb_special_doc_acl.allow_management`。
+- **系统 admin** 保留知识库全库 bypass；**管理层角色**不再全库 bypass，走常规 scope + 管理层规则。
+
+### 6.1.1 文件夹分享（share-add-scope）
+
+- **路径**：`POST /api/knowledge/folders/{folder_id}/share-add-scope`
+- **target**：`company` | `department` | `project` | **`management`**
+- **management**：追加 `ManagementPublic` collection；同步 subtree 文档的 special doc ACL（`allow_management: true`）与 `kb_document_shares`（`target_kind: ManagementPublic`）。
+
+```json
+{
+  "target": "management",
+  "access_kind": "public",
+  "department_ids": [],
+  "project_ids": []
+}
+```
+
+可与 `company`/`department`/`project` 叠加（前端以独立 checkbox「同时分享给管理层」发起第二次请求）。
 
 ### 6.1 知识库可选项（供 AI 互动页加载范围）
 
@@ -406,11 +432,14 @@ type CompetitorReportSnapshot = {
 
 - **保存**：`PUT /api/settings/kb-meta/default-read-policies`（后端会强制 `allow_owner=true`）
 
-### 6.5 管理后台：特殊知识库文档（只读展示 share_scope）
+### 6.5 管理后台：特殊知识库 · 文件夹读权限
 
 - **路径**：`GET /api/settings/kb-meta/special-docs`
-- **说明**：
+- **归集规则**：按**文件夹**一行（含子树内全部文档），不再逐文档列出；绑定特殊 collection 的文件夹及其子树文档合并展示。
   - `special_collections` 用于展示“特殊知识库”的中文名称/类型
+  - `doc_count` 子树文档数；`share_scope` 来自文件夹共享元数据
+  - 未归入任何特殊文件夹、且存在「单篇共享」记录的文档归入 `folder_id: "__unfiled__"`（「单独共享（未挂文件夹）」）；私人「未归档」文档不在此列
+- **保存**：`PUT /api/settings/kb-meta/special-docs`，`items[].folder_id` + `acl`；保存时对该文件夹子树内全部文档写入 `kb_special_doc_acl`（兼容旧字段 `doc_id` 单篇保存）
   - `share_scope` 仅用于展示 Multi* 的共享范围（部门/项目），不在后台修改
   - Multi* 默认不会返回 `allow_all=true`；CompanyPublic 默认会显示 `allow_all=true`
 
@@ -418,13 +447,15 @@ type CompetitorReportSnapshot = {
 {
   "items": [
     {
-      "doc_id": "ud_xxx",
-      "title": "doc_multi_proj",
+      "folder_id": "f_6f3638e4513f492c9610ddb5dda77c20",
+      "name": "竞品财报25",
+      "owner_username": "wangjia",
+      "doc_count": 339,
       "special_collections": [
-        { "collection_id": "c_multi_project_public_1", "label": "多项目公共库", "space_type": "MultiProjectPublic" }
+        { "collection_id": "c_management_public_1", "label": "管理层资料库", "space_type": "ManagementPublic" }
       ],
-      "share_scope": { "kinds": ["MultiProjectPublic"], "department_ids": [], "project_ids": ["proj2", "proj3"] },
-      "acl": {}
+      "share_scope": { "kinds": ["DeptPublic", "ManagementPublic"], "department_ids": ["财务部"], "project_ids": [] },
+      "acl": { "allow_management": true, "allow_owner": true }
     }
   ]
 }

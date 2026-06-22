@@ -21,8 +21,16 @@ describe("formatTableCell name columns", () => {
     expect(formatTableCell("游戏名称", "DOTA2（刀塔）")).toBe("DOTA2（刀塔）");
   });
 
-  it("formats fee ratio as percent", () => {
-    expect(formatTableCell("费比", 0.494)).toMatch(/49\.4/);
-    expect(formatTableCell("持股比例", 0.15)).toMatch(/15/);
+  it("formats fee ratio as percent (blueprint stores percent points)", () => {
+    expect(formatTableCell("费比", 49.4)).toMatch(/49\.4/);
+    expect(formatTableCell("持股比例", 15)).toMatch(/15/);
+  });
+
+  it("normalizes numeric literals to thousand separators", () => {
+    expect(formatTableCell("可比公司A", "1787")).toBe("1,787");
+    expect(formatTableCell("可比公司A", "1,677,793")).toBe("1,677,793");
+    expect(formatTableCell("可比公司A", "-8861")).toBe("-8,861");
+    expect(formatTableCell("可比公司A", "-688")).toBe("-688");
+    expect(formatTableCell("可比公司A", 353833)).toBe("353,833");
   });
 });

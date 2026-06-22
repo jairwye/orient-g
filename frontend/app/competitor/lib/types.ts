@@ -2,6 +2,7 @@ export type TableBlock = {
   kind: "table";
   anchor: string;
   headers: string[];
+  header_keys?: string[];
   rows: Record<string, string | number | null>[];
 };
 

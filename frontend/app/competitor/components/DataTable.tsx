@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
-import { formatTableCell } from "../lib/format";
+import { formatTableCell, formatTableCellForRow } from "../lib/format";
+import { resolveTableHeaderKeys } from "../lib/table_header_keys";
 import { FadeInView } from "./FadeInView";
 type Props = {
   title?: string;
   subtitle?: string;
   headers: string[];
+  /** 与 headers 等长；重复表头列的唯一 row 键 */
+  headerKeys?: string[];
   rows: Record<string, string | number | null>[];
   delayMs?: number;
   compact?: boolean;
@@ -41,12 +44,13 @@ export function DataTable({
   title,
   subtitle,
   headers,
+  headerKeys,
   rows,
   delayMs = 0,
   compact = false,
   highlightRow,
   rowAccent,
-  formatCell = formatTableCell,
+  formatCell,
   embedded = false,
   flowContent = false,
   wrapText = false,
@@ -60,9 +64,15 @@ export function DataTable({
 }: Props) {
   if (!rows.length) return null;
 
+  const columnKeys = resolveTableHeaderKeys(headers, headerKeys);
   const labelHeader = rowLabelHeader ?? headers[0] ?? "";
+  const labelKey = columnKeys[0] ?? labelHeader;
+  const cellFormatter =
+    formatCell ?? ((h, v, row) => formatTableCellForRow(h, v, row, labelHeader));
 
   const wrapCol = (h: string) => wrapText || /目的|备注|项目|名称|性质|方案|变动|公司名称|游戏名称|主要补助|拟达到|交易类型|备注/.test(h);
+
+  const isLabelColumn = (h: string, colIndex: number) => colIndex === 0 || wrapCol(h);
 
   const table = (
     <div
@@ -93,14 +103,20 @@ export function DataTable({
       >
           <table
             className={
-              "min-w-full text-left tabular-nums text-zinc-300 " +
+              "min-w-full tabular-nums text-zinc-300 " +
               (compact ? "text-xs" : "text-sm")
             }
           >
             <thead className="border-b border-zinc-800 bg-zinc-950/40 text-zinc-500">
               <tr>
-                {headers.map((h) => (
-                  <th key={h} className="whitespace-nowrap px-4 py-2.5 font-medium md:px-5">
+                {headers.map((h, colIndex) => (
+                  <th
+                    key={`col-${colIndex}-${columnKeys[colIndex] ?? h}`}
+                    className={
+                      "whitespace-nowrap px-4 py-2.5 font-medium md:px-5 " +
+                      (isLabelColumn(h, colIndex) ? "text-left" : "text-right")
+                    }
+                  >
                     {headerDisplay ? headerDisplay(h) : h}
                   </th>
                 ))}
@@ -120,9 +136,9 @@ export function DataTable({
                         colSpan={headers.length}
                         className="px-4 py-2.5 font-semibold text-zinc-100 md:px-5"
                       >
-                        {formatCell(
+                        {cellFormatter(
                           labelHeader,
-                          (getCellValue ? getCellValue(labelHeader, row) : row[labelHeader]) ?? null,
+                          (getCellValue ? getCellValue(labelKey, row) : row[labelKey]) ?? null,
                           row,
                         )}
                       </td>
@@ -147,16 +163,19 @@ export function DataTable({
                     }
                     style={accent ? { boxShadow: `inset 3px 0 0 ${accent}` } : undefined}
                   >
-                    {headers.map((h) => {
-                      const cellVal = getCellValue ? getCellValue(h, row) : row[h];
+                    {headers.map((h, colIndex) => {
+                      const colKey = columnKeys[colIndex] ?? h;
+                      const cellVal = getCellValue ? getCellValue(colKey, row) : row[colKey];
                       return (
                       <td
-                        key={h}
+                        key={`col-${colIndex}-${colKey}`}
                         className={
-                          "px-4 py-2.5 md:px-5 " + (wrapCol(h) ? "max-w-[280px] whitespace-normal break-words align-top" : "whitespace-nowrap")
+                          "px-4 py-2.5 md:px-5 " +
+                          (isLabelColumn(h, colIndex) ? "text-left " : "text-right ") +
+                          (wrapCol(h) ? "max-w-[280px] whitespace-normal break-words align-top" : "whitespace-nowrap")
                         }
                       >
-                        {formatCell(h, cellVal ?? null, row)}
+                        {cellFormatter(h, cellVal ?? null, row)}
                       </td>
                     );
                     })}

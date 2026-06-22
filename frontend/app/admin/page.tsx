@@ -17,6 +17,7 @@ const KB_READ_POLICY_DIMS = [
   { key: "allow_dept_lead", label: "本部门负责人" },
   { key: "allow_project_member", label: "本项目成员" },
   { key: "allow_project_lead", label: "本项目负责人" },
+  { key: "allow_management", label: "管理层" },
   { key: "allow_owner", label: "文档所有者" },
 ] as const;
 
@@ -31,6 +32,7 @@ const KB_READ_KIND_ORDER = [
   "MultiProjectPublic",
   "MultiProjectLead",
   "CompanyPublic",
+  "ManagementPublic",
 ] as const;
 
 const KB_READ_KIND_LABELS: Record<string, string> = {
@@ -44,6 +46,7 @@ const KB_READ_KIND_LABELS: Record<string, string> = {
   MultiProjectPublic: "多项目公共库",
   MultiProjectLead: "多项目负责人库",
   CompanyPublic: "公司公共库",
+  ManagementPublic: "管理层资料库",
 };
 
 function normalizeKbReadPolicy(p: unknown): Record<string, boolean> {
@@ -85,6 +88,8 @@ function deriveEffectiveReadFromShareScope(doc: { share_scope?: { kinds?: string
   if (kinds.has("MultiProjectLead")) out["allow_project_lead"] = true;
   // CompanyPublic：全员可读（展示层面）
   if (kinds.has("CompanyPublic")) out["allow_all"] = true;
+  // ManagementPublic：管理层可读（展示层面）
+  if (kinds.has("ManagementPublic")) out["allow_management"] = true;
   // owner 永远可读（展示层面也保持一致）
   out["allow_owner"] = true;
   return out;
@@ -136,9 +141,13 @@ type KBTableAssignmentItem = { table_id: string; name?: string; collection_ids: 
 type KBDocOwnerItem = { doc_id: string; title?: string; owner_username?: string | null };
 type KBTableOwnerItem = { table_id: string; name?: string; owner_username?: string | null };
 
-type KbSpecialDocRow = {
-  doc_id: string;
-  title?: string;
+type KbSpecialFolderRow = {
+  folder_id: string;
+  name?: string;
+  owner_username?: string | null;
+  kind?: string | null;
+  doc_count?: number;
+  is_unfiled_bucket?: boolean;
   special_collection_ids: string[];
   special_collections?: Array<{ collection_id: string; label: string; space_type?: string; name?: string }>;
   acl: Record<string, boolean>;
@@ -180,7 +189,7 @@ export default function AdminPage() {
   const [overridesLoading, setOverridesLoading] = useState(false);
 
   const [kbDefaultReadItems, setKbDefaultReadItems] = useState<Array<{ kb_kind: string; policy: Record<string, boolean> }>>([]);
-  const [kbSpecialDocs, setKbSpecialDocs] = useState<KbSpecialDocRow[]>([]);
+  const [kbSpecialFolders, setKbSpecialFolders] = useState<KbSpecialFolderRow[]>([]);
 
   const usernameOptions = users.map((u) => u.username).filter(Boolean);
 
@@ -237,10 +246,14 @@ export default function AdminPage() {
         const defReadData = defReadRes.ok ? await defReadRes.json() : { items: [] };
         const specDocsData = specDocsRes.ok ? await specDocsRes.json() : { items: [] };
         setKbDefaultReadItems(mergeKbDefaultReadItems((defReadData?.items ?? []) as { kb_kind: string; policy: unknown }[]));
-        setKbSpecialDocs(
+        setKbSpecialFolders(
           ((specDocsData?.items ?? []) as Array<Record<string, unknown>>).map((x) => ({
-            doc_id: String(x.doc_id ?? ""),
-            title: typeof x.title === "string" ? x.title : undefined,
+            folder_id: String(x.folder_id ?? ""),
+            name: typeof x.name === "string" ? x.name : undefined,
+            owner_username: typeof x.owner_username === "string" ? x.owner_username : null,
+            kind: typeof x.kind === "string" ? x.kind : null,
+            doc_count: typeof x.doc_count === "number" ? x.doc_count : undefined,
+            is_unfiled_bucket: x.is_unfiled_bucket === true || String(x.folder_id ?? "") === "__unfiled__",
             special_collection_ids: Array.isArray(x.special_collection_ids)
               ? (x.special_collection_ids as string[]).map(String)
               : [],
@@ -271,10 +284,13 @@ export default function AdminPage() {
       const defReadData = defReadRes.ok ? await defReadRes.json() : { items: [] };
       const specDocsData = specDocsRes.ok ? await specDocsRes.json() : { items: [] };
       setKbDefaultReadItems(mergeKbDefaultReadItems((defReadData?.items ?? []) as { kb_kind: string; policy: unknown }[]));
-      setKbSpecialDocs(
+      setKbSpecialFolders(
         ((specDocsData?.items ?? []) as Array<Record<string, unknown>>).map((x) => ({
-          doc_id: String(x.doc_id ?? ""),
-          title: typeof x.title === "string" ? x.title : undefined,
+          folder_id: String(x.folder_id ?? ""),
+          name: typeof x.name === "string" ? x.name : undefined,
+          owner_username: typeof x.owner_username === "string" ? x.owner_username : null,
+          kind: typeof x.kind === "string" ? x.kind : null,
+          doc_count: typeof x.doc_count === "number" ? x.doc_count : undefined,
           special_collection_ids: Array.isArray(x.special_collection_ids)
             ? (x.special_collection_ids as string[]).map(String)
             : [],
@@ -318,11 +334,10 @@ export default function AdminPage() {
     );
   };
 
-  const toggleKbSpecialDocAcl = (docId: string, dimKey: string) => {
-    // allow_owner 在展示层强制为 true，不允许通过特殊 ACL 取消
+  const toggleKbSpecialFolderAcl = (folderId: string, dimKey: string) => {
     if (dimKey === "allow_owner") return;
-    setKbSpecialDocs((prev) =>
-      prev.map((row) => (row.doc_id === docId ? { ...row, acl: { ...row.acl, [dimKey]: !row.acl[dimKey] } } : row))
+    setKbSpecialFolders((prev) =>
+      prev.map((row) => (row.folder_id === folderId ? { ...row, acl: { ...row.acl, [dimKey]: !row.acl[dimKey] } } : row))
     );
   };
 
@@ -355,10 +370,10 @@ export default function AdminPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         credentials: "include",
-        body: JSON.stringify({ items: kbSpecialDocs.map((x) => ({ doc_id: x.doc_id, acl: x.acl })) }),
+        body: JSON.stringify({ items: kbSpecialFolders.map((x) => ({ folder_id: x.folder_id, acl: x.acl })) }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.detail || "保存特殊文档 ACL 失败");
-      setKbMessage({ type: "success", text: "特殊文档读权限已保存。" });
+      setKbMessage({ type: "success", text: "特殊知识库文件夹读权限已保存（已作用于子树全部文档）。" });
       await refreshKbAcl();
     } catch (e) {
       setKbMessage({ type: "error", text: e instanceof Error ? e.message : "保存特殊文档 ACL 失败" });
@@ -1032,54 +1047,67 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* 多部门/多项目/公司公共等特殊库上的文档 */}
+        {/* 多部门/多项目/公司公共等特殊库上的文件夹 */}
         <div className="mb-6 rounded-md border border-zinc-800 bg-zinc-950/20 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm text-zinc-200">特殊知识库文档 · 读权限勾选</h3>
-              <p className="mt-1 text-xs text-zinc-500">列出已关联多部门/多项目/公司公共等特殊 collection 的文档，勾选维度写入 kb_special_doc_acl。</p>
+              <h3 className="text-sm text-zinc-200">特殊知识库 · 文件夹读权限</h3>
+              <p className="mt-1 text-xs text-zinc-500">按文件夹归集（含子树内全部文档）；勾选维度写入该文件夹下所有文档的 kb_special_doc_acl。</p>
             </div>
             <button
               type="button"
-              disabled={kbSaving || kbSpecialDocs.length === 0}
+              disabled={kbSaving || kbSpecialFolders.length === 0}
               onClick={handleSaveKbSpecialDocs}
               className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
             >
-              {kbSaving ? "保存中…" : "保存特殊文档 ACL"}
+              {kbSaving ? "保存中…" : "保存文件夹 ACL"}
             </button>
           </div>
           <div className="mt-4 space-y-4">
-            {kbSpecialDocs.length === 0 ? (
-              <p className="text-sm text-zinc-500">当前无关联特殊库的文档（共享到 Multi* / 公司公共等后会出现）。</p>
+            {kbSpecialFolders.length === 0 ? (
+              <p className="text-sm text-zinc-500">当前无关联特殊库的文件夹（共享到 Multi* / 公司公共 / 管理层等后会出现）。</p>
             ) : (
-              kbSpecialDocs.map((doc) => (
-                <div key={doc.doc_id} className="rounded-md border border-zinc-800 bg-zinc-950/30 p-3">
-                  <div className="mb-2 text-sm text-zinc-200">{doc.title || doc.doc_id}</div>
+              kbSpecialFolders.map((folder) => (
+                <div key={folder.folder_id} className="rounded-md border border-zinc-800 bg-zinc-950/30 p-3">
+                  <div className="mb-1 flex flex-wrap items-baseline gap-2">
+                    <div className="text-sm text-zinc-200">{folder.name || folder.folder_id}</div>
+                    {typeof folder.doc_count === "number" ? (
+                      <span className="text-xs text-zinc-500">共 {folder.doc_count} 篇文档</span>
+                    ) : null}
+                  </div>
+                  {folder.is_unfiled_bucket ? (
+                    <div className="mb-2 text-xs text-zinc-400">
+                      仅含曾通过「单篇共享」落到特殊库、且未挂在文件夹下的文档。私人知识库「未归档」文档仅 owner 可读，不会出现在此列表。
+                    </div>
+                  ) : null}
+                  {folder.owner_username ? (
+                    <div className="mb-2 text-xs text-zinc-500">所有者：{folder.owner_username}</div>
+                  ) : null}
                   <div className="mb-2 text-xs text-zinc-500">
                     特殊知识库：
-                    {(doc.special_collections?.length
-                      ? doc.special_collections.map((c) => c.label || c.collection_id).join("、")
-                      : doc.special_collection_ids.join("、")) || "—"}
+                    {(folder.special_collections?.length
+                      ? folder.special_collections.map((c) => c.label || c.collection_id).join("、")
+                      : folder.special_collection_ids.join("、")) || "—"}
                   </div>
-                  {!!((doc.share_scope?.department_ids?.length ?? 0) > 0 || (doc.share_scope?.project_ids?.length ?? 0) > 0) && (
+                  {!!((folder.share_scope?.department_ids?.length ?? 0) > 0 || (folder.share_scope?.project_ids?.length ?? 0) > 0) && (
                     <div className="mb-2 space-y-1 text-xs text-zinc-500">
-                      {doc.share_scope?.department_ids?.length ? (
-                        <div>共享范围（部门）: {doc.share_scope?.department_ids?.join(", ")}</div>
+                      {folder.share_scope?.department_ids?.length ? (
+                        <div>共享范围（部门）: {folder.share_scope?.department_ids?.join(", ")}</div>
                       ) : null}
-                      {doc.share_scope?.project_ids?.length ? (
-                        <div>共享范围（项目）: {doc.share_scope?.project_ids?.join(", ")}</div>
+                      {folder.share_scope?.project_ids?.length ? (
+                        <div>共享范围（项目）: {folder.share_scope?.project_ids?.join(", ")}</div>
                       ) : null}
                     </div>
                   )}
                   <div className="flex flex-wrap gap-4">
                     {(() => {
-                      const eff = deriveEffectiveReadFromShareScope(doc);
+                      const eff = deriveEffectiveReadFromShareScope(folder);
                       return KB_READ_POLICY_DIMS.map((d) => {
                         const derived = !!eff[d.key];
-                        const explicit = !!doc.acl[d.key];
+                        const explicit = !!folder.acl[d.key];
                         const checked = derived || explicit;
                         const disabled = kbSaving || derived || d.key === "allow_owner";
-                        const title = derived ? "由共享范围/类型决定（只读展示）" : "特殊文档 ACL 覆盖（可编辑）";
+                        const title = derived ? "由共享范围/类型决定（只读展示）" : "文件夹级 ACL 覆盖（可编辑，保存时作用于子树全部文档）";
                         return (
                           <label key={d.key} className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300" title={title}>
                             <input
@@ -1087,7 +1115,7 @@ export default function AdminPage() {
                               className="h-4 w-4 rounded border border-zinc-600 bg-zinc-800 disabled:opacity-50"
                               checked={checked}
                               disabled={disabled}
-                              onChange={() => toggleKbSpecialDocAcl(doc.doc_id, d.key)}
+                              onChange={() => toggleKbSpecialFolderAcl(folder.folder_id, d.key)}
                             />
                             {d.label}
                           </label>

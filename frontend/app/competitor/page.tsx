@@ -43,6 +43,10 @@ const Sec09Others = dynamic(
   () => import("./sections/Sec09Others").then((m) => ({ default: m.Sec09Others })),
   { ssr: false },
 );
+const Sec10DetailLinks = dynamic(
+  () => import("./sections/Sec10DetailLinks").then((m) => ({ default: m.Sec10DetailLinks })),
+  { ssr: false },
+);
 
 export default function CompetitorPage() {
   const { finance_path } = useAuth();
@@ -125,6 +129,7 @@ export default function CompetitorPage() {
             <Sec07Profit {...sectionProps} />
             <Sec08Cashflow {...sectionProps} />
             <Sec09Others {...sectionProps} />
+            <Sec10DetailLinks {...sectionProps} />
         </div>
       </div>
     </CompetitorScrollProvider>

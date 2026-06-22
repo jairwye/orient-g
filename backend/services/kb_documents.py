@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from backend.config import settings
 from backend.database import get_db
@@ -593,6 +593,90 @@ def list_my_documents(tenant_id: str, owner_username: str) -> list[dict[str, Any
     return out
 
 
+MY_DOC_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+
+
+def normalize_source_hash(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def compute_source_hash(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def find_doc_id_by_source_hash_in_folder_subtree(
+    tenant_id: str,
+    folder_id: str,
+    source_hash: str,
+) -> str | None:
+    """在 folder 子树内按 source_hash 查找已有文档（增量上传跳过）。"""
+    from backend.services.kb_folders import collect_subtree_doc_ids
+
+    h = normalize_source_hash(source_hash)
+    if not h:
+        return None
+    fid = (folder_id or "").strip()
+    if not fid:
+        return None
+    doc_ids = collect_subtree_doc_ids(tenant_id, fid)
+    if not doc_ids:
+        return None
+    tid = (tenant_id or "").strip() or "tenant1"
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT doc_id, source_hash
+                FROM kb_user_documents
+                WHERE tenant_id=:t AND doc_id IN :ids AND source_hash IS NOT NULL
+                """
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"t": tid, "ids": doc_ids},
+        ).fetchall()
+    for row in rows:
+        if normalize_source_hash(str(row[1] or "")) == h:
+            return str(row[0] or "").strip() or None
+    return None
+
+
+def map_source_hashes_in_folder_subtree(
+    tenant_id: str,
+    folder_id: str,
+    source_hashes: list[str],
+) -> dict[str, str]:
+    """批量：返回子树内已存在的 source_hash -> doc_id（小写 hash 键）。"""
+    from backend.services.kb_folders import collect_subtree_doc_ids
+
+    want = {normalize_source_hash(h) for h in (source_hashes or []) if normalize_source_hash(h)}
+    if not want:
+        return {}
+    fid = (folder_id or "").strip()
+    if not fid:
+        return {}
+    doc_ids = collect_subtree_doc_ids(tenant_id, fid)
+    if not doc_ids:
+        return {}
+    tid = (tenant_id or "").strip() or "tenant1"
+    out: dict[str, str] = {}
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT doc_id, source_hash
+                FROM kb_user_documents
+                WHERE tenant_id=:t AND doc_id IN :ids AND source_hash IS NOT NULL
+                """
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"t": tid, "ids": doc_ids},
+        ).fetchall()
+    for row in rows:
+        h = normalize_source_hash(str(row[1] or ""))
+        did = str(row[0] or "").strip()
+        if h in want and did and h not in out:
+            out[h] = did
+    return out
+
+
 def get_document_owner(tenant_id: str, doc_id: str) -> str | None:
     with get_db() as db:
         row = db.execute(
@@ -831,6 +915,7 @@ SPECIAL_ADMIN_COLLECTION_IDS = frozenset(
         "c_multi_project_public_1",
         "c_multi_project_lead_1",
         "c_company_public_1",
+        "c_management_public_1",
     }
 )
 
@@ -896,6 +981,397 @@ def set_special_doc_acl(tenant_id: str, resource_id: str, acl: dict[str, Any]) -
             ),
             {"t": tenant_id, "r": resource_id, "j": json.dumps(acl, ensure_ascii=False)},
         )
+
+
+def merge_special_doc_acl(tenant_id: str, resource_id: str, updates: dict[str, Any]) -> None:
+    cur = get_special_doc_acl(tenant_id, resource_id)
+    merged = {**cur, **updates}
+    set_special_doc_acl(tenant_id, resource_id, merged)
+
+
+def list_doc_ids_with_management_acl(tenant_id: str) -> list[str]:
+    tid = (tenant_id or "").strip() or "tenant1"
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                SELECT resource_id, acl_json FROM kb_special_doc_acl
+                WHERE tenant_id=:t AND resource_type='doc'
+                """
+            ),
+            {"t": tid},
+        ).fetchall()
+    out: list[str] = []
+    for r in rows:
+        did = str(r[0] or "").strip()
+        if not did:
+            continue
+        try:
+            acl = json.loads(str(r[1] or "{}"))
+        except Exception:
+            acl = {}
+        if isinstance(acl, dict) and acl.get("allow_management"):
+            out.append(did)
+    return out
+
+
+def add_management_doc_share(doc_id: str, shared_by: str) -> None:
+    did = (doc_id or "").strip()
+    un = (shared_by or "").strip()
+    if not did or not un:
+        return
+    with get_db() as db:
+        db.execute(
+            text(
+                """
+                INSERT INTO kb_document_shares (doc_id, shared_by, target_kind, target_json)
+                VALUES (:d, :u, 'ManagementPublic', :j)
+                """
+            ),
+            {"d": did, "u": un, "j": json.dumps({}, ensure_ascii=False)},
+        )
+
+
+def revoke_management_doc_share(doc_id: str) -> None:
+    did = (doc_id or "").strip()
+    if not did:
+        return
+    with get_db() as db:
+        db.execute(
+            text("DELETE FROM kb_document_shares WHERE doc_id=:d AND target_kind='ManagementPublic'"),
+            {"d": did},
+        )
+
+
+def clear_management_special_acl(tenant_id: str, resource_id: str) -> None:
+    tid = (tenant_id or "").strip() or "tenant1"
+    rid = (resource_id or "").strip()
+    if not rid:
+        return
+    acl = get_special_doc_acl(tid, rid)
+    if not acl.get("allow_management"):
+        return
+    new_acl = {k: v for k, v in acl.items() if k != "allow_management"}
+    if new_acl:
+        set_special_doc_acl(tid, rid, new_acl)
+    else:
+        with get_db() as db:
+            db.execute(
+                text(
+                    """
+                    DELETE FROM kb_special_doc_acl
+                    WHERE tenant_id=:t AND resource_type='doc' AND resource_id=:r
+                    """
+                ),
+                {"t": tid, "r": rid},
+            )
+
+
+_UNFILED_SPECIAL_FOLDER_ID = "__unfiled__"
+
+_SPECIAL_SHARE_TARGET_KINDS = frozenset(
+    {
+        "CompanyPublic",
+        "ManagementPublic",
+        "MultiDeptPublic",
+        "MultiDeptLead",
+        "MultiProjectPublic",
+        "MultiProjectLead",
+        "DeptPublic",
+        "DeptLead",
+        "ProjectPublic",
+        "ProjectLead",
+    }
+)
+
+
+def _folder_depth(folder: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> int:
+    depth = 0
+    cur = str(folder.get("parent_folder_id") or "").strip()
+    seen: set[str] = set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        depth += 1
+        parent = by_id.get(cur)
+        cur = str(parent.get("parent_folder_id") or "").strip() if parent else ""
+    return depth
+
+
+def _folder_share_scope_from_meta(
+    folder: dict[str, Any],
+    tenant_id: str,
+    overlap_sorted: list[str],
+    col_by_id: dict[str, dict[str, Any]],
+    fixtures: dict[str, Any],
+) -> dict[str, list[str]]:
+    from backend.services.kb_acl_store import get_collection_scope
+    from backend.services.kb_collections import share_kinds_for_collection_ids
+
+    kinds = set(folder.get("share_kinds") or [])
+    if not kinds:
+        kinds = set(share_kinds_for_collection_ids(fixtures, folder.get("collection_ids") or []))
+    kinds.discard("Private")
+
+    dep_ids: set[str] = set()
+    proj_ids: set[str] = set()
+    scope = folder.get("scope") if isinstance(folder.get("scope"), dict) else {}
+
+    def _ingest_entry(entry: dict[str, Any]) -> None:
+        for d in entry.get("department_ids") or []:
+            s = str(d).strip()
+            if s:
+                dep_ids.add(s)
+        for p in entry.get("project_ids") or []:
+            s = str(p).strip()
+            if s:
+                proj_ids.add(s)
+        tgt = str(entry.get("target") or "").strip().lower()
+        if tgt == "department":
+            kinds.add("DeptPublic" if str(entry.get("access_kind") or "public") == "public" else "DeptLead")
+        elif tgt == "project":
+            kinds.add("ProjectPublic" if str(entry.get("access_kind") or "public") == "public" else "ProjectLead")
+        elif tgt == "company":
+            kinds.add("CompanyPublic")
+        elif tgt == "management":
+            kinds.add("ManagementPublic")
+
+    for entry in scope.get("share_scopes") or []:
+        if isinstance(entry, dict):
+            _ingest_entry(entry)
+    legacy = scope.get("share_add")
+    if isinstance(legacy, dict):
+        _ingest_entry(legacy)
+    for d in scope.get("department_ids") or []:
+        s = str(d).strip()
+        if s:
+            dep_ids.add(s)
+    for p in scope.get("project_ids") or []:
+        s = str(p).strip()
+        if s:
+            proj_ids.add(s)
+
+    if not dep_ids and not proj_ids:
+        for cid in overlap_sorted:
+            c = col_by_id.get(str(cid)) or {}
+            st = str(c.get("space_type") or "").strip()
+            if st not in {"MultiDeptPublic", "MultiDeptLead", "MultiProjectPublic", "MultiProjectLead"}:
+                continue
+            scope_row = get_collection_scope(tenant_id, str(cid)) or {}
+            if st in {"MultiDeptPublic", "MultiDeptLead"}:
+                dep_ids.update(str(x).strip() for x in (scope_row.get("department_ids") or []) if str(x).strip())
+            if st in {"MultiProjectPublic", "MultiProjectLead"}:
+                proj_ids.update(str(x).strip() for x in (scope_row.get("project_ids") or []) if str(x).strip())
+            kinds.add(st)
+            break
+
+    return {
+        "kinds": sorted(kinds),
+        "department_ids": sorted(dep_ids),
+        "project_ids": sorted(proj_ids),
+    }
+
+
+def _aggregate_explicit_acl(
+    tenant_id: str,
+    doc_ids: list[str],
+    overlap_sorted: list[str],
+    *,
+    company_public_default: bool = False,
+) -> dict[str, Any]:
+    if not doc_ids:
+        return {}
+    if company_public_default and "c_company_public_1" in overlap_sorted:
+        acls = [get_special_doc_acl(tenant_id, d) for d in doc_ids]
+        if all(not a for a in acls):
+            return {"allow_all": True, "allow_owner": True}
+    dims = (
+        "allow_all",
+        "allow_dept_member",
+        "allow_dept_lead",
+        "allow_project_member",
+        "allow_project_lead",
+        "allow_management",
+        "allow_owner",
+    )
+    out: dict[str, Any] = {}
+    for dim in dims:
+        if dim == "allow_owner":
+            out[dim] = True
+            continue
+        out[dim] = any(bool(get_special_doc_acl(tenant_id, d).get(dim)) for d in doc_ids)
+    return out
+
+
+def _filter_orphan_special_doc_ids(tenant_id: str, candidate_ids: list[str]) -> list[str]:
+    """
+    「未挂文件夹」桶：仅含曾通过「单篇共享」落到特殊库的文档。
+    私人知识库「未归档」文档（仅 owner 私有 collection、无 share 记录）不得进入此列表。
+    """
+    out: list[str] = []
+    for did in candidate_ids:
+        did_s = str(did or "").strip()
+        if not did_s:
+            continue
+        if not did_s.startswith("ud_"):
+            out.append(did_s)
+            continue
+        shares = get_doc_share_targets(did_s)
+        if any(str((t or {}).get("target_kind") or "").strip() in _SPECIAL_SHARE_TARGET_KINDS for t in shares):
+            out.append(did_s)
+    return out
+
+
+def list_special_folder_acl_items(tenant_id: str, fixtures: dict[str, Any]) -> list[dict[str, Any]]:
+    """管理后台：按文件夹归集特殊库文档（子树内文档合并为一行）。"""
+    from backend.services.kb_folders import collect_subtree_doc_ids, list_folders
+
+    tid = (tenant_id or "").strip() or "tenant1"
+    trig = set(SPECIAL_ADMIN_COLLECTION_IDS)
+    collections = fixtures.get("collections") or []
+    col_by_id = {str((c or {}).get("collection_id") or ""): (c or {}) for c in collections if str((c or {}).get("collection_id") or "")}
+
+    folders = list_folders(tid)
+    by_id = {str(f.get("folder_id") or ""): f for f in folders if str(f.get("folder_id") or "")}
+    special_folders = []
+    for f in folders:
+        overlap = set(f.get("collection_ids") or []) & trig
+        if overlap:
+            special_folders.append((f, sorted(overlap)))
+
+    special_folders.sort(key=lambda pair: _folder_depth(pair[0], by_id), reverse=True)
+
+    doc_to_folder: dict[str, str] = {}
+    folder_docs: dict[str, list[str]] = {}
+    for f, _overlap in special_folders:
+        fid = str(f.get("folder_id") or "").strip()
+        if not fid:
+            continue
+        assigned: list[str] = []
+        for did in collect_subtree_doc_ids(tid, fid):
+            if did in doc_to_folder:
+                continue
+            doc_to_folder[did] = fid
+            assigned.append(did)
+        if assigned:
+            folder_docs[fid] = assigned
+
+    items: list[dict[str, Any]] = []
+    seen_folder_ids: set[str] = set()
+    for f, overlap_sorted in sorted(special_folders, key=lambda pair: str(pair[0].get("name") or "")):
+        fid = str(f.get("folder_id") or "").strip()
+        if not fid or fid in seen_folder_ids:
+            continue
+        seen_folder_ids.add(fid)
+        doc_ids = folder_docs.get(fid, [])
+        if not doc_ids:
+            continue
+        special_collections = []
+        for cid in overlap_sorted:
+            c = col_by_id.get(str(cid)) or {}
+            name = (c.get("name") or "").strip() if isinstance(c.get("name"), str) else ""
+            space_type = (c.get("space_type") or "").strip() if isinstance(c.get("space_type"), str) else ""
+            label = name or space_type or str(cid)
+            special_collections.append({"collection_id": str(cid), "label": label, "space_type": space_type, "name": name})
+        share_scope = _folder_share_scope_from_meta(f, tid, overlap_sorted, col_by_id, fixtures)
+        company_default = "c_company_public_1" in overlap_sorted and str(f.get("kind") or "").strip() == "CompanyPublic"
+        acl = _aggregate_explicit_acl(tid, doc_ids, overlap_sorted, company_public_default=company_default)
+        items.append(
+            {
+                "folder_id": fid,
+                "name": str(f.get("name") or "").strip() or fid,
+                "owner_username": str(f.get("owner_username") or "").strip() or None,
+                "kind": str(f.get("kind") or "").strip() or None,
+                "doc_count": len(doc_ids),
+                "doc_ids": doc_ids,
+                "special_collection_ids": overlap_sorted,
+                "special_collections": special_collections,
+                "acl": acl,
+                "share_scope": share_scope,
+            }
+        )
+
+    all_special_docs = {r["doc_id"] for r in list_docs_touching_collections(tid, trig)}
+    orphan_ids = _filter_orphan_special_doc_ids(tid, sorted(all_special_docs - set(doc_to_folder.keys())))
+    if orphan_ids:
+        overlap_union: set[str] = set()
+        for did in orphan_ids:
+            overlap_union.update(set(get_doc_collection_ids(tid, did)) & trig)
+        overlap_sorted = sorted(overlap_union)
+        special_collections = []
+        for cid in overlap_sorted:
+            c = col_by_id.get(str(cid)) or {}
+            name = (c.get("name") or "").strip() if isinstance(c.get("name"), str) else ""
+            space_type = (c.get("space_type") or "").strip() if isinstance(c.get("space_type"), str) else ""
+            label = name or space_type or str(cid)
+            special_collections.append({"collection_id": str(cid), "label": label, "space_type": space_type, "name": name})
+        kinds: set[str] = set()
+        dep_ids: set[str] = set()
+        proj_ids: set[str] = set()
+        for did in orphan_ids:
+            ss = get_doc_share_targets(did)
+            for t in ss:
+                k = str(t.get("target_kind") or "").strip()
+                if k:
+                    kinds.add(k)
+                meta = t.get("target") if isinstance(t.get("target"), dict) else {}
+                for d in meta.get("department_ids") or []:
+                    s = str(d).strip()
+                    if s:
+                        dep_ids.add(s)
+                for p in meta.get("project_ids") or []:
+                    s = str(p).strip()
+                    if s:
+                        proj_ids.add(s)
+        items.append(
+            {
+                "folder_id": _UNFILED_SPECIAL_FOLDER_ID,
+                "name": "单独共享（未挂文件夹）",
+                "owner_username": None,
+                "kind": None,
+                "doc_count": len(orphan_ids),
+                "doc_ids": orphan_ids,
+                "special_collection_ids": overlap_sorted,
+                "special_collections": special_collections,
+                "acl": _aggregate_explicit_acl(tid, orphan_ids, overlap_sorted, company_public_default=False),
+                "share_scope": {
+                    "kinds": sorted(kinds),
+                    "department_ids": sorted(dep_ids),
+                    "project_ids": sorted(proj_ids),
+                },
+                "is_unfiled_bucket": True,
+            }
+        )
+
+    return items
+
+
+def apply_special_folder_acl(tenant_id: str, folder_id: str, acl: dict[str, Any], fixtures: dict[str, Any] | None = None) -> int:
+    from backend.services.kb_folders import collect_subtree_doc_ids
+
+    tid = (tenant_id or "").strip() or "tenant1"
+    fid = (folder_id or "").strip()
+    if not fid:
+        return 0
+    if fid == _UNFILED_SPECIAL_FOLDER_ID:
+        trig = set(SPECIAL_ADMIN_COLLECTION_IDS)
+        doc_ids = sorted({r["doc_id"] for r in list_docs_touching_collections(tid, trig)})
+        from backend.services.kb_folders import list_folders
+
+        covered: set[str] = set()
+        for f in list_folders(tid):
+            if set(f.get("collection_ids") or []) & trig:
+                for did in collect_subtree_doc_ids(tid, str(f.get("folder_id") or "")):
+                    covered.add(did)
+        doc_ids = [d for d in doc_ids if d not in covered]
+    else:
+        doc_ids = collect_subtree_doc_ids(tid, fid)
+    n = 0
+    payload = dict(acl or {})
+    payload["allow_owner"] = True
+    for did in doc_ids:
+        set_special_doc_acl(tid, did, payload)
+        n += 1
+    return n
 
 
 def resolve_doc_title(tenant_id: str, doc_id: str, fixtures: dict[str, Any] | None = None) -> str:

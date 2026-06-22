@@ -179,6 +179,22 @@ function isGenericAnalysisLead(text: string, ctx: LabelCtx): boolean {
   return false;
 }
 
+function isOrphanSubjectLabel(text: string): boolean {
+  return /^(综合判断|小结|总结)[：:]?$/.test(text.trim());
+}
+
+/** 表格/附录小标题（非主体分析句，勿挂到上一主体卡片） */
+function isTableCaptionTitle(text: string): boolean {
+  const t = text.trim().replace(/[：:]+$/, "");
+  if (!t) return false;
+  return (
+    /^补助明细/.test(t) ||
+    /明细项目[（(]/.test(t) ||
+    /^附表?\d*/.test(t) ||
+    (/^(分项|项目|客户|供应商)明细/.test(t) && t.length <= 24)
+  );
+}
+
 function ingestParagraph(
   buckets: Map<string, SubjectBullet[]>,
   text: string,
@@ -186,7 +202,14 @@ function ingestParagraph(
   ctx: LabelCtx,
 ): string | null {
   const trimmed = text.trim();
-  if (!trimmed || isGenericAnalysisLead(trimmed, ctx)) return activeCompany;
+  if (
+    !trimmed ||
+    isGenericAnalysisLead(trimmed, ctx) ||
+    isOrphanSubjectLabel(trimmed) ||
+    isTableCaptionTitle(trimmed)
+  ) {
+    return activeCompany;
+  }
 
   const explicit = findPrimaryCompany(trimmed, ctx);
   const company = explicit ?? activeCompany;
@@ -224,6 +247,9 @@ function ingestPart(
   }
 
   if (part.kind === "section") {
+    if (isOrphanSubjectLabel(part.title) || isTableCaptionTitle(part.title)) {
+      return activeCompany;
+    }
     const titleCo = detectCompanyInTitle(part.title, ctx.formatOpts.snapshot);
     let cur = titleCo ?? activeCompany;
 

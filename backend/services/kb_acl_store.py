@@ -162,6 +162,35 @@ def get_all_resource_assignments(tenant_id: str, *, resource_type: str) -> list[
     return [{"resource_type": r[0], "resource_id": r[1], "collection_id": r[2]} for r in rows]
 
 
+def merge_resource_assignments(
+    tenant_id: str,
+    *,
+    resource_type: str,
+    resource_id: str,
+    collection_ids: Iterable[str],
+) -> list[str]:
+    """追加 collection 绑定（不删除已有 assignment）。"""
+    extra = {str(x).strip() for x in (collection_ids or []) if str(x).strip()}
+    rid = str(resource_id or "").strip()
+    if not extra or not rid:
+        if resource_type == "doc":
+            return get_doc_collection_ids(tenant_id, rid)
+        return []
+    if resource_type == "doc":
+        existing = set(get_doc_collection_ids(tenant_id, rid))
+    else:
+        existing = {
+            str(a.get("collection_id") or "")
+            for a in get_all_resource_assignments(tenant_id, resource_type=resource_type)
+            if str(a.get("resource_id") or "") == rid
+        }
+    merged = sorted(existing | extra)
+    set_resource_assignments(
+        tenant_id, resource_type=resource_type, resource_id=resource_id, collection_ids=merged
+    )
+    return merged
+
+
 def set_resource_assignments(
     tenant_id: str,
     *,

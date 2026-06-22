@@ -42,7 +42,9 @@ export function TopicSubjectBoard({ groups, snapshot, delayMs = 200 }: Props) {
                         aria-hidden
                       />
                       <div className="min-w-0 flex-1">
-                        <span className="mr-1.5 font-medium text-zinc-200">{sub.company}</span>
+                        {sub.company ? (
+                          <span className="mr-1.5 font-medium text-zinc-200">{sub.company}</span>
+                        ) : null}
                         {sub.bullets.map((bullet, bi) => (
                           <span key={bi} className="text-zinc-400">
                             {bi > 0 ? " " : ""}
