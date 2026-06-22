@@ -48,7 +48,12 @@
 
 ### 前端（在 `frontend/`）
 
-- `npm run lint`（CI 门槛：0 warnings）
+- **每次改动**：`npm run lint`（CI 门槛：0 warnings）
+- **push 到 `main` 前**（涉及 frontend）：`npm run build`  
+  Docker CI 在镜像内执行 `next build`，会跑 ESLint；仅 lint 通过不代表 build 一定过。
+- **可选、最接近 CI**（需 Docker，约 5–15 分钟）：在仓库根目录  
+  `.\scripts\ci-docker-build-local.ps1`  
+  构建 backend + frontend 本地镜像，**不 push**；frontend 默认 `--no-cache` 与 workflow 一致。加速可加 `-CacheFrontend`。
 
 ### 后端（仓库根目录）
 
