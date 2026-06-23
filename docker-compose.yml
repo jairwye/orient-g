@@ -95,6 +95,7 @@ services:
       HERMES_MODEL: ${HERMES_MODEL:-hermes-agent}
       HERMES_DEV_MOCK: ${HERMES_DEV_MOCK:-false}
       COMPETITOR_FIXTURE_FALLBACK: ${COMPETITOR_FIXTURE_FALLBACK:-false}
+      APP_ENV: ${APP_ENV:-production}
     volumes:
       - uploads_data:/app/uploads
     depends_on:

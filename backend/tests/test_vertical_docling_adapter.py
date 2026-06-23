@@ -60,8 +60,24 @@ def test_runtime_rules_from_uploads_json(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
     monkeypatch.setattr(settings, "vertical_company_rules_json", None)
+    monkeypatch.setattr(settings, "competitor_fixture_fallback", False)
     reset_filename_rules_cache()
     assert resolve_company_id_from_filename("peer_alpha2025_report.pdf") == "37"
+    reset_filename_rules_cache()
+
+
+def test_production_builtin_cn_filename_rules(tmp_path, monkeypatch):
+    from backend.config import settings
+    from backend.services.vertical_company_resolve import reset_filename_rules_cache
+
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "vertical_company_rules_json", None)
+    monkeypatch.setattr(settings, "competitor_fixture_fallback", False)
+    monkeypatch.setattr(settings, "vertical_builtin_filename_rules", None)
+    reset_filename_rules_cache()
+    assert resolve_company_id_from_filename("三七互娱2025年度报告分析解读.pdf") == "37"
+    assert resolve_company_id_from_filename("完美世界2025年度报告分析解读.pdf") == "wm"
     reset_filename_rules_cache()
 
 

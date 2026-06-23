@@ -166,6 +166,8 @@ class Settings(BaseSettings):
     competitor_fixture_fallback: bool | None = None
     # 纵向 PDF zip：内网中文文件名 → canonical id 规则（JSON 数组，仅生产 .env；勿提交 Git）
     vertical_company_rules_json: str | None = None
+    # None=生产且未配置 rules 文件/env 时启用内建中文文件名规则；false=禁用（公开 fork/CI）
+    vertical_builtin_filename_rules: bool | None = None
 
     @property
     def effective_competitor_fixture_fallback(self) -> bool:
