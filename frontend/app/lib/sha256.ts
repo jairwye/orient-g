@@ -1,10 +1,14 @@
-/** SHA-256 hex；HTTP 内网无 crypto.subtle 时用纯 JS 回退。 */
+/** SHA-256 hex；知识库批量上传在 HTTP 内网一律用纯 JS，不依赖 crypto.subtle。 */
 
 function bytesToHex(bytes: Uint8Array): string {
-  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    out += bytes[i]!.toString(16).padStart(2, "0");
+  }
+  return out;
 }
 
-/** 纯 JS SHA-256（secure context 不可用时）。 */
+/** 纯 JS SHA-256（任意 HTTP/HTTPS 环境可用）。 */
 export function sha256HexPure(data: Uint8Array): string {
   const K = new Uint32Array([
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -57,7 +61,7 @@ export function sha256HexPure(data: Uint8Array): string {
     for (let i = 0; i < 64; i++) {
       const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
       const ch = (e & f) ^ (~e & g);
-      const t1 = (hh + S1 + ch + K[i] + w[i]) >>> 0;
+      const t1 = (hh + S1 + ch + K[i]! + w[i]!) >>> 0;
       const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
       const maj = (a & b) ^ (a & c) ^ (b & c);
       const t2 = (S0 + maj) >>> 0;
@@ -92,14 +96,23 @@ export function sha256HexPure(data: Uint8Array): string {
   return bytesToHex(out);
 }
 
-export function hasSubtleDigest(): boolean {
-  return typeof crypto !== "undefined" && !!crypto.subtle?.digest;
+function canUseSubtleDigest(): boolean {
+  try {
+    if (typeof globalThis === "undefined") return false;
+    if ("isSecureContext" in globalThis && !globalThis.isSecureContext) return false;
+    const subtle = globalThis.crypto?.subtle;
+    return typeof subtle?.digest === "function";
+  } catch {
+    return false;
+  }
 }
 
+/** 通用：HTTPS 等 secure context 下可尝试 subtle，否则纯 JS。 */
 export async function sha256HexFromBytes(data: Uint8Array): Promise<string> {
-  if (hasSubtleDigest()) {
+  if (canUseSubtleDigest()) {
     try {
-      const hash = await crypto.subtle.digest("SHA-256", data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
+      const slice = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+      const hash = await globalThis.crypto!.subtle!.digest("SHA-256", slice);
       return bytesToHex(new Uint8Array(hash));
     } catch {
       /* fall through */
@@ -108,7 +121,30 @@ export async function sha256HexFromBytes(data: Uint8Array): Promise<string> {
   return sha256HexPure(data);
 }
 
-export async function sha256HexFromFile(file: File): Promise<string> {
+/**
+ * 知识库批量上传专用：永不调用 crypto.subtle（HTTP 内网生产环境）。
+ * 让出主线程，避免大文件哈希卡顿。
+ */
+export async function sha256HexFromFileForUpload(file: File): Promise<string> {
   const buf = await file.arrayBuffer();
-  return sha256HexFromBytes(new Uint8Array(buf));
+  const bytes = new Uint8Array(buf);
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      try {
+        resolve(sha256HexPure(bytes));
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error("文件指纹计算失败"));
+      }
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => run(), { timeout: 3000 });
+    } else {
+      setTimeout(run, 0);
+    }
+  });
+}
+
+/** @deprecated 上传请用 sha256HexFromFileForUpload */
+export async function sha256HexFromFile(file: File): Promise<string> {
+  return sha256HexFromFileForUpload(file);
 }

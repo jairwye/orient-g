@@ -1,5 +1,5 @@
 /** 与 backend.services.kb_documents.MY_DOC_UPLOAD_MAX_BYTES 保持一致 */
-import { sha256HexFromFile } from "../../lib/sha256";
+import { sha256HexFromFileForUpload } from "../../lib/sha256";
 
 export const KB_MY_DOC_MAX_BYTES = 20 * 1024 * 1024;
 export const KB_UPLOAD_CONCURRENCY = 3;
@@ -200,7 +200,7 @@ export async function runFolderIncrementalUpload(
     KB_UPLOAD_CONCURRENCY,
     async (file) => {
       try {
-        const h = await sha256HexFromFile(file);
+        const h = await sha256HexFromFileForUpload(file);
         hashByName.set(file.name, h);
       } catch {
         hashByName.set(file.name, "");
