@@ -282,7 +282,7 @@ type CompetitorReportSnapshot = {
 #### 4.4.2 上传 PDF zip（管理员 · Docling · 推荐）
 
 - **路径**：`POST /api/competitor/admin/vertical-ingest`
-- **请求**：`.zip` 内含各公司 `.pdf`（文件名须含 canonical 代号如 `wm`、`37`，或 `wm2025.pdf`）
+- **请求**：`.zip` 内含各公司 `.pdf`（文件名含 canonical 代号如 `wm`、`37`，或 `wm2025.pdf`；**生产中文文件名**须在 `{upload_dir}/competitor/vertical_company_rules.json` 或 `VERTICAL_COMPANY_RULES_JSON` 配置规则，不入 Git）
 - **响应**：`{ "ok": true, "job_id": "ving_…", "status": "queued" }`
 - **轮询**：`GET /api/competitor/admin/vertical-ingest/{job_id}`
 - **存储**：`vertical.snapshot.json`（页面生效）；共用 Docling，不走 bigpdf 知识库

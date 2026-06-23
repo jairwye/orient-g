@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
 import pytest
 
 from backend.services.vertical_company_resolve import (
@@ -45,6 +46,23 @@ def test_resolve_company_id_from_filename():
 
 def test_display_name_for_company():
     assert display_name_for_company("wm", "wm2025_report.pdf") == "wm_report"
+
+
+def test_runtime_rules_from_uploads_json(tmp_path, monkeypatch):
+    from backend.config import settings
+    from backend.services.vertical_company_resolve import reset_filename_rules_cache
+
+    comp = tmp_path / "competitor"
+    comp.mkdir(parents=True)
+    (comp / "vertical_company_rules.json").write_text(
+        json.dumps([{"id": "37", "patterns": ["peer_alpha"]}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "vertical_company_rules_json", None)
+    reset_filename_rules_cache()
+    assert resolve_company_id_from_filename("peer_alpha2025_report.pdf") == "37"
+    reset_filename_rules_cache()
 
 
 def test_normalize_docling_markdown_headings():

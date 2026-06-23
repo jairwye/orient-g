@@ -164,6 +164,8 @@ class Settings(BaseSettings):
 
     # 竞品财报：无 upload Snapshot 时回退到仓库内 YYCQ 蓝本 fixture（None=按 app_env：dev 开、production 关）
     competitor_fixture_fallback: bool | None = None
+    # 纵向 PDF zip：内网中文文件名 → canonical id 规则（JSON 数组，仅生产 .env；勿提交 Git）
+    vertical_company_rules_json: str | None = None
 
     @property
     def effective_competitor_fixture_fallback(self) -> bool:

@@ -580,8 +580,9 @@ export default function FinanceAdminPage() {
         </p>
         <ul className="mb-3 list-inside list-disc space-y-1 text-xs text-zinc-500">
           <li>
-            文件名须可识别公司（如 <code className="text-zinc-400">wm2025_report.pdf</code>、
-            <code className="text-zinc-400">37.pdf</code>；须含 canonical 代号 wm/37 等）。
+            文件名须含 canonical 代号（如 <code className="text-zinc-400">wm2025_report.pdf</code>、
+            <code className="text-zinc-400">37.pdf</code>），或已在 uploads 卷配置
+            <code className="text-zinc-400">competitor/vertical_company_rules.json</code> 匹配内网中文 PDF 名。
           </li>
           <li>解析产物写入 <code className="text-zinc-400">uploads/competitor/vertical.snapshot.json</code>。</li>
           <li>Docling 单线程排队，7 份 PDF 可能需数分钟；可离开页面后刷新查看进度。</li>

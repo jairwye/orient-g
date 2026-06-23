@@ -385,7 +385,7 @@ docker compose exec caddy caddy fmt --overwrite /etc/caddy/Caddyfile
 ## 扩展与协同
 
 - 首页摘要所用 API 约定见 [specs/api/api-contract.md](specs/api/api-contract.md)。
-- **竞品财报（1.2.3.c）**：侧栏 `/competitor`（须 `view_business_dashboard`）；行业汇析 MD 在财务后台上传；**纵向对比** `/competitor/vertical` — 推荐 `POST /api/competitor/admin/vertical-ingest` 上传 PDF zip（Docling → snapshot），可选 `upload-vertical` 覆写 MD。详见 [specs/features/1.2.3.c-竞品财报可视化.md](specs/features/1.2.3.c-竞品财报可视化.md)。
+- **竞品财报（1.2.3.c）**：侧栏 `/competitor`（须 `view_business_dashboard`）；行业汇析 MD 在财务后台上传；**纵向对比** `/competitor/vertical` — 推荐 `POST /api/competitor/admin/vertical-ingest` 上传 PDF zip（Docling → snapshot），可选 `upload-vertical` 覆写 MD。**生产**若 PDF 文件名为内网中文公司名，须在 uploads 卷放置 `competitor/vertical_company_rules.json`（见 `.env.example` `VERTICAL_COMPANY_RULES_JSON`）。详见 [specs/features/1.2.3.c-竞品财报可视化.md](specs/features/1.2.3.c-竞品财报可视化.md)。
 - 经营数据为**根路径 /**，`/business` 重定向至 `/`；其他细致页：`/competitor`、`/exchange`、`/policy-news`、`/knowledge`（知识库展位）、`/utils`（实用工具，含流程文档 `/utils/process-doc`、大 PDF 生知识库、「数据解析」等）。其中「数据解析」入口当前沿用路径 `/utils/excel-kanban`，目标是：用户上传电子表，通过本地 LLM + **MCP 风格 Tools** + 符合 [Agent Skills](https://agentskills.io) 习惯的 **Agent Skills**，以及工作空间登记的 **`prompt.*` 提示词资产**（见 [docs/agent-skills-glossary.md](docs/agent-skills-glossary.md)），对表格数据进行解析，生成可视化看板、整理为更符合逻辑和条理的表格视图，并完成信息归纳、专业评价与风险识别。**财务后台**默认路径为 `/finance`（可在财务后台内修改 `finance_path`）；**仅管理员**可进入财务后台上传经营 Excel、竞品财报 MD 等。
 - **股权全景（实验）**：`/equity` 及关联分析页用于内网导入后的公司股权架构与地理等可视化；**为临时增加能力，后续可能移除**，接口与页面行为以当前版本为准、不作为长期对外契约。
 - 项目更新记录见 [changelog.md](changelog.md)。当前版本 **1.2.1.1**：股权全景实验能力、文档与规划修正等见 changelog。

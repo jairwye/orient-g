@@ -107,7 +107,10 @@ def run_vertical_ingest_job(job_id: str, *, uploaded_by: str, source_filename: s
             if len(names) > 5:
                 sample += f" 等 {len(names)} 个"
             raise ValueError(
-                f"无法从文件名识别公司（请含 canonical 代号如 wm、37，或 wm2025.pdf）。"
+                "无法从文件名识别公司。"
+                " 请在 PDF 文件名中含 canonical 代号（如 wm、37），"
+                "或在 uploads/competitor/vertical_company_rules.json 配置内网中文名规则"
+                "（亦可设环境变量 VERTICAL_COMPANY_RULES_JSON）。"
                 f" zip 内 PDF：{sample}"
             )
 
