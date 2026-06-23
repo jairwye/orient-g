@@ -17,6 +17,13 @@ export function VerticalPreservedText({
   return (
     <div className={`w-full max-w-none space-y-3 text-sm leading-relaxed text-zinc-400 ${className}`}>
       {blocks.map((block, i) => {
+        if (block.startsWith("__subhead__:")) {
+          return (
+            <h4 key={i} className="pt-1 text-sm font-medium text-zinc-200">
+              {block.slice("__subhead__:".length)}
+            </h4>
+          );
+        }
         if (block.startsWith("|")) {
           return (
             <pre

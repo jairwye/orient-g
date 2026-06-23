@@ -37,7 +37,7 @@ export function Sec10DetailLinks({ snapshot }: SectionProps) {
                     财务后台
                   </Link>
                   {" "}
-                  上传「纵向分析 Markdown」。
+                  上传「纵向分析 PDF zip」或 Markdown。
                 </p>
               ) : (
                 <ul className="grid gap-3 sm:grid-cols-2">

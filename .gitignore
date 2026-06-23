@@ -146,3 +146,5 @@ backend/scripts/repair_jingpin_management_share.py
 backend/scripts/cleanup_finance_test_users.py
 backend/uploads/
 scripts/vertical_report_from_pdf.py
+_tmp_extract/
+scripts/run_vertical_ingest_wm.py

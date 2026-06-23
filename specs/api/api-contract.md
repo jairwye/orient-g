@@ -273,31 +273,27 @@ type CompetitorReportSnapshot = {
 
 ### 4.4 纵向对比报告（`view_business_dashboard`）
 
-#### 4.4.1 上传（管理员）
+#### 4.4.1 上传 MD（管理员 · 人工修正）
 
 - **路径**：`POST /api/competitor/admin/upload-vertical`
 - **请求**：`multipart/form-data`，字段 `file`（`.md`，UTF-8；须含 `## 1. 公司名` 等公司章节）
-- **成功响应**：
+- **存储**：`vertical_report.md` + `vertical.snapshot.json`
 
-```json
-{
-  "ok": true,
-  "meta": { "title": "各公司纵向对比", "uploaded_at": "…", "uploaded_by": "admin", "source_filename": "vertical_report_example.md", "company_count": 7 },
-  "warnings": [],
-  "companies_parsed": 7
-}
-```
+#### 4.4.2 上传 PDF zip（管理员 · Docling · 推荐）
 
-- **存储**：`{upload_dir}/competitor/vertical_report.md`（历史副本在 `competitor/history/`）
-- **错误**：400 解析失败；403 非管理员；413 文件过大
+- **路径**：`POST /api/competitor/admin/vertical-ingest`
+- **请求**：`.zip` 内含各公司 `.pdf`（文件名须含 canonical 代号如 `wm`、`37`，或 `wm2025.pdf`）
+- **响应**：`{ "ok": true, "job_id": "ving_…", "status": "queued" }`
+- **轮询**：`GET /api/competitor/admin/vertical-ingest/{job_id}`
+- **存储**：`vertical.snapshot.json`（页面生效）；共用 Docling，不走 bigpdf 知识库
 
-#### 4.4.2 读取
+#### 4.4.3 读取
 
 - **路径**：`GET /api/competitor/vertical-report`
-- **响应**：`VerticalReportSnapshot`（见下）
+- **响应**：`VerticalReportSnapshot`（见下）；优先读 `vertical.snapshot.json`
 - **404**：`{ "detail": "no_vertical_report" }` — 生产环境未上传且无 fixture 回退
 - **路径**：`GET /api/competitor/vertical-report/meta` — 仅 `meta` + `warnings` + `company_count`
-- **说明**：展示路由 `/competitor/vertical`；财务后台上传区；公司 `id` 按章节顺序映射 canonical peer slug（`37`/`wm`/…），**展示名**来自 MD 原文
+- **说明**：展示路由 `/competitor/vertical`；财务后台上传区；公司 `id` 按章节顺序映射 canonical peer slug（`37`/`wm`/…），**展示名**来自 PDF 文件名或 MD 原文
 
 ```ts
 type VerticalReportSnapshot = {

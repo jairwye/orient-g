@@ -58,11 +58,7 @@ export default function VerticalComparePage() {
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">纵向对比</h1>
         <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
           <p className="max-w-md text-sm text-zinc-500">
-            暂无纵向分析报告。请管理员在财务后台上传「纵向分析 Markdown」（须含
-            {" "}
-            <code className="text-zinc-400">## 1. 公司名</code>
-            {" "}
-            章节）。
+            暂无纵向分析报告。请管理员在财务后台上传「纵向分析 PDF zip」（7 家公司 PDF，Docling 自动解析），或上传修正后的 Markdown。
           </p>
           <Link
             href={finance_path || "/finance"}

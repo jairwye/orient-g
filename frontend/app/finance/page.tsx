@@ -7,6 +7,55 @@ import { DEFAULT_EQUITY_SNAPSHOT, useEquitySnapshotName } from "../lib/equitySna
 
 const DEFAULT_FINANCE_PATH = "/finance";
 
+function dedupeWarnings(warnings: string[]): string[] {
+  const seen = new Set<string>();
+  return warnings.filter((w) => {
+    if (seen.has(w)) return false;
+    seen.add(w);
+    return true;
+  });
+}
+
+function ParseWarningList({
+  warnings,
+  label,
+  maxShow = 50,
+}: {
+  warnings: string[];
+  label?: string;
+  maxShow?: number;
+}) {
+  const items = dedupeWarnings(warnings);
+  if (items.length === 0) return null;
+  const copyAll = () => {
+    void navigator.clipboard.writeText(items.join("\n"));
+  };
+  return (
+    <div className="mt-3 rounded-md border border-amber-900/40 bg-amber-950/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-amber-500/90">
+          {label ?? "解析告警"}（{items.length} 条）
+        </p>
+        <button
+          type="button"
+          onClick={copyAll}
+          className="text-xs text-amber-400/80 hover:text-amber-300"
+        >
+          复制全部
+        </button>
+      </div>
+      <ul className="mt-2 max-h-48 overflow-y-auto text-xs text-amber-400/90">
+        {items.slice(0, maxShow).map((w, i) => (
+          <li key={`${i}-${w}`} className="border-b border-amber-900/20 py-0.5 last:border-0">
+            {w}
+          </li>
+        ))}
+        {items.length > maxShow && <li className="pt-1 text-amber-500/70">…另有 {items.length - maxShow} 条告警</li>}
+      </ul>
+    </div>
+  );
+}
+
 type BundleImportResult = {
   ok: boolean;
   snapshot_name: string;
@@ -38,8 +87,34 @@ export default function FinanceAdminPage() {
 
   const [verticalUploading, setVerticalUploading] = useState(false);
   const [verticalMessage, setVerticalMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [verticalWarnings, setVerticalWarnings] = useState<string[]>([]);
+  const [verticalMessageSource, setVerticalMessageSource] = useState<"zip" | "md" | null>(null);
+  /** 当前 vertical.snapshot.json 中的解析告警（页面加载时从 meta 拉取，上传完成后刷新） */
+  const [verticalSnapshotWarnings, setVerticalSnapshotWarnings] = useState<string[]>([]);
   const verticalFileRef = useRef<HTMLInputElement>(null);
+
+  const [verticalIngestUploading, setVerticalIngestUploading] = useState(false);
+  const [verticalIngestJobId, setVerticalIngestJobId] = useState<string | null>(null);
+  const [verticalIngestStatus, setVerticalIngestStatus] = useState<{
+    status?: string;
+    progress?: number;
+    current_company?: string;
+    companies_done?: number;
+    companies_total?: number;
+    error?: string;
+    warnings?: string[];
+  } | null>(null);
+  const verticalIngestFileRef = useRef<HTMLInputElement>(null);
+
+  const refreshVerticalSnapshotWarnings = () => {
+    fetch("/api/competitor/vertical-report/meta", { credentials: "include", headers: getAuthHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((meta: { warnings?: string[] } | null) => {
+        if (meta && Array.isArray(meta.warnings)) {
+          setVerticalSnapshotWarnings(meta.warnings);
+        }
+      })
+      .catch(() => {});
+  };
 
   useEffect(() => {
     fetch("/api/settings", { credentials: "include", headers: getAuthHeaders() })
@@ -50,6 +125,7 @@ export default function FinanceAdminPage() {
         setFinancePathEdit(p);
       })
       .catch(() => {});
+    refreshVerticalSnapshotWarnings();
   }, []);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -163,7 +239,7 @@ export default function FinanceAdminPage() {
     if (!file) return;
     e.target.value = "";
     setVerticalMessage(null);
-    setVerticalWarnings([]);
+    setVerticalMessageSource("md");
     setVerticalUploading(true);
     try {
       const form = new FormData();
@@ -180,7 +256,11 @@ export default function FinanceAdminPage() {
           (Array.isArray(data.detail) ? data.detail[0]?.msg : undefined);
         throw new Error(msg ?? "上传失败");
       }
-      setVerticalWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      if (Array.isArray(data.warnings)) {
+        setVerticalSnapshotWarnings(data.warnings);
+      } else {
+        refreshVerticalSnapshotWarnings();
+      }
       setVerticalMessage({
         type: "success",
         text: `已解析 ${data.companies_parsed ?? 0} 家公司纵向分析。详情链接屏与「纵向对比」页已更新。`,
@@ -192,6 +272,89 @@ export default function FinanceAdminPage() {
       });
     } finally {
       setVerticalUploading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!verticalIngestJobId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/competitor/admin/vertical-ingest/${encodeURIComponent(verticalIngestJobId)}`, {
+          credentials: "include",
+          headers: getAuthHeaders(),
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        setVerticalIngestStatus(data);
+        if (data.status === "completed") {
+          setVerticalIngestUploading(false);
+          if (Array.isArray(data.warnings)) {
+            setVerticalSnapshotWarnings(data.warnings);
+          } else {
+            refreshVerticalSnapshotWarnings();
+          }
+          setVerticalMessage({
+            type: "success",
+            text: `Docling 解析完成，共 ${data.companies_parsed ?? data.companies_done ?? 0} 家公司。纵向对比页已更新。`,
+          });
+          setVerticalMessageSource("zip");
+          setVerticalIngestJobId(null);
+          return;
+        }
+        if (data.status === "failed") {
+          setVerticalIngestUploading(false);
+          setVerticalMessage({
+            type: "error",
+            text: typeof data.error === "string" ? data.error : "纵向 PDF 解析失败",
+          });
+          setVerticalMessageSource("zip");
+          setVerticalIngestJobId(null);
+          return;
+        }
+      } catch {
+        /* retry on next tick */
+      }
+      if (!cancelled) window.setTimeout(poll, 3000);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [verticalIngestJobId]);
+
+  const handleVerticalIngestUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setVerticalMessage(null);
+    setVerticalMessageSource("zip");
+    setVerticalIngestStatus(null);
+    setVerticalIngestUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/competitor/admin/vertical-ingest", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg =
+          (typeof data.detail === "string" ? data.detail : undefined) ??
+          (Array.isArray(data.detail) ? data.detail[0]?.msg : undefined);
+        throw new Error(msg ?? "上传失败");
+      }
+      setVerticalIngestJobId(String(data.job_id || ""));
+      setVerticalIngestStatus({ status: "queued", progress: 0 });
+    } catch (err) {
+      setVerticalIngestUploading(false);
+      setVerticalMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "上传失败",
+      });
+      setVerticalMessageSource("zip");
     }
   };
 
@@ -406,28 +569,74 @@ export default function FinanceAdminPage() {
             </Link>
           </p>
         )}
-        {competitorWarnings.length > 0 && (
-          <ul className="mt-3 max-h-32 overflow-y-auto text-xs text-amber-400/90">
-            {competitorWarnings.slice(0, 20).map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-            {competitorWarnings.length > 20 && (
-              <li>…另有 {competitorWarnings.length - 20} 条告警</li>
-            )}
-          </ul>
-        )}
+        <ParseWarningList warnings={competitorWarnings} label="竞品汇析解析告警" />
       </div>
 
-      {/* 5. 上传纵向分析 MD */}
+      {/* 5. 上传纵向分析 PDF zip（Docling） */}
       <div className="mb-6 max-w-2xl rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
-        <h2 className="mb-3 text-sm font-medium text-zinc-300">上传纵向分析（Markdown）</h2>
+        <h2 className="mb-3 text-sm font-medium text-zinc-300">上传纵向分析 PDF（zip · Docling）</h2>
         <p className="mb-2 text-xs text-zinc-500">
-          上传后供竞品财报「详情链接」屏与「纵向对比」页（`/competitor/vertical`）展示；与行业汇析 MD 为独立文件。
+          推荐生产路径：将 7 家公司纵向分析 PDF 打成一个 zip 上传，后台 Docling 解析后写入纵向对比页（深色 DataTable，非 PDF 嵌入）。
         </p>
         <ul className="mb-3 list-inside list-disc space-y-1 text-xs text-zinc-500">
-          <li>须含 <code className="text-zinc-400">## 1. 公司名</code> 形式的公司章节（如各公司纵向分析报告）。</li>
-          <li>解析产物写入 <code className="text-zinc-400">uploads/competitor/vertical_report.md</code>。</li>
-          <li>生产环境须在此上传；本地开发未上传时可回退 tests/fixtures 预览数据。</li>
+          <li>
+            文件名须可识别公司（如 <code className="text-zinc-400">wm2025_report.pdf</code>、
+            <code className="text-zinc-400">37.pdf</code>；须含 canonical 代号 wm/37 等）。
+          </li>
+          <li>解析产物写入 <code className="text-zinc-400">uploads/competitor/vertical.snapshot.json</code>。</li>
+          <li>Docling 单线程排队，7 份 PDF 可能需数分钟；可离开页面后刷新查看进度。</li>
+          <li>不走「大 PDF 知识库」队列；与 <code className="text-zinc-400">/utils/pdf-knowledge</code> 独立。</li>
+        </ul>
+        <input
+          ref={verticalIngestFileRef}
+          type="file"
+          accept=".zip,application/zip"
+          className="hidden"
+          onChange={handleVerticalIngestUpload}
+          disabled={verticalIngestUploading}
+        />
+        <button
+          type="button"
+          onClick={() => verticalIngestFileRef.current?.click()}
+          disabled={verticalIngestUploading}
+          className="rounded-md border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+        >
+          {verticalIngestUploading ? "解析中…" : "选择并上传 PDF zip"}
+        </button>
+        {verticalIngestUploading && verticalIngestStatus ? (
+          <p className="mt-3 text-sm text-zinc-400">
+            {verticalIngestStatus.status === "running" && verticalIngestStatus.current_company
+              ? `正在解析：${verticalIngestStatus.current_company}（${verticalIngestStatus.companies_done ?? 0}/${verticalIngestStatus.companies_total ?? "?"}）`
+              : "已排队，等待 Docling…"}
+            {typeof verticalIngestStatus.progress === "number" ? ` · ${verticalIngestStatus.progress}%` : ""}
+          </p>
+        ) : null}
+        {verticalMessage && verticalMessageSource === "zip" ? (
+          <p className={`mt-3 text-sm ${verticalMessage.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
+            {verticalMessage.text}
+          </p>
+        ) : null}
+        {verticalMessage?.type === "success" && verticalMessageSource === "zip" ? (
+          <p className="mt-2">
+            <Link href="/competitor/vertical" className="text-sm text-blue-400 hover:text-blue-300">
+              打开纵向对比页 →
+            </Link>
+          </p>
+        ) : null}
+        <ParseWarningList
+          warnings={verticalSnapshotWarnings}
+          label="当前 snapshot 解析告警（含 dual value 等，刷新页面仍可查看）"
+        />
+      </div>
+
+      {/* 6. 上传纵向分析 MD（人工修正） */}
+      <div className="mb-6 max-w-2xl rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
+        <h2 className="mb-3 text-sm font-medium text-zinc-300">上传纵向分析（Markdown · 人工修正）</h2>
+        <p className="mb-2 text-xs text-zinc-500">
+          可选：Docling 解析后若少数表格需修正，可编辑 MD 后在此覆写；须含 <code className="text-zinc-400">## 1. 公司名</code> 章节。
+        </p>
+        <ul className="mb-3 list-inside list-disc space-y-1 text-xs text-zinc-500">
+          <li>同时写入 <code className="text-zinc-400">vertical_report.md</code> 与 <code className="text-zinc-400">vertical.snapshot.json</code>。</li>
         </ul>
         <input
           ref={verticalFileRef}
@@ -445,11 +654,11 @@ export default function FinanceAdminPage() {
         >
           {verticalUploading ? "上传解析中…" : "选择并上传 .md"}
         </button>
-        {verticalMessage && (
+        {verticalMessage && verticalMessageSource === "md" ? (
           <p className={`mt-3 text-sm ${verticalMessage.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
             {verticalMessage.text}
           </p>
-        )}
+        ) : null}
         {verticalMessage?.type === "success" && (
           <p className="mt-2">
             <Link href="/competitor/vertical" className="text-sm text-blue-400 hover:text-blue-300">
@@ -457,16 +666,9 @@ export default function FinanceAdminPage() {
             </Link>
           </p>
         )}
-        {verticalWarnings.length > 0 && (
-          <ul className="mt-3 max-h-32 overflow-y-auto text-xs text-amber-400/90">
-            {verticalWarnings.slice(0, 20).map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-            {verticalWarnings.length > 20 && (
-              <li>…另有 {verticalWarnings.length - 20} 条告警</li>
-            )}
-          </ul>
-        )}
+        {verticalMessageSource === "md" ? (
+          <ParseWarningList warnings={verticalSnapshotWarnings} label="本次 MD 上传解析告警" />
+        ) : null}
       </div>
 
       {/* 3. 设置财务后台路径 */}

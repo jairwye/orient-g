@@ -1,7 +1,7 @@
 "use client";
 
 import { DataTable } from "./DataTable";
-import { FormattedNarrativeBody } from "./NarrativeBlock";
+import { VerticalPreservedText } from "./VerticalPreservedText";
 import { FadeInView } from "./FadeInView";
 import type { VerticalReportBlock } from "../lib/vertical_types";
 
@@ -41,7 +41,7 @@ export function VerticalReportBody({ blocks }: { blocks: VerticalReportBlock[] }
         if (block.kind === "narrative" && block.markdown?.trim()) {
           return (
             <FadeInView key={i} className="w-full" delayMs={Math.min(i * 40, 200)}>
-              <FormattedNarrativeBody markdown={block.markdown} plain delayMs={0} immediate />
+              <VerticalPreservedText markdown={block.markdown} />
             </FadeInView>
           );
         }

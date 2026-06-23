@@ -1,6 +1,7 @@
 """纵向对比报告 MD 读取与存储（{upload_dir}/competitor/vertical_report.md）。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from backend.services.competitor_report_store import competitor_dir, history_dir
 from backend.services.vertical_report_parser import parse_vertical_report
 
 VERTICAL_FILENAME = "vertical_report.md"
+VERTICAL_SNAPSHOT_FILENAME = "vertical.snapshot.json"
 # 内网蓝本常用文件名（gitignore；开发机可手动放置，生产须走财务后台上传）
 VERTICAL_BLUEPRINT_NAMES = (
     VERTICAL_FILENAME,
@@ -48,7 +50,34 @@ def _annotate_doc(doc: dict[str, Any], *, path: Path) -> dict[str, Any]:
     return out
 
 
+def vertical_snapshot_path() -> Path:
+    return competitor_dir() / VERTICAL_SNAPSHOT_FILENAME
+
+
+def _read_snapshot_file() -> dict[str, Any] | None:
+    path = vertical_snapshot_path()
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+
+
+def save_vertical_snapshot(snapshot: dict[str, Any]) -> None:
+    d = competitor_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    vertical_snapshot_path().write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def load_vertical_report() -> dict[str, Any] | None:
+    snap = _read_snapshot_file()
+    if snap is not None:
+        return snap
+
     include_fixture = settings.effective_competitor_fixture_fallback
     for path in _candidate_paths(include_fixture=include_fixture):
         if path.is_file():
@@ -59,7 +88,7 @@ def load_vertical_report() -> dict[str, Any] | None:
 
 
 def is_fixture_vertical_report() -> bool:
-    if vertical_md_path().is_file():
+    if vertical_snapshot_path().is_file() or vertical_md_path().is_file():
         return False
     include_fixture = settings.effective_competitor_fixture_fallback
     return include_fixture and FIXTURE_PATH.is_file()
@@ -87,6 +116,7 @@ def save_vertical_report(
     d = competitor_dir()
     d.mkdir(parents=True, exist_ok=True)
     vertical_md_path().write_bytes(raw_bytes)
+    save_vertical_snapshot(doc)
 
     history_dir().mkdir(parents=True, exist_ok=True)
     ts = now.replace(":", "-")

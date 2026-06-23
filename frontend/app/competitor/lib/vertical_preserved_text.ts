@@ -33,7 +33,13 @@ export function splitVerticalParagraphs(markdown: string): string[] {
       blocks.push(line);
       continue;
     }
-    if (/^\d+\./.test(line) || /^[·•]/.test(line)) {
+    const subhead = line.match(/^\*\*(.+)\*\*$/);
+    if (subhead) {
+      flush();
+      blocks.push(`__subhead__:${subhead[1]}`);
+      continue;
+    }
+    if (/^-\s+/.test(line) || /^\d+\./.test(line) || /^[·•]/.test(line)) {
       flush();
       buf = [line];
       continue;
