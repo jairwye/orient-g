@@ -46,6 +46,14 @@ class TestResolveDoclingArgv(unittest.TestCase):
                     self.assertEqual(dr.resolve_docling_argv(), [str(py.resolve()), "-m", "docling"])
 
 
+class TestDoclingServeV1Base(unittest.TestCase):
+    def test_appends_v1_when_missing(self):
+        self.assertEqual(dr.docling_serve_v1_base("http://docling:5001"), "http://docling:5001/v1")
+
+    def test_keeps_existing_v1(self):
+        self.assertEqual(dr.docling_serve_v1_base("http://docling:5001/v1"), "http://docling:5001/v1")
+
+
 class TestConvertHttp(unittest.TestCase):
     def test_writes_full_md_and_json(self):
         out = Path(tempfile.mkdtemp())
@@ -91,13 +99,21 @@ class TestConvertHttp(unittest.TestCase):
                     )
                 return FakeResp({})
 
+        posted_urls: list[str] = []
+
+        class FakeClientWithUrls(FakeClient):
+            def post(self, url, files=None):
+                posted_urls.append(url)
+                return super().post(url, files=files)
+
         with patch.object(dr.settings, "docling_mode", "http"):
-            with patch.object(dr.settings, "docling_http_base_url", "http://docling:8080"):
-                with patch.object(dr.httpx, "Client", FakeClient):
+            with patch.object(dr.settings, "docling_http_base_url", "http://docling:5001"):
+                with patch.object(dr.httpx, "Client", FakeClientWithUrls):
                     with patch.object(dr.time, "sleep", lambda _s: None):
                         arc = out / "archive"
                         arc.mkdir(exist_ok=True)
                         res = dr.convert_to_md_and_json(src, output_dir=arc)
+        self.assertEqual(posted_urls[0], "http://docling:5001/v1/convert/file/async")
         self.assertEqual(res.markdown_path, arc / "full.md")
         self.assertEqual(res.json_path, arc / "full.json")
         self.assertEqual((arc / "full.md").read_text(encoding="utf-8"), "# Title\n")

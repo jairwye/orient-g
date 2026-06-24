@@ -88,7 +88,7 @@ services:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       AUTH_SECRET: ${AUTH_SECRET:-orient-g-auth-secret-change-in-production}
       DOCLING_MODE: ${DOCLING_MODE:-http}
-      DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:5001}
+      DOCLING_HTTP_BASE_URL: ${DOCLING_HTTP_BASE_URL:-http://docling:5001/v1}
       HERMES_ENABLED: ${HERMES_ENABLED:-false}
       HERMES_BASE_URL: ${HERMES_BASE_URL:-}
       HERMES_INTERNAL_TOKEN: ${HERMES_INTERNAL_TOKEN:-}

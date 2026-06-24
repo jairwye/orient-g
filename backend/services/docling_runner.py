@@ -164,6 +164,16 @@ def _save_task_position(tenant_id: str, kb_task_id: str, task_position: int) -> 
         pass
 
 
+def docling_serve_v1_base(base_url: str) -> str:
+    """docling-serve 官方 REST API 根路径须含 /v1（见 docling-project/docling-serve docs）。"""
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        return base
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
+
+
 def _convert_http(
     source_path: Path,
     output_dir: Path,
@@ -172,10 +182,11 @@ def _convert_http(
     tenant_id: str = "",
     kb_task_id: str = "",
 ) -> DoclingResult:
-    base = (settings.docling_http_base_url or "").strip().rstrip("/")
-    if not base:
+    raw_base = (settings.docling_http_base_url or "").strip().rstrip("/")
+    if not raw_base:
         raise RuntimeError("DOCLING_MODE=http 但未配置 DOCLING_HTTP_BASE_URL")
-    assert_upstream_allowed(base, service_name="Docling")
+    assert_upstream_allowed(raw_base, service_name="Docling")
+    base = docling_serve_v1_base(raw_base)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # docling-serve 官方 API：POST /v1/convert/file/async → 轮询 → GET /v1/result/{task_id}
