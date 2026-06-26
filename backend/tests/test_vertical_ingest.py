@@ -1,4 +1,4 @@
-"""vertical zip ingest API（mock Docling）。"""
+"""vertical zip ingest API（mock Docling）与 PDF 仅存档。"""
 from __future__ import annotations
 
 import io
@@ -13,9 +13,20 @@ from fastapi.testclient import TestClient
 
 from backend.config import settings
 from backend.main import app
+from backend.services.vertical_company_resolve import reset_filename_rules_cache
 from backend.services.vertical_ingest import run_vertical_ingest_job
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+
+CN_PDF_NAMES = [
+    "三七互娱2025年度报告分析解读.pdf",
+    "掌趣科技2025年度报告分析解读.pdf",
+    "完美世界2025年度报告分析解读.pdf",
+    "塔人网络2025年度报告分析解读.pdf",
+    "华清飞扬2025年度报告分析解读.pdf",
+    "像素软件2025年度报告分析解读.pdf",
+    "绿岸网络2025年度报告分析解读.pdf",
+]
 
 
 def _token(username: str) -> str:
@@ -167,3 +178,26 @@ def test_vertical_ingest_job_flow(tmp_path, monkeypatch):
     assert snap_path.is_file()
     snap = json.loads(snap_path.read_text(encoding="utf-8"))
     assert len(snap.get("companies") or []) >= 1
+
+
+def test_vertical_pdf_zip_cn_filenames(client: TestClient, tmp_path, monkeypatch):
+    """POST vertical-pdf-zip：内网中文 PDF 文件名须全部识别。"""
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "vertical_builtin_filename_rules", None)
+    reset_filename_rules_cache()
+    pdfs = tuple((name, b"%PDF-1.4 x") for name in CN_PDF_NAMES)
+    zip_bytes = _make_zip(*pdfs)
+    r = client.post(
+        "/api/competitor/admin/vertical-pdf-zip",
+        headers=_headers("admin"),
+        files={"file": ("7pdf.zip", zip_bytes, "application/zip")},
+    )
+    reset_filename_rules_cache()
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data.get("ok") is True
+    assert data.get("companies_parsed") == 7
+    meta_path = tmp_path / "competitor" / "vertical" / "pdfs" / "meta.json"
+    assert meta_path.is_file()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta.get("company_count") == 7

@@ -66,3 +66,23 @@ export const WORKFLOW_WIP_CLASS = {
   cardBorder:
     "border border-dashed border-blue-900/45 bg-blue-950/15 hover:border-blue-800/55 hover:bg-blue-950/25",
 } as const;
+
+/** 工作流「规划中」：zinc 虚线，弱于开发中 */
+export const WORKFLOW_PLANNED_CLASS = {
+  listRowBorder: "border border-dashed border-zinc-700/50 bg-zinc-900/20 hover:bg-zinc-900/30",
+  listTitle: "text-zinc-400",
+  badge:
+    "rounded border border-zinc-600/40 bg-zinc-800/40 px-1.5 py-0.5 text-[10px] font-medium leading-none text-zinc-500",
+  chipBorder: "border border-dashed border-zinc-700/55 text-zinc-400",
+  chipBadge: "rounded bg-zinc-800/50 px-1 py-px text-[10px] font-medium leading-none text-zinc-500",
+} as const;
+
+/** 工作流「测试中」：与正向绿 #22c55e 同色系 */
+export const WORKFLOW_TESTING_CLASS = {
+  listRowBorder: "border border-dashed border-emerald-900/45 bg-emerald-950/15 hover:bg-emerald-950/25",
+  listTitle: "text-zinc-400",
+  badge:
+    "rounded border border-emerald-600/35 bg-emerald-600/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-emerald-400/95",
+  chipBorder: "border border-dashed border-emerald-900/50 text-zinc-400",
+  chipBadge: "rounded bg-emerald-600/15 px-1 py-px text-[10px] font-medium leading-none text-emerald-400/90",
+} as const;

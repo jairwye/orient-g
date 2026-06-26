@@ -285,9 +285,16 @@ type CompetitorReportSnapshot = {
 - **请求**：`.zip` 内含各公司 `.pdf`（文件名含 canonical 代号如 `wm`、`37`，或 `wm2025.pdf`；**生产中文文件名**须在 `{upload_dir}/competitor/vertical_company_rules.json` 或 `VERTICAL_COMPANY_RULES_JSON` 配置规则，不入 Git）
 - **响应**：`{ "ok": true, "job_id": "ving_…", "status": "queued" }`
 - **轮询**：`GET /api/competitor/admin/vertical-ingest/{job_id}`
-- **存储**：`vertical.snapshot.json`（页面生效）；共用 Docling，不走 bigpdf 知识库
+- **存储**：`vertical.snapshot.json`（页面生效）；**同时**存档原 PDF 至 `vertical/pdfs/`（见 4.4.4）；共用 Docling，不走 bigpdf 知识库
 
-#### 4.4.3 读取
+#### 4.4.4 纵向 PDF 直显（管理员 · 仅存档 / 读取）
+
+- **路径**：`POST /api/competitor/admin/vertical-pdf-zip` — 上传 `.zip`（7 家 PDF），**不调用 Docling**，仅写入 `vertical/pdfs/{company_id}.pdf` + `meta.json`
+- **路径**：`GET /api/competitor/vertical-pdf/meta` — PDF 存档元数据；404 表示无 PDF 存档
+- **路径**：`GET /api/competitor/vertical-pdf/{company_id}` — 鉴权后返回 PDF 文件（`company_id` 须匹配 `^[a-z0-9][a-z0-9_-]{0,31}$`）
+- **展示**：`/competitor/vertical` **优先** PDF 直显；无 PDF 存档时回退 `GET /vertical-report` snapshot 结构化展示
+
+#### 4.4.5 读取 snapshot
 
 - **路径**：`GET /api/competitor/vertical-report`
 - **响应**：`VerticalReportSnapshot`（见下）；优先读 `vertical.snapshot.json`

@@ -15,7 +15,8 @@
 
 - **Agent Skill**：`skill.finance.annual_report.v1`（竞品财报年报检索/对比）；`finance_annual_report_profile` 缓存与 Tier 0 narrative 补检索。
 - **浏览器矩阵验收**：CDP runner 每案 token 注入、validate 收紧（citations/过程稿/inline cite）；规制 §13 复测提示词。
-- **竞品财报纵向对比**：`GET /api/competitor/vertical-report`；`POST …/vertical-ingest`（PDF zip · Docling，推荐）；生产中文 PDF 名须配置 `uploads/competitor/vertical_company_rules.json`；`POST …/upload-vertical`（MD 人工修正）；展示 `/competitor/vertical`。
+- **竞品财报纵向对比**：`GET /api/competitor/vertical-report`；`POST …/vertical-ingest`（PDF zip · Docling，推荐）；`POST …/vertical-pdf-zip`（仅存档 PDF 直显）；生产中文 PDF 名内建规则或 `vertical_company_rules.json`；`POST …/upload-vertical`（MD 人工修正）；展示 `/competitor/vertical`（PDF 优先，无 PDF 时回退 snapshot）。
+- **AI 内网 UI**：常用工作流角标（开发中/测试中/规划中）、侧栏历史会话折叠展开、有对话时工作流 chip 紧凑布局。
 - **知识库增量上传**：文件夹级 hash 预检（`existing-source-hashes`）、子树 doc 计数；管理层 additive ACL share。
 
 ### Changed

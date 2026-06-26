@@ -1,23 +1,35 @@
 "use client";
 
 import { useMemo } from "react";
-import { buildVerticalScaleEntries } from "../lib/vertical_navigation";
+import {
+  buildVerticalScaleEntries,
+  buildVerticalScaleEntriesFromCompanies,
+  type VerticalCompanyNav,
+} from "../lib/vertical_navigation";
 import type { VerticalReportSnapshot } from "../lib/vertical_types";
 import type { CompetitorReportSnapshot } from "../lib/types";
 
 type Props = {
-  report: VerticalReportSnapshot;
+  report?: VerticalReportSnapshot | null;
+  navCompanies?: VerticalCompanyNav[];
   competitorSnapshot?: CompetitorReportSnapshot;
   activeSnapId: string;
   onNavigate: (id: string) => void;
 };
 
 /** 纵向对比页顶刻度：圆点 + 公司名（蓝本展示名） */
-export function VerticalProgressScale({ report, competitorSnapshot, activeSnapId, onNavigate }: Props) {
-  const entries = useMemo(
-    () => buildVerticalScaleEntries(report, competitorSnapshot),
-    [report, competitorSnapshot],
-  );
+export function VerticalProgressScale({
+  report,
+  navCompanies,
+  competitorSnapshot,
+  activeSnapId,
+  onNavigate,
+}: Props) {
+  const entries = useMemo(() => {
+    if (report) return buildVerticalScaleEntries(report, competitorSnapshot);
+    if (navCompanies?.length) return buildVerticalScaleEntriesFromCompanies(navCompanies);
+    return [];
+  }, [report, navCompanies, competitorSnapshot]);
 
   return (
     <nav

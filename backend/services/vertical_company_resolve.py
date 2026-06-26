@@ -1,9 +1,8 @@
 """纵向 PDF 文件名 → canonical company id / 展示名。
 
-公开仓库默认仅含 canonical 代号规则（wm/37…）。内网中文 PDF 名可通过：
-1. `{upload_dir}/competitor/vertical_company_rules.json`（uploads 卷，推荐覆盖）
-2. 环境变量 `VERTICAL_COMPANY_RULES_JSON`
-3. 生产部署且未显式配置 1/2 时，启用内建中文规则（`VERTICAL_BUILTIN_FILENAME_RULES=false` 可关）
+公开仓库默认含 canonical 代号规则（wm/37…）与内建中文 PDF 名关键词。
+内网可追加 `{upload_dir}/competitor/vertical_company_rules.json` 或 `VERTICAL_COMPANY_RULES_JSON`。
+公开 fork 若不需要内建中文名，设 `VERTICAL_BUILTIN_FILENAME_RULES=false`。
 """
 from __future__ import annotations
 
@@ -65,14 +64,8 @@ def has_explicit_runtime_rules_config() -> bool:
 def _should_use_builtin_cn_rules() -> bool:
     if settings.vertical_builtin_filename_rules is False:
         return False
-    if has_explicit_runtime_rules_config():
-        return False
-    if settings.vertical_builtin_filename_rules is True:
-        return True
-    if settings.app_env == "production":
-        return True
-    # compose 生产常设 COMPETITOR_FIXTURE_FALLBACK=false 但未设 APP_ENV 时仍启用
-    return not settings.effective_competitor_fixture_fallback
+    # 内网 7 家中文 PDF 文件名为常态；公开 fork 请设 VERTICAL_BUILTIN_FILENAME_RULES=false
+    return True
 
 
 def _rules_from_json_payload(payload: object) -> list[tuple[str, re.Pattern[str]]]:

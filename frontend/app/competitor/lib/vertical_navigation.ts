@@ -43,7 +43,15 @@ export function buildVerticalScaleEntries(
   data: VerticalReportSnapshot,
   competitorSnapshot?: CompetitorReportSnapshot,
 ): VerticalScaleEntry[] {
-  return verticalCompaniesForDisplay(data, competitorSnapshot).map((c) => ({
+  return buildVerticalScaleEntriesFromCompanies(
+    verticalCompaniesForDisplay(data, competitorSnapshot),
+  );
+}
+
+export function buildVerticalScaleEntriesFromCompanies(
+  companies: VerticalCompanyNav[],
+): VerticalScaleEntry[] {
+  return companies.map((c) => ({
     snapId: c.snapId,
     fullLabel: c.name,
     kind: "main" as const,

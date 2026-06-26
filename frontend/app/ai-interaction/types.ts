@@ -30,8 +30,13 @@ export type HermesStreamStats = {
   delta_chars?: number;
   tool_progress_events?: number;
   tool_call_events?: number;
+  /** Hermes Runs 进程内 orientg_kb_ask（A 路线主指标） */
+  hermes_orientg_kb_ask_calls?: number;
+  /** Orient-G 网关：预检索 + primer + 补检索 */
+  gateway_orientg_kb_ask_calls?: number;
+  /** 合计（Hermes + 网关） */
   orientg_kb_ask_calls?: number;
-  /** Orient-G 网关在 Hermes 完成后执行的补检索次数 */
+  /** Orient-G 网关在 Hermes 完成后执行的补检索次数（gateway 子集） */
   orientg_kb_supplemental_calls?: number;
 };
 

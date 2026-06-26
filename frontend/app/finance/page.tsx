@@ -104,6 +104,8 @@ export default function FinanceAdminPage() {
     warnings?: string[];
   } | null>(null);
   const verticalIngestFileRef = useRef<HTMLInputElement>(null);
+  const verticalPdfOnlyFileRef = useRef<HTMLInputElement>(null);
+  const [verticalPdfOnlyUploading, setVerticalPdfOnlyUploading] = useState(false);
 
   const refreshVerticalSnapshotWarnings = () => {
     fetch("/api/competitor/vertical-report/meta", { credentials: "include", headers: getAuthHeaders() })
@@ -358,6 +360,42 @@ export default function FinanceAdminPage() {
     }
   };
 
+  const handleVerticalPdfOnlyUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setVerticalMessage(null);
+    setVerticalMessageSource("zip");
+    setVerticalPdfOnlyUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/competitor/admin/vertical-pdf-zip", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg =
+          (typeof data.detail === "string" ? data.detail : undefined) ??
+          (Array.isArray(data.detail) ? data.detail[0]?.msg : undefined);
+        throw new Error(msg ?? "上传失败");
+      }
+      setVerticalMessage({
+        type: "success",
+        text: `已存档 ${data.companies_parsed ?? 0} 份 PDF（未解析）。可在纵向页切换「PDF 原文」对照查看。`,
+      });
+    } catch (err) {
+      setVerticalMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "上传失败",
+      });
+    } finally {
+      setVerticalPdfOnlyUploading(false);
+    }
+  };
+
   const handleSaveFinancePath = async () => {
     let path = financePathEdit.trim();
     if (!path.startsWith("/")) path = "/" + path;
@@ -576,7 +614,7 @@ export default function FinanceAdminPage() {
       <div className="mb-6 max-w-2xl rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
         <h2 className="mb-3 text-sm font-medium text-zinc-300">上传纵向分析 PDF（zip · Docling）</h2>
         <p className="mb-2 text-xs text-zinc-500">
-          推荐生产路径：将 7 家公司纵向分析 PDF 打成一个 zip 上传，后台 Docling 解析后写入纵向对比页（深色 DataTable，非 PDF 嵌入）。
+          将 7 家公司纵向分析 PDF 打成 zip 上传；纵向对比页默认 PDF 原文预览（顶部导航切换公司）。可选 Docling 解析写入结构化 snapshot（后台任务）。
         </p>
         <ul className="mb-3 list-inside list-disc space-y-1 text-xs text-zinc-500">
           <li>
@@ -585,6 +623,7 @@ export default function FinanceAdminPage() {
             <code className="text-zinc-400">competitor/vertical_company_rules.json</code> 匹配内网中文 PDF 名。
           </li>
           <li>解析产物写入 <code className="text-zinc-400">uploads/competitor/vertical.snapshot.json</code>。</li>
+          <li>Docling 解析完成后也会存档 PDF，纵向页可切换「PDF 原文」与「结构化」对照。</li>
           <li>Docling 单线程排队，7 份 PDF 可能需数分钟；可离开页面后刷新查看进度。</li>
           <li>不走「大 PDF 知识库」队列；与 <code className="text-zinc-400">/utils/pdf-knowledge</code> 独立。</li>
         </ul>
@@ -624,6 +663,27 @@ export default function FinanceAdminPage() {
             </Link>
           </p>
         ) : null}
+        <div className="mt-4 border-t border-zinc-800 pt-4">
+          <p className="mb-2 text-xs text-zinc-500">
+            若尚未存档 PDF，可在此快速上传 zip（不跑 Docling）；纵向对比页将直接预览 PDF。
+          </p>
+          <input
+            ref={verticalPdfOnlyFileRef}
+            type="file"
+            accept=".zip,application/zip"
+            className="hidden"
+            onChange={handleVerticalPdfOnlyUpload}
+            disabled={verticalPdfOnlyUploading || verticalIngestUploading}
+          />
+          <button
+            type="button"
+            onClick={() => verticalPdfOnlyFileRef.current?.click()}
+            disabled={verticalPdfOnlyUploading || verticalIngestUploading}
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {verticalPdfOnlyUploading ? "存档中…" : "仅存档 PDF zip（不解析）"}
+          </button>
+        </div>
         <ParseWarningList
           warnings={verticalSnapshotWarnings}
           label="当前 snapshot 解析告警（含 dual value 等，刷新页面仍可查看）"

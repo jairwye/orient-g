@@ -41,7 +41,6 @@ import {
   AGENT_CHART_ACCENT_CLASS,
   BUSINESS_CHART_COLORS,
   CHART_POSITIVE_CLASS,
-  WORKFLOW_WIP_CLASS,
 } from "../lib/business_chart_colors";
 import AiInlineChart from "./AiInlineChart";
 import AiInlineTable from "./AiInlineTable";
@@ -99,7 +98,14 @@ import {
   FINANCE_ANNUAL_REPORT_SKILL_ID,
   WORKFLOW_CONFIGS_LS_KEY,
 } from "./constants";
-import { resolveQuickWorkflowPicks, resolveQuickWorkflowChipPicks, type ResolvedQuickWorkflowPick } from "./workflowQuickPicks";
+import {
+  resolveQuickWorkflowPicks,
+  resolveQuickWorkflowChipPicks,
+  SIDEBAR_HISTORY_PREVIEW,
+  WORKFLOW_STATUS_LABEL,
+  workflowStatusUiClass,
+  type ResolvedQuickWorkflowPick,
+} from "./workflowQuickPicks";
 
 /** 内置工作流与 localStorage 合并：新条目插入，同 id 以本地覆盖字段 */
 function mergeConfigById<T extends { id: string }>(builtins: T[], saved: T[] | null | undefined): T[] {
@@ -226,6 +232,7 @@ export default function AiInteractionPage() {
   const [workspaceTab, setWorkspaceTab] = useState<"knowledge" | "pdf_packages" | "prompts" | "skills" | "tools" | "workflows">("knowledge");
   const [startAreaHint, setStartAreaHint] = useState<string | null>(null);
   const [sessionMenuOpenId, setSessionMenuOpenId] = useState<string | null>(null);
+  const [historySidebarExpanded, setHistorySidebarExpanded] = useState(false);
   const suppressNextSessionClickRef = useRef(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -1147,9 +1154,21 @@ export default function AiInteractionPage() {
   );
 
   const quickWorkflowChipPicks = useMemo(
-    () => resolveQuickWorkflowChipPicks(workflowConfigs),
-    [workflowConfigs],
+    () => resolveQuickWorkflowChipPicks(workflowConfigs, { compact: panelMessages.length > 0 }),
+    [workflowConfigs, panelMessages.length],
   );
+
+  const sortedSessionsForSidebar = useMemo(
+    () => [...sessions].sort(compareSessionsForList),
+    [sessions],
+  );
+
+  const sidebarHistorySessions = useMemo(() => {
+    if (historySidebarExpanded) return sortedSessionsForSidebar;
+    return sortedSessionsForSidebar.slice(0, SIDEBAR_HISTORY_PREVIEW);
+  }, [sortedSessionsForSidebar, historySidebarExpanded]);
+
+  const hasMoreSidebarHistory = sortedSessionsForSidebar.length > SIDEBAR_HISTORY_PREVIEW;
 
   const handleQuickWorkflowPick = useCallback(
     (it: ResolvedQuickWorkflowPick, options?: { toggleIfActive?: boolean }) => {
@@ -3124,34 +3143,37 @@ export default function AiInteractionPage() {
             <div className="mx-auto mt-6 w-full max-w-4xl">
               <div className="text-xs text-zinc-500">常用工作流</div>
               <div className="mt-3 space-y-1">
-                {quickWorkflowPicks.map((it) => (
+                {quickWorkflowPicks.map((it) => {
+                  const statusUi = workflowStatusUiClass(it.status);
+                  return (
                   <button
                     key={it.key}
                     type="button"
                     onClick={() => handleQuickWorkflowPick(it, { toggleIfActive: true })}
                     className={[
                       "group w-full rounded-xl px-4 py-2.5 text-left",
-                      it.wip ? WORKFLOW_WIP_CLASS.listRowBorder : "bg-transparent hover:bg-zinc-900/20",
+                      statusUi ? statusUi.listRowBorder : "bg-transparent hover:bg-zinc-900/20",
                     ].join(" ")}
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <div
                         className={[
                           "text-sm font-medium group-hover:text-zinc-100",
-                          it.wip ? WORKFLOW_WIP_CLASS.listTitle : "text-zinc-200",
+                          statusUi ? statusUi.listTitle : "text-zinc-200",
                         ].join(" ")}
                       >
                         {it.title}
                       </div>
-                      {it.wip ? (
-                        <span className={WORKFLOW_WIP_CLASS.badge}>开发中</span>
+                      {it.status ? (
+                        <span className={statusUi!.badge}>{WORKFLOW_STATUS_LABEL[it.status]}</span>
                       ) : null}
                     </div>
                     {it.subtitle ? (
                       <div className="mt-1 text-xs text-zinc-500 line-clamp-2">{it.subtitle}</div>
                     ) : null}
                   </button>
-                ))}
+                  );
+                })}
                 <button
                   type="button"
                   onClick={() => {
@@ -3229,7 +3251,12 @@ export default function AiInteractionPage() {
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-5 md:px-8">
+        <div
+          className={[
+            "min-h-0 flex-1 px-6 pb-5 md:px-8",
+            historySidebarExpanded ? "overflow-y-auto" : "overflow-y-hidden",
+          ].join(" ")}
+        >
           <nav className="space-y-1" aria-label="页内导航">
             <button
               type="button"
@@ -3276,7 +3303,8 @@ export default function AiInteractionPage() {
                 {UI_AGENT.historyEmptyHint}
               </div>
             ) : (
-              sessions.map((s) => {
+              <>
+              {sidebarHistorySessions.map((s) => {
                   const active = s.id === activeSessionId;
                   const isAgentSession = sessionModeOf(s) === "agent";
                   const attachments = (s as { attachments?: Array<{ name?: string }> }).attachments;
@@ -3363,7 +3391,17 @@ export default function AiInteractionPage() {
                       ) : null}
                     </div>
                   );
-                })
+                })}
+              {hasMoreSidebarHistory && !historySidebarExpanded ? (
+                <button
+                  type="button"
+                  onClick={() => setHistorySidebarExpanded(true)}
+                  className={sessionRowClass(false)}
+                >
+                  <span className="min-w-0 flex-1 truncate text-zinc-500 hover:text-zinc-300">查看全部</span>
+                </button>
+              ) : null}
+              </>
             )}
           </div>
         </div>
@@ -3825,24 +3863,28 @@ export default function AiInteractionPage() {
 
                   <div className="shrink-0 pb-3 pt-2">
                     <div className={chatContentInnerClass}>
-                    <div className="flex items-center gap-1.5 overflow-x-auto pb-3">
-                      {quickWorkflowChipPicks.map((it) => (
+                    <div className="flex flex-wrap items-center gap-1.5 pb-3">
+                      {quickWorkflowChipPicks.map((it) => {
+                        const statusUi = workflowStatusUiClass(it.status);
+                        const statusSuffix = it.status ? `（${WORKFLOW_STATUS_LABEL[it.status]}）` : "";
+                        return (
                         <button
                           key={it.key}
                           type="button"
                           onClick={() => handleQuickWorkflowPick(it)}
                           className={[
                             "inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs hover:bg-zinc-900/20",
-                            it.wip ? WORKFLOW_WIP_CLASS.chipBorder : "bg-transparent text-zinc-200",
+                            statusUi ? statusUi.chipBorder : "bg-transparent text-zinc-200",
                           ].join(" ")}
-                          title={it.wip ? `${it.subtitle || it.title}（开发中）` : it.subtitle || it.title}
+                          title={`${it.subtitle || it.title}${statusSuffix}`}
                         >
                           <span>{it.title}</span>
-                          {it.wip ? (
-                            <span className={WORKFLOW_WIP_CLASS.chipBadge}>开发中</span>
+                          {it.status ? (
+                            <span className={statusUi!.chipBadge}>{WORKFLOW_STATUS_LABEL[it.status]}</span>
                           ) : null}
                         </button>
-                      ))}
+                        );
+                      })}
                       <button
                         type="button"
                         onClick={() => {

@@ -264,6 +264,8 @@ export function parseHermesStreamStats(raw: unknown): HermesStreamStats | undefi
     delta_chars: n("delta_chars"),
     tool_progress_events: n("tool_progress_events"),
     tool_call_events: n("tool_call_events"),
+    hermes_orientg_kb_ask_calls: n("hermes_orientg_kb_ask_calls"),
+    gateway_orientg_kb_ask_calls: n("gateway_orientg_kb_ask_calls"),
     orientg_kb_ask_calls: n("orientg_kb_ask_calls"),
     orientg_kb_supplemental_calls: n("orientg_kb_supplemental_calls"),
   };
@@ -294,17 +296,21 @@ export function formatHermesStreamStatsLine(
         : `Hermes 工具进度 ${toolProg} 次`,
     );
   }
-  const kb = stats.orientg_kb_ask_calls ?? 0;
+  const hermesKb = stats.hermes_orientg_kb_ask_calls ?? 0;
+  const gatewayKb = stats.gateway_orientg_kb_ask_calls ?? 0;
   const supp = stats.orientg_kb_supplemental_calls ?? 0;
-  if (kb > 0) {
-    parts.push(`Hermes 内 orientg_kb_ask ×${kb}`);
+  if (hermesKb > 0) {
+    parts.push(`Hermes 内 orientg_kb_ask ×${hermesKb}`);
+  }
+  if (gatewayKb > 0) {
+    parts.push(`Orient-G 网关 KB ×${gatewayKb}${supp > 0 ? `（含补检索 ${supp}）` : ""}`);
   } else if (meta?.kb_supplemental) {
     parts.push(
       supp > 0
         ? `Hermes 单轮未调 MCP；Orient-G 网关补检索 ×${supp}`
         : "Hermes 单轮未调 MCP；已由 Orient-G 网关修订终稿",
     );
-  } else if (meta?.agent_tier === 2) {
+  } else if (meta?.agent_tier === 2 && hermesKb <= 0) {
     parts.push("Hermes 单轮 completion（深度可触发 Orient-G 网关补检索）");
   }
   return parts.length ? `编排观测：${parts.join(" · ")}` : "";

@@ -19,6 +19,7 @@ from backend.services.vertical_docling_adapter import (
     company_from_docling,
     merged_markdown_from_companies,
 )
+from backend.services.vertical_pdf_store import persist_vertical_pdfs
 from backend.services.vertical_report_store import save_vertical_snapshot
 
 INGEST_DIRNAME = "vertical/ingest"
@@ -115,6 +116,11 @@ def run_vertical_ingest_job(job_id: str, *, uploaded_by: str, source_filename: s
             )
 
         total = len(ordered)
+        persist_vertical_pdfs(
+            [(cid, pdf_path, display_name) for cid, pdf_path, display_name in ordered],
+            uploaded_by=uploaded_by,
+            source_filename=source_filename,
+        )
         _write_job_status(
             job_id,
             {
@@ -240,3 +246,47 @@ def start_vertical_ingest_from_zip(
         _running_jobs.add(job_id)
     threading.Thread(target=_run, daemon=True, name=f"vertical-ingest-{job_id}").start()
     return job_id
+
+
+def start_vertical_pdf_only_from_zip(
+    zip_bytes: bytes,
+    *,
+    uploaded_by: str,
+    source_filename: str,
+) -> dict[str, Any]:
+    """仅存档 PDF 供纵向页直显，不调用 Docling。"""
+    if len(zip_bytes) > MAX_ZIP_BYTES:
+        raise ValueError("zip 文件过大（上限 120MB）")
+    job_id = f"vpdf_{uuid.uuid4().hex[:12]}"
+    job_dir = _job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    _extract_pdfs_from_zip(zip_bytes, job_dir)
+    pdf_entries = []
+    pdfs_dir = job_dir / "pdfs"
+    for p in sorted(pdfs_dir.glob("*.pdf")):
+        pdf_entries.append((p.name, p))
+    ordered = order_pdf_entries(pdf_entries)
+    if not ordered:
+        names = [n for n, _ in pdf_entries]
+        sample = "、".join(names[:5])
+        if len(names) > 5:
+            sample += f" 等 {len(names)} 个"
+        raise ValueError(
+            "无法从文件名识别公司。"
+            " 请在 PDF 文件名中含 canonical 代号（如 wm、37），"
+            "或在 uploads/competitor/vertical_company_rules.json 配置内网中文名规则。"
+            f" zip 内 PDF：{sample}"
+        )
+    meta = persist_vertical_pdfs(
+        ordered,
+        uploaded_by=uploaded_by,
+        source_filename=source_filename,
+    )
+    return {
+        "job_id": job_id,
+        "status": "completed",
+        "companies_parsed": len(ordered),
+        "pdf_meta": meta,
+        "created_at": now,
+    }

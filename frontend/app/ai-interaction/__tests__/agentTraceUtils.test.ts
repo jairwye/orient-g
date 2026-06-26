@@ -115,12 +115,14 @@ describe("buildAgentMetaFromDone / routeLabel", () => {
         thinking_chars: 500,
         delta_chars: 994,
         tool_progress_events: 0,
-        orientg_kb_ask_calls: 0,
+        hermes_orientg_kb_ask_calls: 0,
+        gateway_orientg_kb_ask_calls: 4,
+        orientg_kb_ask_calls: 4,
         orientg_kb_supplemental_calls: 4,
       },
     });
     const obs = formatHermesStreamStatsLine(meta.hermes_stream_stats, meta);
-    expect(obs).toContain("Orient-G 网关补检索 ×4");
+    expect(obs).toContain("Orient-G 网关 KB ×4");
     expect(obs).not.toContain("⚠");
     expect(obs).toContain("Hermes 工具进度 0");
   });
@@ -153,11 +155,14 @@ describe("buildAgentMetaFromDone / routeLabel", () => {
         thinking_chars: 400,
         delta_chars: 800,
         tool_progress_events: 3,
-        orientg_kb_ask_calls: 2,
+        hermes_orientg_kb_ask_calls: 2,
+        gateway_orientg_kb_ask_calls: 1,
+        orientg_kb_ask_calls: 3,
       },
     });
     const line = doneTraceMessage(meta);
-    expect(line).toContain("orientg_kb_ask ×2");
+    expect(line).toContain("Hermes 内 orientg_kb_ask ×2");
+    expect(line).toContain("Orient-G 网关 KB ×1");
     expect(line).toContain("推理流 400");
   });
 

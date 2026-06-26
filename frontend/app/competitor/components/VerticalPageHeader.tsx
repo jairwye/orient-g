@@ -2,23 +2,34 @@
 
 import Link from "next/link";
 import { competitorReportHref } from "../lib/navigation";
-import { VerticalProgressScale } from "./VerticalProgressScale";
+import type { VerticalCompanyNav } from "../lib/vertical_navigation";
 import type { VerticalReportSnapshot } from "../lib/vertical_types";
+import { VerticalProgressScale } from "./VerticalProgressScale";
 import type { CompetitorReportSnapshot } from "../lib/types";
 
 type Props = {
-  report: VerticalReportSnapshot | null;
+  /** Docling/MD snapshot 模式 */
+  report?: VerticalReportSnapshot | null;
+  /** PDF 直显模式 */
+  navCompanies?: VerticalCompanyNav[];
   competitorSnapshot?: CompetitorReportSnapshot | null;
   activeSnapId: string;
   onNavigate: (id: string) => void;
 };
 
-/** 纵向对比页顶：标题 + 公司刻度（数据来自 API） */
-export function VerticalPageHeader({ report, competitorSnapshot, activeSnapId, onNavigate }: Props) {
+/** 纵向对比页顶：标题 + 公司刻度 */
+export function VerticalPageHeader({
+  report = null,
+  navCompanies,
+  competitorSnapshot,
+  activeSnapId,
+  onNavigate,
+}: Props) {
+  const hasScale = Boolean(report) || Boolean(navCompanies?.length);
   return (
     <div className="competitor-page-header shrink-0 px-6 pb-3 pt-6 md:px-8 md:pt-8">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex min-w-0 shrink-0 items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-3">
           <h1 className="shrink-0 text-2xl font-semibold tracking-tight text-zinc-100">纵向对比</h1>
           <Link
             href={competitorReportHref()}
@@ -27,9 +38,10 @@ export function VerticalPageHeader({ report, competitorSnapshot, activeSnapId, o
             返回竞品财报
           </Link>
         </div>
-        {report ? (
+        {hasScale ? (
           <VerticalProgressScale
             report={report}
+            navCompanies={navCompanies}
             competitorSnapshot={competitorSnapshot ?? undefined}
             activeSnapId={activeSnapId}
             onNavigate={onNavigate}
