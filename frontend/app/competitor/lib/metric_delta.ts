@@ -62,27 +62,28 @@ function formatRateText(val: string | number | null | undefined): string | null 
   return `${sign}${pct.toFixed(2)}%`;
 }
 
+function toneFromAmount(
+  delta: string | number | null | undefined,
+  amountText: string | null,
+): DeltaTone {
+  if (amountText) {
+    const fromText = toneFromText(amountText);
+    if (fromText !== "neutral") return fromText;
+  }
+  return toneFromDelta(parseNum(delta));
+}
+
 export function buildMetricDelta(
   delta: string | number | null | undefined,
   rate: string | number | null | undefined,
-  opts?: { current?: number | null; computeRate?: boolean },
 ): MetricDeltaDisplay {
   const amountText = formatDeltaAmount(delta);
-  let rateText = formatRateText(rate);
-  let tone = toneFromText(amountText ?? rateText ?? "");
-
-  if (opts?.computeRate && opts.current != null && typeof delta === "number") {
-    const computed = computeChangeRatePct(opts.current, delta);
-    if (computed != null) {
-      rateText = `${computed > 0 ? "+" : ""}${computed.toFixed(2)}%`;
-      tone = toneFromDelta(computed);
-    }
-  } else if (rateText) {
-    tone = toneFromText(rateText);
-  } else if (amountText) {
-    const n = parseNum(delta);
-    tone = toneFromDelta(n);
-  }
+  const rateText = formatRateText(rate);
+  const tone = amountText
+    ? toneFromAmount(delta, amountText)
+    : rateText
+      ? toneFromText(rateText)
+      : "neutral";
 
   return { amountText, rateText, tone };
 }

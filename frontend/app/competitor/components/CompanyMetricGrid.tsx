@@ -6,6 +6,7 @@ import type { CompetitorReportSnapshot } from "../lib/types";
 import { CL, FK } from "../lib/field_keys";
 import { buildMetricDelta } from "../lib/metric_delta";
 import { formatPct, formatYiWan, parseNum } from "../lib/format";
+import { pickChangeRateAfterDelta } from "../lib/table_header_keys";
 import { FadeInView } from "./FadeInView";
 import { MetricDeltaBadge } from "./MetricDeltaBadge";
 
@@ -13,7 +14,6 @@ type Row = Record<string, string | number | null>;
 
 const REV_DELTA = "\u8425\u6536\u53d8\u52a8";
 const PROFIT_DELTA = "\u51c0\u5229\u53d8\u52a8";
-const CHANGE_RATE = "\u53d8\u52a8\u7387";
 const ROE_KEY = "ROE";
 const ROE_DELTA = "ROE\u53d8\u52a8";
 
@@ -56,10 +56,16 @@ function MetricRow({
 export function CompanyMetricGrid({
   rows,
   snapshot,
+  headers,
+  headerKeys,
   dense = false,
 }: {
   rows: Row[];
   snapshot: CompetitorReportSnapshot;
+  /** sec-03-1 表头原文；无 header_keys 时用于推导列键 */
+  headers?: string[];
+  /** sec-03-1 等重复「变动率」表需 header_keys 区分营收/净利 */
+  headerKeys?: string[];
   /** 与叙事同屏时使用更紧凑卡片 */
   dense?: boolean;
 }) {
@@ -79,14 +85,15 @@ export function CompanyMetricGrid({
         const profitPositive = profit != null && profit >= 0;
         const displayName = colToLabel(name, snapshot);
 
-        const revDeltaRaw = row[REV_DELTA];
-        const revDeltaNum = typeof revDeltaRaw === "number" ? revDeltaRaw : parseNum(revDeltaRaw);
-        const revenueDelta = buildMetricDelta(revDeltaRaw, null, {
-          current: revenue,
-          computeRate: revenue != null && revDeltaNum != null,
-        });
-
-        const profitDelta = buildMetricDelta(row[PROFIT_DELTA], row[CHANGE_RATE]);
+        const revenueDelta = buildMetricDelta(
+          row[REV_DELTA],
+          pickChangeRateAfterDelta(row, REV_DELTA, headers, headerKeys),
+        );
+        const profitDelta = buildMetricDelta(
+          row[PROFIT_DELTA],
+          pickChangeRateAfterDelta(row, PROFIT_DELTA, headers, headerKeys),
+        );
+        const roeDelta = buildMetricDelta(row[ROE_DELTA], null);
 
         return (
           <FadeInView key={name || i} delayMs={i * 40} className="h-full" immediate>
@@ -132,15 +139,8 @@ export function CompanyMetricGrid({
                       >
                         {formatPct(roe)}
                       </p>
-                      {row[ROE_DELTA] ? (
-                        <MetricDeltaBadge
-                          delta={{
-                            amountText: String(row[ROE_DELTA]),
-                            rateText: null,
-                            tone: buildMetricDelta(row[ROE_DELTA], null).tone,
-                          }}
-                          compact
-                        />
+                      {roeDelta.amountText ? (
+                        <MetricDeltaBadge delta={roeDelta} compact />
                       ) : null}
                     </div>
                   </div>

@@ -25,17 +25,27 @@ export function OperatingOverviewSlide({
   snapshot,
   blocks,
   quadrantRows,
+  headerKeys,
+  headers,
 }: {
   rows: Row[];
   snapshot: CompetitorReportSnapshot;
   blocks: Array<{ kind: string; markdown?: string; anchor?: string }>;
   quadrantRows?: Row[];
+  headerKeys?: string[];
+  headers?: string[];
 }) {
   return (
     <div className="flex flex-col gap-6 lg:gap-7">
       <section aria-labelledby="operating-metrics-heading">
         <SectionHeading id="operating-metrics-heading" label={CL.operatingCoreData} />
-        <CompanyMetricGrid rows={rows} snapshot={snapshot} dense />
+        <CompanyMetricGrid
+          rows={rows}
+          snapshot={snapshot}
+          headers={headers}
+          headerKeys={headerKeys}
+          dense
+        />
       </section>
 
       <section aria-labelledby="operating-conclusion-heading">

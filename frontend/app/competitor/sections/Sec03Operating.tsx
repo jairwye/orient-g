@@ -18,6 +18,8 @@ export function Sec03Operating({ snapshot }: SectionProps) {
         snapshot={snapshot}
         blocks={sec03?.blocks ?? []}
         quadrantRows={quadrant?.rows}
+        headerKeys={core.header_keys}
+        headers={core.headers}
       />
     ) : null;
 
