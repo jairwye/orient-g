@@ -1,5 +1,7 @@
 # 人员结构深度档 + Hermes MCP 优化 — 设计说明
 
+> **status:** superseded（2026-08-04）→ 见 [`specs/plans/1.2.3.c-personnel-browser-testing.md`](../../../specs/plans/1.2.3.c-personnel-browser-testing.md)、[`specs/plans/1.2.3.d-hermes-native-mcp-tdd.md`](../../../specs/plans/1.2.3.d-hermes-native-mcp-tdd.md)。下文为历史设计快照。
+
 ## 目标
 
 1. **finance_test + 竞品财报25** 复现与验收（不用 wangjia）。

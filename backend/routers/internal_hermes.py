@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.config import settings
@@ -34,16 +36,48 @@ def _expected_bridge_secret() -> str:
     return (settings.auth_secret or "").strip()
 
 
+def _is_loopback_or_private(host: str) -> bool:
+    h = (host or "").strip().lower()
+    if not h or h in ("localhost", "::1"):
+        return True
+    # 去 IPv6 括号与端口
+    if h.startswith("[") and "]" in h:
+        h = h[1 : h.index("]")]
+    if "%" in h:
+        h = h.split("%", 1)[0]
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return bool(ip.is_loopback or ip.is_private)
+
+
 def verify_mcp_bridge_secret(
+    request: Request,
     x_orientg_mcp_bridge_secret: Annotated[str | None, Header(alias="X-OrientG-MCP-Bridge-Secret")] = None,
 ) -> None:
     expected = _expected_bridge_secret()
     got = (x_orientg_mcp_bridge_secret or "").strip()
-    if not expected or got != expected:
+    # compare_digest 要求等长；长度不等时仍做一次自比对，避免明显短路
+    ok = bool(expected) and len(got) == len(expected) and hmac.compare_digest(got, expected)
+    if not ok and expected:
+        hmac.compare_digest(expected, expected)
+    if not ok:
         raise HTTPException(
             status_code=403,
             detail={"code": "bridge_secret_invalid", "message": "invalid MCP bridge secret"},
         )
+    env = (settings.app_env or "").strip().lower()
+    if env in ("production", "prod"):
+        client_host = (request.client.host if request.client else "") or ""
+        if not _is_loopback_or_private(client_host):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "bridge_client_forbidden",
+                    "message": "MCP bridge only accepts loopback/private clients in production",
+                },
+            )
 
 
 @router.post("/session/resolve")

@@ -65,6 +65,55 @@ def test_persist_and_load_across_fresh_memory():
     assert loaded["kb_budget_max"] == 3
 
 
+def test_persist_seals_jwt_at_rest():
+    """DB 行不得明文存 JWT；load 仍可还原。"""
+    from sqlalchemy import text
+
+    from backend.database import engine
+
+    tok = _jwt()
+    sk = "orientg-sealed-jwt"
+    shared.persist_session(sk, tok, kb_scope={"selected_folder_ids": ["f1"]})
+    with engine.connect() as conn:
+        raw = conn.execute(
+            text("SELECT user_token FROM hermes_session_store WHERE session_key = :k"),
+            {"k": sk},
+        ).scalar()
+    assert raw and str(raw).startswith("v1:")
+    assert tok not in str(raw)
+    loaded = shared.load_session(sk)
+    assert loaded is not None
+    assert loaded["user_token"] == tok
+
+
+def test_unseal_accepts_legacy_plaintext_rows():
+    from sqlalchemy import text
+
+    from backend.database import engine, init_hermes_session_store_table
+
+    init_hermes_session_store_table()
+    tok = _jwt()
+    sk = "orientg-legacy-plain"
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO hermes_session_store (
+                    session_key, user_token, kb_scope_json, allow_kb_write, expires_at
+                ) VALUES (
+                    :k, :t, '{}', false, NOW() + INTERVAL '1 hour'
+                )
+                ON CONFLICT (session_key) DO UPDATE SET user_token = EXCLUDED.user_token
+                """
+            ),
+            {"k": sk, "t": tok},
+        )
+        conn.commit()
+    loaded = shared.load_session(sk)
+    assert loaded is not None
+    assert loaded["user_token"] == tok
+
+
 def test_resolve_user_token_from_db_when_memory_empty(monkeypatch):
     tok = _jwt()
     sk = bridge.register("orientg-shared-2", tok)

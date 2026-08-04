@@ -405,7 +405,9 @@ export function doneTraceMessage(meta: AgentMeta): string {
             ? " · 终稿出处：Orient-G门禁"
             : meta.reply_source === "orientg_supplemental"
               ? " · 终稿出处：Orient-G补检索"
-              : "";
+              : meta.reply_source === "orientg_mcp_coerce"
+                ? " · 终稿出处：MCP纠偏/证据不足"
+                : "";
     return `完成：Tier 2（Hermes 深度编排）${packSuffix}${sup}${src}${obs ? ` · ${obs}` : ""}`;
   }
   if (meta.agent_route === "hermes_lite" || meta.agent_tier === 1) {

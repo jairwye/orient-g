@@ -224,8 +224,9 @@ def test_personnel_mcp_coerce_emits_replace_reply(monkeypatch):
     assert "1378" in content and "946" in content
     assert "以上数据均来自当前知识库 citations 节选" not in content
     done = next(e for e in evts if e.get("type") == "done")
-    assert done.get("reply_source") == "hermes"
+    assert done.get("reply_source") == "orientg_mcp_coerce"
     assert done.get("structured_gate_applied") is False
+    assert done.get("coerce_applied") is True
 
 
 def test_personnel_early_replace_on_bad_hermes_draft(monkeypatch):

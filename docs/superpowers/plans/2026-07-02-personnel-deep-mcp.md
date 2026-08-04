@@ -1,6 +1,10 @@
 # 人员深度档 + Hermes MCP — 实施计划
 
-> **Goal:** finance_test 人员横比深度档：MCP 可用、成稿有分析、验收无硬编码锚点、浏览器 6/6。
+> **status:** superseded（2026-08-04）  
+> **现行规制：** [`specs/plans/1.2.3.c-personnel-browser-testing.md`](../../../specs/plans/1.2.3.c-personnel-browser-testing.md)（8 条矩阵）、[`specs/plans/1.2.3.d-hermes-native-mcp-tdd.md`](../../../specs/plans/1.2.3.d-hermes-native-mcp-tdd.md)（`retry=0` / deep `hermes≥2` / 禁骨架·thin salvage）。  
+> 下文保留历史任务记录；验收口径以 1.2.3.c / 1.2.3.d 为准（不再要求 6/6 或仅 `hermes_kb_ask_calls >= 1`）。
+
+> **Goal（历史）：** finance_test 人员横比深度档：MCP 可用、成稿有分析、验收无硬编码锚点、浏览器 6/6。
 
 **Architecture:** MCP scope token ACL 兜底 → structured personnel report → 通用 validate（实体+KB probe+分析+MCP 统计）→ personnel CDP 复跑。
 

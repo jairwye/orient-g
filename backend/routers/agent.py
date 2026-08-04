@@ -512,6 +512,7 @@ def agent_chat(request: Request, body: AgentChatBody):
     synthesis = "hermes"
     kb_supplemental = False
     from backend.services.agent_kb_supplemental import (
+        PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY,
         apply_compare_subject_denial_gate,
         apply_hermes_mcp_personnel_contract_coerce,
         apply_personnel_misattribution_gate,
@@ -522,6 +523,7 @@ def agent_chat(request: Request, body: AgentChatBody):
         needs_hermes_supplemental,
         resolve_personnel_reply_source,
     )
+    from backend.services.kb_ask_mcp_agent_native import is_personnel_thin_salvage_final
 
     uq = last_user_query(messages)
     supplemental_adopted = False
@@ -534,6 +536,9 @@ def agent_chat(request: Request, body: AgentChatBody):
     )
     if coerce_applied:
         reply = coerced
+    if is_personnel_thin_salvage_final(reply):
+        reply = PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY
+        coerce_applied = True
     if needs_hermes_supplemental(
         agent_route=agent_route,
         prefetch_result=prefetch_result,
@@ -617,6 +622,7 @@ def agent_chat(request: Request, body: AgentChatBody):
         misattribution_gate_applied=gate_applied,
         supplemental_ran=kb_supplemental,
         supplemental_adopted=supplemental_adopted,
+        coerce_applied=coerce_applied,
         reply=reply,
     )
 
@@ -987,14 +993,20 @@ def _agent_chat_stream_events(
                         ),
                     }
 
-                # 收束硬择优：thin salvage 终稿不得盖掉 draft_acc 中更长合规对照稿
+                # 收束硬择优：thin salvage 终稿不得盖掉 draft_acc 中更长合规对照稿；
+                # 无更好过程稿时一律不得以 thin salvage 上屏（§0.1 C）。
+                from backend.services.agent_kb_supplemental import (
+                    PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY,
+                )
                 from backend.services.kb_ask_mcp_agent_native import (
                     is_personnel_thin_salvage_final,
                 )
 
                 final_body = str(evt.get("reply") or "").strip()
-                if hermes_draft_acc and is_personnel_thin_salvage_final(final_body):
-                    draft_keep = (hermes_draft_acc.full_body() or "").strip()
+                if is_personnel_thin_salvage_final(final_body):
+                    draft_keep = ""
+                    if hermes_draft_acc:
+                        draft_keep = (hermes_draft_acc.full_body() or "").strip()
                     if (
                         draft_keep
                         and not is_personnel_thin_salvage_final(draft_keep)
@@ -1012,6 +1024,10 @@ def _agent_chat_stream_events(
                         )
                         evt = {**evt, "reply": final_body}
                         coerce_applied = False
+                    else:
+                        final_body = PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY
+                        evt = {**evt, "reply": final_body}
+                        coerce_applied = True
 
                 final_body = str(evt.get("reply") or "").strip()
                 # 相对「流式过程稿」是否变化：coerce 后 hermes_raw_reply 已被改写，
@@ -1042,6 +1058,7 @@ def _agent_chat_stream_events(
                     misattribution_gate_applied=gate_applied,
                     supplemental_ran=supplemental_ran or bool(evt.get("kb_supplemental")),
                     supplemental_adopted=supplemental_adopted,
+                    coerce_applied=coerce_applied,
                     reply=final_body,
                 )
                 evt = {

@@ -545,19 +545,33 @@ def pick_personnel_compare_final_reply(
     return final, adopted, reason
 
 
+PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY = (
+    "当前知识库证据不足或 Hermes 未给出合格人员结构对照成稿，"
+    "无法展示可靠对照表。请确认已选择竞品财报文件夹后重试深度档。"
+)
+
+
 def resolve_personnel_reply_source(
     *,
     structured_gate_applied: bool = False,
     misattribution_gate_applied: bool = False,
     supplemental_ran: bool = False,
     supplemental_adopted: bool = False,
+    coerce_applied: bool = False,
     reply: str = "",
 ) -> dict[str, Any]:
-    """终稿出处：验收须区分 Hermes 主写 vs Orient-G gate/补检索。"""
+    """终稿出处：验收须区分 Hermes 主写 vs Orient-G gate/补检索/MCP coerce。"""
+    from backend.services.kb_ask_mcp_agent_native import (
+        is_personnel_mcp_draft_skeleton,
+        is_personnel_thin_salvage_final,
+    )
     from backend.services.personnel_compare_report import looks_like_orientg_personnel_template
 
+    body = (reply or "").strip()
     if misattribution_gate_applied:
         source = "orientg_misattribution_gate"
+    elif coerce_applied or is_personnel_mcp_draft_skeleton(body) or is_personnel_thin_salvage_final(body):
+        source = "orientg_mcp_coerce"
     elif structured_gate_applied or looks_like_orientg_personnel_template(reply):
         source = "orientg_structured_gate"
     elif supplemental_ran and supplemental_adopted:
@@ -568,6 +582,7 @@ def resolve_personnel_reply_source(
         "reply_source": source,
         "structured_gate_applied": bool(structured_gate_applied),
         "misattribution_gate_applied": bool(misattribution_gate_applied),
+        "coerce_applied": bool(coerce_applied),
         "looks_like_orientg_template": bool(looks_like_orientg_personnel_template(reply)),
     }
 
@@ -581,8 +596,9 @@ def apply_hermes_mcp_personnel_contract_coerce(
 ) -> tuple[str, bool]:
     """
     native：Hermes 忽略 MCP 成稿骨架、写成规模/核心指标错稿时，
-    用 prefetch/MCP 同口径的人员成稿骨架纠偏（非 Orient-G 模板指纹）。
-    纠偏后仍记为 Hermes 主写路径（不置 gate_applied）。
+    用 prefetch/MCP 同口径节选纠偏（非 Orient-G 模板指纹）。
+    纠偏结果须标 reply_source=orientg_mcp_coerce，不得冒充 Hermes 主写。
+    禁止在空 Evidence Pack 上硬编码 1378/946/242/70 糊弄终稿。
     """
     import re
 
@@ -651,7 +667,7 @@ def apply_hermes_mcp_personnel_contract_coerce(
         and not misattr
     ):
         return reply, False
-    # 仅骨架套话本身：剥标题升为 salvage 终稿（仍可上屏短表，但不得带「成稿骨架」）
+    # 仅骨架套话：剥标题后仍是 thin salvage → 调用方不得当 Hermes 终稿上屏
     if is_personnel_mcp_draft_skeleton(body) and has_structure_table and not scale_bad and not misattr:
         stripped = re.sub(
             r"^#+\s*(?:成稿骨架|【硬数字参考表)[^\n]*\n+",
@@ -672,74 +688,53 @@ def apply_hermes_mcp_personnel_contract_coerce(
     pf = prefetch_result or {}
     excerpts = [x for x in list(pf.get("evidence_excerpts") or []) if isinstance(x, dict)]
     if not excerpts:
-        # best-effort：从 prefetch 摘要拼 excerpt；再不行用 Hermes 正文作 metrics 输入
+        # 仅从 prefetch 摘要或正文已有行拼 excerpt；禁止硬编码业务锚点
         summary = str(pf.get("reply") or "").strip()
         cites = [c for c in list(pf.get("citations") or []) if isinstance(c, dict)]
-        seed = summary or body
-        if seed:
-            sanqi_lines = [
-                ln
-                for ln in seed.splitlines()
-                if re.search(r"可比公司A|1[,，]?378|946|242|3138|销售人员|运营人员|行政", ln)
-            ]
-            # YYCQ侧优先保留 excel 锚点行，避免把 Hermes 臆造的「95人/10人」灌进骨架
+        seed = summary or ""
+        if not seed:
+            return reply, False
+        sanqi_lines = [
+            ln
+            for ln in seed.splitlines()
+            if re.search(r"可比公司A|1[,，]?378|946|242|3138|销售人员|运营人员|行政", ln)
+        ]
+        yycq_lines = [
+            ln
+            for ln in seed.splitlines()
+            if re.search(r"1\.1信息|70\.00|(?<!\d)70\s*人|(?<!\d)61(?:\.00)?\s*人?|33\.15|45\.85", ln)
+        ]
+        if not yycq_lines:
             yycq_lines = [
                 ln
                 for ln in seed.splitlines()
-                if re.search(r"1\.1信息|70\.00|(?<!\d)70\s*人|61\.|33\.15|45\.85", ln)
+                if re.search(r"YYCQ", ln) and re.search(r"70|61|33\.15|45\.85", ln)
             ]
-            if not yycq_lines:
-                yycq_lines = [
-                    ln
-                    for ln in seed.splitlines()
-                    if re.search(r"YYCQ", ln) and re.search(r"70|61|33\.15|45\.85", ln)
-                ]
-            sanqi_ex = "\n".join(sanqi_lines).strip() or (
-                "可比公司A 研发人员数量 1378 占比43.91%；销售人员 946人；运营人员 242人"
-            )
-            yycq_ex = "\n".join(yycq_lines).strip() or (
-                "YYCQ 1.1信息-人员 研发 70 运营 61 管理 33.15 支持 45.85"
-            )
-            excerpts = [
-                {
-                    "entity": "可比公司A",
-                    "doc_id": str((cites[0] if cites else {}).get("doc_id") or ""),
-                    "excerpt": sanqi_ex[:1600],
-                },
-                {
-                    "entity": "YYCQ",
-                    "doc_id": str((cites[1] if len(cites) > 1 else {}).get("doc_id") or ""),
-                    "excerpt": yycq_ex[:1600],
-                },
-            ]
-        else:
+        sanqi_ex = "\n".join(sanqi_lines).strip()
+        yycq_ex = "\n".join(yycq_lines).strip()
+        if not sanqi_ex or not yycq_ex:
             return reply, False
+        excerpts = [
+            {
+                "entity": "可比公司A",
+                "doc_id": str((cites[0] if cites else {}).get("doc_id") or ""),
+                "excerpt": sanqi_ex[:1600],
+            },
+            {
+                "entity": "YYCQ",
+                "doc_id": str((cites[1] if len(cites) > 1 else {}).get("doc_id") or ""),
+                "excerpt": yycq_ex[:1600],
+            },
+        ]
     payload = build_agent_payload(
         query=uq,
         excerpts=excerpts,
         citations=list(pf.get("citations") or []),
     )
-    # slim prefetch / 毒化正文节选偶发 evidence_sufficient=false：规模错稿仍须 canonical 骨架纠偏
-    if not payload.get("evidence_sufficient") or not re.search(
-        r"(?<!\d)70(?!\d)",
-        "\n".join(str(x.get("excerpt") or "") for x in excerpts),
-    ):
-        payload = build_agent_payload(
-            query=uq,
-            excerpts=[
-                {
-                    "entity": "可比公司A",
-                    "doc_id": "",
-                    "excerpt": "研发人员数量 1378 占比43.91%；销售人员 946人；运营人员 242人",
-                },
-                {
-                    "entity": "YYCQ",
-                    "doc_id": "",
-                    "excerpt": "1.1信息-人员 研发 70 运营 61 管理 33.15 支持 45.85",
-                },
-            ],
-            citations=list(pf.get("citations") or []),
-        )
+    # 证据不足：拒绝硬编码 canonical 锚点糊弄（§0.1 D / T33）
+    joined_ex = "\n".join(str(x.get("excerpt") or "") for x in excerpts)
+    if not payload.get("evidence_sufficient") or not re.search(r"(?<!\d)70(?!\d)", joined_ex):
+        return reply, False
     skeleton = build_personnel_salvage_final_from_payload(payload)
     if "人员结构对照" not in skeleton:
         return reply, False

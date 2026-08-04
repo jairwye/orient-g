@@ -531,13 +531,14 @@ def test_coerce_hermes_personnel_to_mcp_skeleton_when_scale_narrative(monkeypatc
     meta = resolve_personnel_reply_source(
         structured_gate_applied=False,
         misattribution_gate_applied=False,
+        coerce_applied=True,
         reply=out,
     )
-    assert meta["reply_source"] == "hermes"
+    assert meta["reply_source"] == "orientg_mcp_coerce"
 
 
 def test_coerce_总体规模_错稿_even_with_empty_prefetch(monkeypatch):
-    """宽尺子：CDP 实测「一、总体规模」错稿在 slim prefetch 空节选时仍须纠偏。"""
+    """空 Evidence Pack 禁止硬编码 1378/70 糊弄（§0.1 D / T33）。"""
     from backend.config import settings
     from backend.services.agent_kb_supplemental import apply_hermes_mcp_personnel_contract_coerce
 
@@ -558,14 +559,8 @@ def test_coerce_总体规模_错稿_even_with_empty_prefetch(monkeypatch):
         user_query=PERSONNEL_QUERY,
         hermes_kb_ask_count=1,
     )
-    assert coerced is True
-    assert "人员结构对照" in out
-    assert "1378" in out or "1,378" in out
-    assert "70" in out
-    assert "成稿骨架" not in out
-    assert "总体规模" not in out
-    assert "95人" not in out
-    assert "可能依赖" not in out
+    assert coerced is False
+    assert out == bad
 
 
 def test_misattribution_gate_keeps_native_hermes_when_structure_table_ok(monkeypatch):
@@ -744,10 +739,26 @@ def test_resolve_personnel_reply_source_hermes_when_gates_off():
         misattribution_gate_applied=False,
         supplemental_ran=False,
         supplemental_adopted=False,
-        reply="### 人员结构对照\n| 研发 | 1378 | 70 |\n",
+        reply=(
+            "### 人员结构对照\n| 研发 | 1378 | 70 |\n| 销售 | 946 | 证据未覆盖 |\n"
+            "| 运营 | 242 | 61 |\n### 对比分析\n"
+            "两家披露口径不同：可比公司A年报专业构成与YYCQ excel 分项不可混比规模。"
+            "研发人数差异显著，销售侧可比公司A披露更全。\n### 口径说明\n年报 vs excel。\n"
+        ),
     )
     assert meta["reply_source"] == "hermes"
     assert meta["structured_gate_applied"] is False
+
+
+def test_resolve_personnel_reply_source_coerce_when_applied():
+    from backend.services.agent_kb_supplemental import resolve_personnel_reply_source
+
+    meta = resolve_personnel_reply_source(
+        coerce_applied=True,
+        reply="### 人员结构对照\n| 研发 | 1378 | 70 |\n",
+    )
+    assert meta["reply_source"] == "orientg_mcp_coerce"
+    assert meta.get("coerce_applied") is True
 
 
 def test_resolve_personnel_reply_source_gate_when_applied():

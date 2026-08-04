@@ -204,3 +204,33 @@ def test_orientg_kb_ask_applies_session_kb_scope_via_http(monkeypatch, client):
     assert captured["token"] == tok
     assert captured.get("limit_to_attached") is True
     assert captured.get("attached_doc_ids") == ["ud_folder_a_doc"]
+
+
+def test_remote_budget_fail_closed_when_bridge_errors(monkeypatch):
+    from backend.services import hermes_bridge_http as http_bridge
+
+    monkeypatch.setattr(http_bridge, "bridge_http_enabled", lambda: True)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("bridge down")
+
+    monkeypatch.setattr(http_bridge, "_post_json", boom)
+    deny = http_bridge.consume_remote_kb_ask_budget("orientg-budget-fail")
+    assert deny is not None
+    assert "unavailable" in deny.lower()
+
+
+def test_production_bridge_rejects_non_private_client(client, monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "orientg_mcp_bridge_secret", BRIDGE_SECRET)
+    # TestClient 默认 client host 为 testclient；生产应拒绝非 loopback/私网
+    from backend.routers import internal_hermes as ih
+
+    monkeypatch.setattr(ih, "_is_loopback_or_private", lambda _h: False)
+    r = client.post(
+        "/api/internal/hermes/session/resolve",
+        headers=_headers(),
+        json={"hermes_session_key": "orientg-x"},
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "bridge_client_forbidden"

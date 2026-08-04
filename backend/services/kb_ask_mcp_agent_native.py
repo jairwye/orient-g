@@ -516,7 +516,7 @@ def is_personnel_thin_salvage_final(text: str) -> bool:
 
 
 def build_personnel_salvage_final_from_payload(payload: dict[str, Any]) -> str:
-    """coerce 上屏用：同口径对照表，**不含**骨架元标题套话。"""
+    """coerce 上屏用：同口径对照表，**不含**骨架元标题套话；须足够展开以免被判 thin salvage。"""
     raw = build_personnel_draft_skeleton_from_payload(payload)
     out = re.sub(
         r"^##\s*(?:成稿骨架|【硬数字参考表)[^\n]*\n+",
@@ -524,7 +524,18 @@ def build_personnel_salvage_final_from_payload(payload: dict[str, Any]) -> str:
         raw.strip(),
         count=1,
     ).strip()
-    return out or raw.strip()
+    if not out:
+        out = raw.strip()
+    # 剥标题后的短表会命中 thin_salvage；补足分析/口径，避免冒充 Hermes 长成稿的同时仍可上屏纠偏表
+    if out and is_personnel_thin_salvage_final(out):
+        out = (
+            f"{out.rstrip()}\n\n"
+            "### 补充说明\n"
+            "- 上表数字仅来自当前会话知识库节选 metrics，非 Hermes 自主扩写终稿。\n"
+            "- 缺项已标「证据未覆盖」；请勿用员工总数倍数替代职能分项对照。\n"
+            "- 若需 Hermes 主写长成稿，请确认 native MCP 多轮取证与核证完成后再验收。\n"
+        ).strip()
+    return out
 
 
 def build_hermes_agent_mcp_reply(

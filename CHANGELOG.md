@@ -4,9 +4,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **人员 native 出处诚实**：空 Evidence Pack 不再硬编码 1378/946/242/70；MCP coerce / thin salvage 标 `reply_source=orientg_mcp_coerce`，主气泡不得以 thin salvage 冒充 Hermes 终稿。
+- **MCP 会话桥加固**：桥密钥 `hmac.compare_digest`；生产仅 loopback/私网客户端；`hermes_session_store` JWT at-rest 密封；远程预算扣减桥不可达时 fail-closed。
+
 ### Added
 
-- **Hermes native MCP 成稿**：`HERMES_NATIVE_MCP_REPLY` / skip-supplemental / prefetch 上限；`orientg_kb_ask` agent_payload v2；人员横比结构化成稿与质量门。
+- **Hermes native MCP 成稿**：`HERMES_NATIVE_MCP_REPLY` / skip-supplemental / prefetch 上限；`orientg_kb_ask` agent_payload v2；人员横比结构化成稿与质量门。**默认关闭**；验收环境显式开启（见 `.env.example` 注释与 `1.2.3.d`）。
 - **Hermes MCP HTTP 会话桥**：`/api/internal/hermes/session/resolve` 与 ask-budget consume；`hermes_session_store` 跨进程共享；`ORIENTG_MCP_BRIDGE_SECRET`（生产禁用回退 AUTH_SECRET）。
 - **人员矩阵浏览器验收**：personnel cases / CDP runner / validate；`kb_compare_entities` 公开仓占位（YYCQ / 可比公司A），生产真实名仅经本地 env 扩展。
 - **Agent KB 三路分流（Tier 0–2）**：`fast` / `hermes_lite` / `hermes_full` 路由；Evidence Pack 预检索、ask budget、KB scope 解析与 fast path 本地综合。

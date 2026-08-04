@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -12,6 +16,8 @@ from sqlalchemy import text
 from backend.database import engine, init_hermes_session_store_table
 
 logger = logging.getLogger(__name__)
+
+_TOKEN_SEAL_PREFIX = "v1:"
 
 
 def _now() -> datetime:
@@ -22,6 +28,61 @@ def _normalize_key(session_key: str) -> str:
     from backend.services.hermes_token_bridge import normalize_session_key
 
     return normalize_session_key(session_key)
+
+
+def _token_seal_key() -> bytes:
+    from backend.config import settings
+
+    dedicated = (settings.orientg_mcp_bridge_secret or "").strip()
+    auth = (settings.auth_secret or "").strip()
+    material = (dedicated or auth or "orientg-dev-session-seal").encode("utf-8")
+    return hashlib.sha256(b"hermes-session-token-v1:" + material).digest()
+
+
+def seal_user_token(user_token: str) -> str:
+    """JWT at-rest 密封（不可逆密钥派生 + 流密码 + HMAC）。兼容明文旧行。"""
+    pt = (user_token or "").strip().encode("utf-8")
+    if not pt:
+        return ""
+    key = _token_seal_key()
+    nonce = secrets.token_bytes(16)
+    out = bytearray()
+    counter = 0
+    while len(out) < len(pt):
+        block = hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest()
+        out.extend(block)
+        counter += 1
+    ct = bytes(a ^ b for a, b in zip(pt, out[: len(pt)]))
+    tag = hmac.new(key, nonce + ct, hashlib.sha256).digest()[:16]
+    return _TOKEN_SEAL_PREFIX + base64.urlsafe_b64encode(nonce + tag + ct).decode("ascii")
+
+
+def unseal_user_token(stored: str) -> str:
+    raw = (stored or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith(_TOKEN_SEAL_PREFIX):
+        # 兼容升级前明文行
+        return raw
+    try:
+        blob = base64.urlsafe_b64decode(raw[len(_TOKEN_SEAL_PREFIX) :].encode("ascii"))
+        nonce, tag, ct = blob[:16], blob[16:32], blob[32:]
+        key = _token_seal_key()
+        expect = hmac.new(key, nonce + ct, hashlib.sha256).digest()[:16]
+        if not hmac.compare_digest(tag, expect):
+            logger.warning("hermes session token seal MAC mismatch")
+            return ""
+        out = bytearray()
+        counter = 0
+        while len(out) < len(ct):
+            block = hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest()
+            out.extend(block)
+            counter += 1
+        pt = bytes(a ^ b for a, b in zip(ct, out[: len(ct)]))
+        return pt.decode("utf-8")
+    except Exception:
+        logger.debug("unseal hermes session token failed", exc_info=True)
+        return ""
 
 
 def persist_session(
@@ -41,6 +102,7 @@ def persist_session(
         return
     expires = _now() + timedelta(seconds=max(1, int(ttl_seconds)))
     scope = kb_scope or {}
+    sealed = seal_user_token(token)
     sql = text(
         """
         INSERT INTO hermes_session_store (
@@ -64,7 +126,7 @@ def persist_session(
                 sql,
                 {
                     "k": key,
-                    "t": token,
+                    "t": sealed,
                     "scope": json.dumps(scope, ensure_ascii=False),
                     "w": bool(allow_kb_write),
                     "route": (orientg_route or "").strip() or None,
@@ -106,8 +168,11 @@ def load_session(session_key: str | None) -> Optional[dict[str, Any]]:
             scope = json.loads(scope_raw) if isinstance(scope_raw, str) else dict(scope_raw or {})
         except Exception:
             scope = {}
+        token = unseal_user_token(str(row.get("user_token") or ""))
+        if not token:
+            return None
         return {
-            "user_token": str(row.get("user_token") or "").strip(),
+            "user_token": token,
             "kb_scope": scope,
             "allow_kb_write": bool(row.get("allow_kb_write")),
             "orientg_route": (row.get("orientg_route") or "").strip() or None,

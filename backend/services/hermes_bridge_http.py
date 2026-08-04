@@ -161,6 +161,7 @@ def fetch_remote_session(session_key: str | None) -> RemoteHermesSession | None:
 
 
 def consume_remote_kb_ask_budget(session_key: str | None) -> Optional[str]:
+    """远程预算扣减。桥启用却不可达时 fail-closed（返回 deny 字符串）。"""
     from backend.services.hermes_token_bridge import normalize_session_key
 
     key = normalize_session_key(session_key or "")
@@ -174,10 +175,10 @@ def consume_remote_kb_ask_budget(session_key: str | None) -> Optional[str]:
         )
     except Exception:
         logger.debug("hermes bridge HTTP budget consume failed for %s", key, exc_info=True)
-        return None
+        return "orientg_kb_ask budget bridge unavailable"
 
     if resp.status_code != 200:
-        return None
+        return "orientg_kb_ask budget bridge unavailable"
     data = resp.json()
     if data.get("denied"):
         return str(data.get("reason") or "orientg_kb_ask budget denied")
