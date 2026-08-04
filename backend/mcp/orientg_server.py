@@ -29,7 +29,13 @@ def orientg_kb_ask(
     attached_doc_ids: list[str] | None = None,
     hermes_session_key: str | None = None,
 ) -> dict:
-    """在 ACL 范围内检索知识库并返回摘要与 citations。hermes_session_key 须与 system 上下文 orientg_hermes_session_key 一致。"""
+    """竞品财报/知识库检索（Hermes 原生 v2 时含 agent_payload 成稿契约）。
+
+    在 ACL 范围内检索并返回 reply、citations、证据节选；启用 HERMES_NATIVE_MCP_REPLY 时还返回
+    agent_payload（orientg_kb_ask_v2：entities、metrics、output_contract）。
+    hermes_session_key 必填，须与 system 上下文 orientg_hermes_session_key 一致。
+    收到 evidence_sufficient=true 后应直接以中文写终稿，勿重复相同 query 或改用 terminal。
+    """
     return tools.orientg_kb_ask(
         "",
         query,

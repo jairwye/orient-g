@@ -23,3 +23,25 @@ def test_loop_guard_aborts_after_forbidden_blocks():
     abort, code, _msg = g.should_abort()
     assert abort
     assert code == "hermes_run_forbidden_loop"
+
+
+def test_loop_guard_does_not_abort_long_planning_without_kb_ask():
+    import time
+
+    g = HermesRunsLoopGuard(orientg_route="hermes_full")
+    g.max_planning_chars = 100
+    g.max_planning_s = 0.0
+    g.accumulated_len = 200
+    g.kb_ask_calls = 0
+    g.started = time.monotonic() - 1.0
+    abort, code, _msg = g.should_abort()
+    assert not abort
+    assert code == ""
+
+
+def test_loop_guard_aborts_excessive_kb_ask_without_report():
+    g = HermesRunsLoopGuard(orientg_route="hermes_full")
+    g.sync_stats({"hermes_orientg_kb_ask_calls": 4})
+    abort, code, _msg = g.should_abort()
+    assert abort
+    assert code == "hermes_kb_ask_loop"

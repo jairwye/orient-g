@@ -1019,6 +1019,33 @@ def init_kb_audit_tables() -> None:
     logger.info("kb_audit_events table ready")
 
 
+def init_hermes_session_store_table() -> None:
+    """Hermes session_key → JWT / kb_scope 共享表（跨 worker + MCP HTTP 桥）。"""
+    if not _should_manage_schema():
+        return
+    sql = """
+    CREATE TABLE IF NOT EXISTS hermes_session_store (
+        session_key TEXT PRIMARY KEY,
+        user_token TEXT NOT NULL,
+        kb_scope_json TEXT NOT NULL DEFAULT '{}',
+        allow_kb_write BOOLEAN NOT NULL DEFAULT FALSE,
+        orientg_route TEXT,
+        kb_budget_max INTEGER,
+        kb_budget_used INTEGER NOT NULL DEFAULT 0,
+        expires_at TIMESTAMPTZ NOT NULL
+    )
+    """
+    idx = """
+    CREATE INDEX IF NOT EXISTS idx_hermes_session_store_expires
+    ON hermes_session_store (expires_at)
+    """
+    with engine.connect() as conn:
+        conn.execute(text(sql))
+        conn.execute(text(idx))
+        conn.commit()
+    logger.info("hermes_session_store table ready")
+
+
 def init_kb_vector_tables() -> None:
     if not _should_manage_schema():
         return

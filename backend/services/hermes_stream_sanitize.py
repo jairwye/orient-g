@@ -65,7 +65,7 @@ _REPLY_START_MARKERS = (
 )
 
 _REPORT_TITLE_START = re.compile(
-    r"(?:---+\s*)?(?:#{1,3}\s*(?:华清|结论|\S{2,40}(?:对比分析|分析报告)))",
+    r"(?:---+\s*)?(?:#{1,3}\s*(?:可比公司E|结论|\S{2,40}(?:对比分析|分析报告)))",
 )
 
 _CODE_EXEC_PATTERNS = re.compile(
@@ -111,6 +111,24 @@ def looks_like_planning(text: str) -> bool:
     if "No additional API calls are needed" in t and len(t) < 600:
         return True
     if "orientg_kb_ask" in t and len(t) < 1200:
+        return True
+    if re.search(r"需要通过.*MCP", t):
+        return True
+    if re.search(r"通过\s*MCP", t) and re.search(r"我需要|我将|让我", t) and len(t) < 600 and "|" not in t:
+        return True
+    if re.search(r"我需要(?:先|针对|查找).*?(?:MCP|检索|查找)", t) and len(t) < 600:
+        return True
+    if re.search(r"现在我需要(?:查找|检索|确认)", t) and len(t) < 600:
+        return True
+    if "首轮检索" in t and len(t) < 600 and "|" not in t:
+        return True
+    if "没有直接找到" in t and len(t) < 600:
+        return True
+    if re.search(r"接下来.*检索", t) and len(t) < 1200:
+        return True
+    if "找不到" in t and "人员" in t and "|" not in t:
+        return True
+    if "Evidence Pack" in t and len(t) < 900 and "|" not in t:
         return True
     if "skill" in t.lower() and ("不相关" in t or "不需要加载" in t):
         return True
@@ -218,7 +236,7 @@ def extract_user_facing_reply(text: str) -> str:
     if not t:
         return ""
     m_cn = re.search(
-        r"(?:^|\n)(?:#{1,3}\s*)?(?:华清|[\u4e00-\u9fff]{2,8}(?:对比分析|明细对比)?报告|结论[:：]|一、|二、|\|\s*指标)",
+        r"(?:^|\n)(?:#{1,3}\s*)?(?:可比公司E|[\u4e00-\u9fff]{2,8}(?:对比分析|明细对比)?报告|结论[:：]|一、|二、|\|\s*指标)",
         t,
     )
     if m_cn and m_cn.start() > 80:
@@ -243,25 +261,38 @@ def extract_user_facing_reply(text: str) -> str:
     return strip_hermes_orchestration_preamble(t)
 
 
+# 「约」仅在金额/人数区间语境拒收；占比约 30% 等百分比不触发（避免误加「请勿采信」）
 _FORBIDDEN_ESTIMATE = re.compile(
-    r"约\s*[\d,.]+|[\d]{1,3}\s*[-~至]\s*[\d]{1,3}\s*万|减少约|增加约|变动情况：.*约"
+    r"约\s*[\d,.]+\s*万|约\s*[\d,.]+\s*元|约\s*\d{2,6}\s*人|"
+    r"[~～]\s*\d{2,6}\s*人|"
+    r"[\d]{1,3}\s*[-~至]\s*[\d]{1,3}\s*万|减少约|增加约|变动情况：.*约"
 )
 _UNSUPPORTED_SPECULATION = re.compile(
-    r"可能系|可能为|可能由于|或许是因为|或许系|或许为|推断为|推测为|合理推测|大概系|大概为"
+    r"可能系|可能为|可能由于|可能依赖|或许是因为|或许系|或许为|"
+    r"推断为|推测为|合理推测|大概系|大概为|"
+    r"根据推算|推算|可推断|推断|推测|"
+    r"约\s*\d{2,6}\s*人|[~～]\s*\d{2,6}\s*人"
 )
 _EVIDENCE_REASON_OK = re.compile(
     r"主要系|是由于|系因|证据指出|根据证据|年报|原文|载明|披露|附注"
 )
 _SPECULATION_GAP = "证据未提供变动原因说明，仅列示金额与分项对比。"
+_DISCLAIMER_CRUTCH = re.compile(r"请勿采信|勿采信|模型推断")
 
 
 def reply_has_unsupported_speculation(text: str) -> bool:
-    """变动原因段的无证据推断（如「可能系…」），不可作为合规终稿。"""
-    for ln in (text or "").split("\n"):
+    """无证据推断/推算/约N人（及「请勿采信」掩盖），不可作为合规终稿。"""
+    t = text or ""
+    if _DISCLAIMER_CRUTCH.search(t) and (
+        _UNSUPPORTED_SPECULATION.search(t) or "推断" in t or "推算" in t
+    ):
+        return True
+    for ln in t.split("\n"):
+        if _DISCLAIMER_CRUTCH.search(ln):
+            return True
         if _UNSUPPORTED_SPECULATION.search(ln) and not _EVIDENCE_REASON_OK.search(ln):
             return True
     return False
-
 
 def reply_has_unsupported_breakdown_amounts(text: str) -> bool:
     """估算区间、反推分项或無证据推断（均不可作为终稿分项/原因）。"""
@@ -292,15 +323,30 @@ def _is_markdown_table_line(ln: str) -> bool:
     return ln.count("|") >= 2
 
 
+def _strip_approx_headcount_phrases(text: str) -> str:
+    """去掉「约 N 人 / ~N人」措辞（保留数字或改为证据分项表述）。"""
+    t = text or ""
+    t = re.sub(r"合计约\s*(\d{2,6})\s*人", r"分项合计 \1 人", t)
+    t = re.sub(r"约\s*(\d{2,6})\s*人", r"\1 人", t)
+    t = re.sub(r"[~～]\s*(\d{2,6})\s*人", r"\1 人", t)
+    return t
+
+
 def _strip_unsupported_speculation_prose(text: str) -> str:
-    """去掉变动原因中的「可能系…」等无证据推断句，保留表与证据原文句式。"""
+    """去掉「可能系/推算/推断/约N人」及「请勿采信」掩盖句，保留表与证据原文句式。"""
     out: list[str] = []
     for ln in (text or "").split("\n"):
+        ln = _strip_approx_headcount_phrases(ln)
         if _is_markdown_table_line(ln):
             out.append(ln)
             continue
+        if _DISCLAIMER_CRUTCH.search(ln):
+            continue
         if not _UNSUPPORTED_SPECULATION.search(ln) or _EVIDENCE_REASON_OK.search(ln):
             out.append(ln)
+            continue
+        # 人员/对照：整行剔除推算句，不留「请勿采信」脚注
+        if re.search(r"推算|推断|推测|约\s*\d+\s*人|[~～]\s*\d+\s*人", ln):
             continue
         prefix_m = re.match(
             r"^(\s*(?:[\*\-•]\s*)?(?:\*\*)?[^：:\n]{2,40}(?:\*\*)?[：:])\s*",
@@ -312,10 +358,12 @@ def _strip_unsupported_speculation_prose(text: str) -> str:
         if re.search(r"原因|变动|分析|驱动", ln):
             out.append(_SPECULATION_GAP)
             continue
+        # 其余含违规词的分析句直接丢弃
+        continue
     t = "\n".join(out)
     t = re.sub(rf"({re.escape(_SPECULATION_GAP)}\s*){{2,}}", _SPECULATION_GAP + "\n", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
-
 
 def _strip_unsupported_estimate_prose(text: str) -> str:
     """保留对比表；去掉正文中「约 xx 万」等估算句，避免误触发「无分项」占位。"""
@@ -408,12 +456,18 @@ def format_hermes_draft_trace(text: str, *, max_chars: int = 2400) -> str:
     return t
 
 
+def _draft_emit_fingerprint(text: str) -> str:
+    """截断省略号不应触发过程稿重复 emit。"""
+    return (text or "").rstrip().rstrip("…").rstrip()
+
+
 class HermesDraftTraceAccumulator:
     """Hermes Runs 正文 delta 为增量片段；须累积后再 format，勿对单 chunk 格式化。"""
 
     def __init__(self) -> None:
         self._parts: list[str] = []
         self._last_emitted = ""
+        self._last_fingerprint = ""
 
     def full_body(self) -> str:
         """累积全文（不截断）；供终稿判定与 supplemental 合规检查。"""
@@ -427,16 +481,20 @@ class HermesDraftTraceAccumulator:
         if chunk:
             self._parts.append(chunk)
         draft = format_hermes_draft_trace("".join(self._parts))
-        if not draft or draft == self._last_emitted:
+        fp = _draft_emit_fingerprint(draft)
+        if not draft or fp == self._last_fingerprint:
             return None
         self._last_emitted = draft
+        self._last_fingerprint = fp
         return draft
 
     def flush(self) -> str | None:
         draft = format_hermes_draft_trace("".join(self._parts))
-        if not draft or draft == self._last_emitted:
+        fp = _draft_emit_fingerprint(draft)
+        if not draft or fp == self._last_fingerprint:
             return None
         self._last_emitted = draft
+        self._last_fingerprint = fp
         return draft
 
 
@@ -458,7 +516,7 @@ def _strip_code_execution_blocks(text: str) -> str:
             continue
         if skipping:
             if re.search(r"^#{1,3}\s*[\u4e00-\u9fff]", ln) or re.search(
-                r"^#{1,3}\s*华清", ln
+                r"^#{1,3}\s*可比公司E", ln
             ):
                 skipping = False
             else:
@@ -472,11 +530,69 @@ def resolve_hermes_effective_reply(
     *,
     evt_reply: str,
     draft_acc: HermesDraftTraceAccumulator | None,
+    user_query: str = "",
 ) -> str:
-    """过程稿 defer 时 done.reply 常为空/较短，须以累积正文作为 Hermes 终稿来源。"""
+    """过程稿 defer 时 done.reply 常为空/较短；须以累积正文作为 Hermes 终稿来源。
+
+    人员横比：run.completed 可能输出更长的「KB 为空 / 非上市公司」幻觉，
+    过程稿却有完整「人员结构对照」——按质量分择优，而非仅比长度。
+    """
     evt = (evt_reply or "").strip()
     draft = draft_acc.full_body() if draft_acc else ""
+    uq = (user_query or "").strip()
+
+    if draft and evt and uq:
+        from backend.services.kb_retrieval_plan import query_wants_personnel_compare
+
+        if query_wants_personnel_compare(uq):
+            from backend.services.hermes_response_analysis import (
+                hermes_personnel_compare_quality_score,
+                hermes_reply_has_personnel_speculation,
+            )
+
+            draft_score = hermes_personnel_compare_quality_score(draft, user_query=uq)
+            evt_score = hermes_personnel_compare_quality_score(evt, user_query=uq)
+            from backend.services.kb_ask_mcp_agent_native import (
+                is_personnel_mcp_draft_skeleton,
+                is_personnel_thin_salvage_final,
+            )
+
+            # 过程合规对照表优先；含推算的长分析不得劣币驱逐
+            if draft_score > evt_score and (
+                draft_score >= 40
+                or (
+                    re.search(r"人员结构对照", draft)
+                    and not hermes_reply_has_personnel_speculation(draft)
+                )
+            ):
+                return draft
+            if draft_score >= 50 and evt_score < 30:
+                return draft
+            if (
+                hermes_reply_has_personnel_speculation(evt)
+                and not hermes_reply_has_personnel_speculation(draft)
+                and re.search(r"人员结构对照", draft)
+            ):
+                return draft
+            # 终稿是骨架套话/短 salvage、过程稿已有对照表+锚点：必须保住过程稿
+            if (
+                is_personnel_mcp_draft_skeleton(evt) or is_personnel_thin_salvage_final(evt)
+            ) and not (
+                is_personnel_mcp_draft_skeleton(draft)
+                or is_personnel_thin_salvage_final(draft)
+            ):
+                if re.search(r"人员结构对照", draft) and (
+                    re.search(r"1[,，]?378", draft) or draft_score >= 40
+                ):
+                    return draft
+
     if draft and (not evt or len(draft) >= len(evt)):
+        # 过程长稿 vs 短 salvage evt：即便长度比较前已漏网，仍保过程稿
+        from backend.services.kb_ask_mcp_agent_native import is_personnel_thin_salvage_final
+
+        if uq and is_personnel_thin_salvage_final(evt) and not is_personnel_thin_salvage_final(draft):
+            if re.search(r"人员结构对照", draft) and len(draft) > len(evt) + 40:
+                return draft
         return draft
     return evt or draft
 
@@ -529,10 +645,10 @@ def _dedupe_report_intro(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return ""
-    m = re.search(r"(#{2,3}\s*华清[^\n]{4,80}(?:对比分析|明细对比)?报告)", t)
+    m = re.search(r"(#{2,3}\s*可比公司E[^\n]{4,80}(?:对比分析|明细对比)?报告)", t)
     if m and m.start() > 0 and re.search(r"根据检索|以下是", t[: m.start()]):
         return t[m.start() :].strip()
-    m2 = re.search(r"(#{2,3}\s*华清[^\n]+)", t)
+    m2 = re.search(r"(#{2,3}\s*可比公司E[^\n]+)", t)
     if m2 and m2.start() > 80 and "根据检索" in t[:200]:
         return t[m2.start() :].strip()
     return t
@@ -575,7 +691,7 @@ def normalize_reply_markdown(text: str) -> str:
     t = _convert_tsv_tables(t)
     t = re.sub(r"^(根据检索到的[^\n]+。\n?)", "", t, count=1).strip()
     t = re.sub(
-        r"^(华清\s*\d{4}[-、]\d{4}年销售费用[^\n]+报告)\s*$",
+        r"^(可比公司E\s*\d{4}[-、]\d{4}年销售费用[^\n]+报告)\s*$",
         r"## \1",
         t,
         flags=re.M,
@@ -614,6 +730,16 @@ def normalize_reply_markdown(text: str) -> str:
     return strip_inline_source_markers(t.strip())
 
 
+def _strip_disclaimer_crutch_lines(text: str) -> str:
+    """去掉「请勿采信」掩盖脚注（宽尺子 C：应剥离违规句，而非脚注掩盖）。"""
+    out: list[str] = []
+    for ln in (text or "").split("\n"):
+        if _DISCLAIMER_CRUTCH.search(ln):
+            continue
+        out.append(ln)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
 def finalize_agent_reply(
     reply: str,
     *,
@@ -624,15 +750,26 @@ def finalize_agent_reply(
     body = strip_hermes_orchestration_preamble(extract_user_facing_reply(reply or ""))
     if not body.strip():
         body = (reply or "").strip()
+    from backend.services.kb_retrieval_plan import query_wants_personnel_compare
+
     if tier2_native:
         body = normalize_reply_markdown(body)
         body = strip_inline_source_markers(body)
         body = _strip_unsupported_speculation_prose(body)
+        body = _strip_disclaimer_crutch_lines(body)
+        # 人员横比：勿走费用分项 enforce（会因「约」误加请勿采信脚注）
+        if query_wants_personnel_compare(user_query or ""):
+            return _strip_approx_headcount_phrases(body)
         # Tier 2 仍以 Hermes 为终稿来源，但须剔除无证据的「约 xx 万」分项幻觉（不整篇本地重写）
         if reply_has_unsupported_breakdown_amounts(body):
             body = enforce_breakdown_compare_reply(body, user_query=user_query)
+            body = _strip_disclaimer_crutch_lines(body)
         return body
-    return enforce_breakdown_compare_reply(body, user_query=user_query)
+    body = enforce_breakdown_compare_reply(body, user_query=user_query)
+    if query_wants_personnel_compare(user_query or ""):
+        body = _strip_unsupported_speculation_prose(body)
+        body = _strip_approx_headcount_phrases(body)
+    return body
 
 
 def _strip_derived_breakdown_sections(text: str) -> str:

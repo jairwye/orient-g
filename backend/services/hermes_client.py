@@ -149,8 +149,18 @@ def _build_messages(
                     evidence_pack=evidence_pack,
                     user_query=user_q,
                     enabled_skills=enabled_skills,
+                    kb_scope=kb_scope,
                 )
             )
+        if tier == "full" and kb_scope:
+            from backend.services.orientg_agent_presentation import kb_scope_nonempty
+            from backend.services.hermes_kb_mcp_bridge import kb_ask_tool_invocation_hint
+
+            if kb_scope_nonempty(kb_scope):
+                ctx["orientg_kb_ask_tool"] = kb_ask_tool_invocation_hint(
+                    session_key=str(orientg_hermes_session_key or ctx.get("orientg_hermes_session_key") or ""),
+                    user_query=user_q,
+                )
         if req_parts:
             ctx["orientg_answer_requirements"] = "\n".join(req_parts).strip()
         ctx["orientg_stream_reasoning"] = bool(settings.hermes_stream_reasoning)
@@ -197,6 +207,17 @@ def _register_session(
         allow_kb_write=allow_kb_write,
         kb_scope=kb_scope,
         orientg_route=orientg_route,
+    )
+    from backend.services.hermes_shared_session import persist_session
+
+    persist_session(
+        session_key,
+        user_token,
+        kb_scope=kb_scope,
+        allow_kb_write=allow_kb_write,
+        orientg_route=orientg_route,
+        kb_budget_max=orientg_kb_ask_budget,
+        ttl_seconds=3600,
     )
     return session_key
 
@@ -481,12 +502,16 @@ def guard_kb_forbidden_tool_sse(
     *,
     orientg_route: str | None,
     on_block: Any | None = None,
+    session_key: str | None = None,
+    user_query: str = "",
 ) -> dict[str, Any] | None:
     """KB 路由执行层：拦截 terminal/shell/loopback 工具步。"""
     from backend.services.hermes_orientg_policy import (
         is_forbidden_kb_tool,
+        kb_forbidden_tool_message,
         orientg_route_is_kb_task,
         tool_progress_looks_like_shell,
+        tool_progress_looks_like_web,
     )
 
     if not orientg_route_is_kb_task(orientg_route):
@@ -495,7 +520,12 @@ def guard_kb_forbidden_tool_sse(
         return None
     tool = str(mapped.get("tool") or "")
     msg = str(mapped.get("message") or mapped.get("label") or "")
-    if not is_forbidden_kb_tool(tool) and not tool_progress_looks_like_shell(msg):
+    blocked = (
+        is_forbidden_kb_tool(tool)
+        or tool_progress_looks_like_shell(msg)
+        or tool_progress_looks_like_web(msg, tool)
+    )
+    if not blocked:
         return None
     if on_block:
         try:
@@ -506,7 +536,10 @@ def guard_kb_forbidden_tool_sse(
         "type": "tool_progress",
         "tool": tool or "forbidden",
         "status": "failed",
-        "message": "KB 任务禁止 terminal/shell/loopback/execute_code；请使用 orientg_kb_* MCP 取证与写库。",
+        "message": kb_forbidden_tool_message(
+            session_key=str(session_key or ""),
+            user_query=str(user_query or ""),
+        ),
     }
 
 
@@ -606,13 +639,9 @@ def _prefer_hermes_runs_api(orientg_route: str | None) -> bool:
 
 
 def _empty_stream_stats() -> dict[str, Any]:
-    return {
-        "thinking_chars": 0,
-        "delta_chars": 0,
-        "tool_progress_events": 0,
-        "tool_call_events": 0,
-        "orientg_kb_ask_calls": 0,
-    }
+    from backend.services.hermes_stream_stats import empty_stream_stats
+
+    return empty_stream_stats()
 
 
 def _record_stream_tool(
@@ -632,24 +661,21 @@ def _record_stream_tool(
 
 
 def _bump_stream_stats(stats: dict[str, Any], mapped: dict[str, Any], tools: list[dict[str, Any]]) -> None:
+    from backend.services.hermes_stream_stats import bump_stream_event_stats
+
+    bump_stream_event_stats(stats, mapped)
     t = mapped.get("type")
-    if t == "thinking" and mapped.get("content"):
-        stats["thinking_chars"] = int(stats.get("thinking_chars") or 0) + len(str(mapped["content"]))
-    elif t == "delta" and mapped.get("content"):
-        stats["delta_chars"] = int(stats.get("delta_chars") or 0) + len(str(mapped["content"]))
-    elif t == "tool_progress":
-        stats["tool_progress_events"] = int(stats.get("tool_progress_events") or 0) + 1
+    if t == "tool_progress":
         tool = str(mapped.get("tool") or "")
         msg = str(mapped.get("message") or "")
-        if "orientg_kb_ask" in tool or "orientg_kb_ask" in msg or "kb_ask" in tool.lower():
-            stats["orientg_kb_ask_calls"] = int(stats.get("orientg_kb_ask_calls") or 0) + 1
         _record_stream_tool(tools, name=tool or msg[:40], status=str(mapped.get("status") or "running"), message=msg)
     elif t == "tool_call" and mapped.get("name"):
-        stats["tool_call_events"] = int(stats.get("tool_call_events") or 0) + 1
-        name = str(mapped["name"])
-        if "orientg_kb" in name:
-            stats["orientg_kb_ask_calls"] = int(stats.get("orientg_kb_ask_calls") or 0) + 1
-        _record_stream_tool(tools, name=name, status="running", message=str(mapped.get("message") or ""))
+        _record_stream_tool(
+            tools,
+            name=str(mapped["name"]),
+            status="running",
+            message=str(mapped.get("message") or ""),
+        )
 
 
 def fetch_hermes_capabilities(*, force: bool = False) -> dict[str, Any]:
@@ -981,9 +1007,60 @@ def stream_agent_chat_runs(
     runs_body = messages_to_hermes_runs_body(built, model=model, session_id=session_key)
     from backend.services.hermes_orientg_policy import kb_route_allowed_toolsets
 
+    user_q = _last_user_query_from_messages(messages)
     allowed_toolsets = kb_route_allowed_toolsets(orientg_route)
     if allowed_toolsets:
         runs_body["toolsets"] = allowed_toolsets
+    if (orientg_route or "").strip().lower() == "hermes_full":
+        from backend.services.hermes_kb_mcp_bridge import kb_ask_tool_invocation_hint
+
+        hint = kb_ask_tool_invocation_hint(session_key=session_key, user_query=user_q)
+        mandate = (
+            "\n\n## Orient-G 深度取证（首轮须 tool）\n"
+            f"{hint.get('instruction') or ''}\n"
+            "**硬性**：本 run **第一动作**必须是调用 mcp_orientg_orientg_kb_ask；"
+            "禁止先写对照表/长分析再补工具；禁止把网关 Evidence Pack 摘要当终稿数字来源。"
+            "在本 run 内你必须至少再调用一次 mcp_orientg_orientg_kb_ask 核实或补检索；"
+            "禁止 terminal / execute_code / curl 代替 KB。"
+        )
+        base_instr = str(runs_body.get("instructions") or "").strip()
+        runs_body["instructions"] = f"{base_instr}{mandate}".strip() if base_instr else mandate.strip()
+
+    stream_stats = _empty_stream_stats()
+    stream_tools: list[dict[str, Any]] = []
+
+    from backend.services.hermes_kb_mcp_bridge import (
+        format_kb_ask_primer_for_instructions,
+        run_kb_ask_primer,
+        should_prime_kb_ask_before_hermes_run,
+    )
+
+    if should_prime_kb_ask_before_hermes_run(
+        orientg_route=orientg_route,
+        kb_scope=kb_scope,
+        user_query=user_q,
+    ):
+        from backend.services.knowledge_acl import load_fixtures
+
+        primer_events, primer_result = run_kb_ask_primer(
+            user_token=user_token,
+            user_query=user_q,
+            kb_scope=kb_scope,
+            attached_doc_ids=attached_doc_ids,
+            fixtures=load_fixtures(),
+            enabled_skills=enabled_skills,
+        )
+        for pe in primer_events:
+            _bump_stream_stats(stream_stats, pe, stream_tools)
+            yield pe
+        if primer_result and str(primer_result.get("reply") or "").strip():
+            snippet = format_kb_ask_primer_for_instructions(
+                query=str(primer_result.get("query") or user_q),
+                reply=str(primer_result.get("reply") or ""),
+                citations=list(primer_result.get("citations") or []),
+            )
+            base = str(runs_body.get("instructions") or "").strip()
+            runs_body["instructions"] = f"{base}\n\n{snippet}".strip() if base else snippet
 
     from backend.services.hermes_runs_loop_guard import HermesRunsLoopGuard, runs_read_timeout_s
 
@@ -998,12 +1075,13 @@ def stream_agent_chat_runs(
     )
     loop_guard = HermesRunsLoopGuard(orientg_route=orientg_route)
     abort_runs = False
+    abort_code = ""
     accumulated_parts: list[str] = []
+    thinking_parts: list[str] = []
+    raw_stream_parts: list[str] = []
     final_output = ""
     seen_tool_keys: set[str] = set()
     tool_label_by_id: dict[str, str] = {}
-    stream_stats = _empty_stream_stats()
-    stream_tools: list[dict[str, Any]] = []
     q: queue.Queue[tuple[str, Any]] = queue.Queue()
     stop_reader = threading.Event()
     reader_done = threading.Event()
@@ -1069,10 +1147,18 @@ def stream_agent_chat_runs(
                 remapped = _apply_stream_content_policy(mapped, accumulated=accumulated_parts)
                 if remapped is None:
                     continue
+                _track_hermes_stream_chunk(
+                    mapped,
+                    remapped,
+                    raw_parts=raw_stream_parts,
+                    thinking_parts=thinking_parts,
+                )
                 blocked = guard_kb_forbidden_tool_sse(
                     remapped,
                     orientg_route=orientg_route,
                     on_block=loop_guard.on_forbidden_block,
+                    session_key=session_key,
+                    user_query=user_q,
                 )
                 if blocked:
                     out.append(blocked)
@@ -1080,6 +1166,7 @@ def stream_agent_chat_runs(
                     continue
                 _bump_stream_stats(stream_stats, remapped, stream_tools)
                 loop_guard.on_stream_evt(remapped)
+                loop_guard.sync_stats(stream_stats)
                 out.append(remapped)
                 last_beat = time.monotonic()
         return out
@@ -1139,9 +1226,32 @@ def stream_agent_chat_runs(
                     continue
                 yield evt
                 if not abort_runs:
+                    loop_guard.sync_stats(stream_stats)
+                    from backend.services.kb_retrieval_plan import query_wants_personnel_compare
+                    from backend.services.hermes_stream_stats import hermes_native_kb_ask_count
+
+                    if (
+                        query_wants_personnel_compare(user_q)
+                        and getattr(settings, "hermes_native_mcp_reply", False)
+                        and hermes_native_kb_ask_count(stream_stats) >= 1
+                        and (time.monotonic() - loop_guard.started) >= 360.0
+                        and loop_guard.accumulated_len >= 120
+                    ):
+                        abort_runs = True
+                        abort_code = "personnel_native_kb_round1_done"
+                        stop_reader.set()
+                        if hermes_run_id:
+                            stop_hermes_run(hermes_run_id)
+                        yield {
+                            "type": "status",
+                            "message": "人员横比：首轮 MCP 已完成，收束主 run 进入验证补检索。",
+                            "step": "personnel_mcp_round1_cut",
+                        }
+                        continue
                     should_abort, code, msg = loop_guard.should_abort()
                     if should_abort:
                         abort_runs = True
+                        abort_code = code
                         stop_reader.set()
                         if hermes_run_id:
                             stop_hermes_run(hermes_run_id)
@@ -1157,6 +1267,148 @@ def stream_agent_chat_runs(
     finally:
         stop_reader.set()
 
+    from backend.services.hermes_kb_mcp_bridge import (
+        build_mcp_retry_runs_body,
+        build_mcp_verify_continue_runs_body,
+    )
+    from backend.services.hermes_stream_stats import hermes_native_kb_ask_count
+    from backend.services.orientg_agent_presentation import kb_scope_nonempty
+
+    def _drain_followup_run(
+        follow_body: dict[str, Any],
+        *,
+        reset_accumulated: bool = True,
+        read_timeout_s: float | None = None,
+    ) -> None:
+        nonlocal hermes_run_id, final_output
+        follow_run_id = create_hermes_run(body=follow_body, session_key=session_key)
+        hermes_run_id = follow_run_id
+        follow_url = f"{_runs_url()}/{follow_run_id}/events"
+        follow_headers = _request_headers(session_key)
+        if reset_accumulated:
+            accumulated_parts.clear()
+            final_output = ""
+        follow_timeout = httpx.Timeout(30.0, read=float(read_timeout_s or read_timeout))
+        with httpx.Client(timeout=follow_timeout) as client:
+            with client.stream("GET", follow_url, headers=follow_headers) as resp:
+                if resp.status_code < 400:
+                    for line in resp.iter_lines():
+                        if is_cancelled(run_id):
+                            break
+                        obj = _parse_hermes_run_sse_data_line(line)
+                        if not obj:
+                            continue
+                        batch = enrich_tool_progress_with_labels(
+                            hermes_run_event_to_sse(obj, seen_tool_keys=seen_tool_keys),
+                            tool_label_by_id,
+                        )
+                        for mapped in batch:
+                            if mapped.get("type") == "run_completed":
+                                final_output = str(mapped.get("output") or "")
+                                continue
+                            remapped = _apply_stream_content_policy(
+                                mapped, accumulated=accumulated_parts
+                            )
+                            if remapped is None:
+                                continue
+                            blocked = guard_kb_forbidden_tool_sse(
+                                remapped,
+                                orientg_route=orientg_route,
+                                on_block=loop_guard.on_forbidden_block,
+                                session_key=session_key,
+                                user_query=user_q,
+                            )
+                            if blocked:
+                                yield blocked
+                                continue
+                            _bump_stream_stats(stream_stats, remapped, stream_tools)
+                            yield remapped
+
+    if (
+        (not abort_runs or abort_code == "hermes_kb_ask_loop")
+        and (orientg_route or "").strip().lower() == "hermes_full"
+        and kb_scope_nonempty(kb_scope)
+        and hermes_native_kb_ask_count(stream_stats) == 0
+    ):
+        from backend.services.kb_retrieval_plan import plan_hermes_recovery_queries
+
+        from backend.services.hermes_stream_stats import bump_hermes_mcp_retry
+
+        bump_hermes_mcp_retry(stream_stats)
+        yield {
+            "type": "status",
+            "message": "Hermes 未调用 orientg_kb_ask，发起 MCP 优先重试…",
+            "step": "hermes_mcp_retry",
+        }
+        retry_body = build_mcp_retry_runs_body(
+            user_query=user_q,
+            session_key=session_key,
+            model=(settings.hermes_model or "hermes-agent").strip() or "hermes-agent",
+            suggested_queries=plan_hermes_recovery_queries(user_q, max_queries=3),
+        )
+        try:
+            yield from _drain_followup_run(retry_body)
+        except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
+            pass
+
+    # E：人员深横比已取证 1 次但仍缺核证轮 → Hermes 续跑自调 MCP（不计 hermes_mcp_retry）
+    from backend.services.kb_retrieval_plan import query_wants_personnel_compare
+
+    _kb_n = hermes_native_kb_ask_count(stream_stats)
+    _retry_n = int(stream_stats.get("hermes_mcp_retry_count") or 0)
+    _abort_ok = (not abort_runs) or abort_code in (
+        "hermes_kb_ask_loop",
+        "personnel_native_kb_round1_done",
+    )
+    _want_verify = bool(
+        _abort_ok
+        and (orientg_route or "").strip().lower() == "hermes_full"
+        and kb_scope_nonempty(kb_scope)
+        and getattr(settings, "hermes_native_mcp_reply", False)
+        and query_wants_personnel_compare(user_q)
+        and _kb_n == 1
+        # 禁止与「0→强制重试」叠加凑数；仅首轮已自调 1 次时核证续跑
+        and _retry_n == 0
+    )
+    if (orientg_route or "").strip().lower() == "hermes_full":
+        # 可观测：便于 CDP/诊断确认条件位（非凑数重试）
+        yield {
+            "type": "status",
+            "message": (
+                f"人员横比 MCP 核证门闸：kb={_kb_n} abort={abort_runs}/{abort_code or '-'} "
+                f"native={bool(getattr(settings, 'hermes_native_mcp_reply', False))} "
+                f"scope={kb_scope_nonempty(kb_scope)} "
+                f"personnel={query_wants_personnel_compare(user_q)} "
+                f"retry={_retry_n} want={_want_verify}"
+            ),
+            "step": "hermes_mcp_verify_gate",
+        }
+    if _want_verify:
+        from backend.services.kb_ask_mcp_agent_native import build_personnel_verification_queries
+
+        yield {
+            "type": "status",
+            "message": "人员横比 1 次 MCP 后发起 Hermes 核证续跑（须再调不同 query）…",
+            "step": "hermes_mcp_verify_continue",
+        }
+        vqs = build_personnel_verification_queries(
+            query=user_q,
+            entities=["YYCQ", "可比公司A"],
+            evidence=[],
+        )
+        verify_body = build_mcp_verify_continue_runs_body(
+            user_query=user_q,
+            session_key=session_key,
+            model=(settings.hermes_model or "hermes-agent").strip() or "hermes-agent",
+            verification_queries=vqs,
+        )
+        try:
+            # 保留首轮过程稿供质量择优；核证轮继续累加
+            yield from _drain_followup_run(verify_body, reset_accumulated=False)
+        except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
+            pass
+    # 禁止用网关 orchestration 把 hermes 计数凑到 ≥2（刷绿）；验收只认 Hermes 自调 MCP
+
     uq = _last_user_query_from_messages(messages)
     from backend.services.hermes_stream_sanitize import pick_best_hermes_runs_raw
 
@@ -1165,6 +1417,13 @@ def stream_agent_chat_runs(
 
     reply = sanitize_hermes_accumulated_reply(raw, user_query=uq).strip()
     if not reply:
+        reply = _finalize_hermes_chat_reply(
+            accumulated_parts=accumulated_parts,
+            raw_parts=raw_stream_parts,
+            thinking_parts=thinking_parts,
+            user_query=uq,
+        )
+    if not reply.strip():
         yield {
             "type": "error",
             "message": "Hermes Runs 已完成，但未生成可展示的正文。",
@@ -1355,6 +1614,8 @@ def stream_agent_chat(
                         remapped,
                         orientg_route=orientg_route,
                         on_block=loop_guard.on_forbidden_block,
+                        session_key=session_key,
+                        user_query=_last_user_query_from_messages(messages),
                     )
                     if blocked:
                         out.append(blocked)
@@ -1362,6 +1623,7 @@ def stream_agent_chat(
                         continue
                     _bump_stream_stats(stream_stats, remapped, stream_tools)
                     loop_guard.on_stream_evt(remapped)
+                    loop_guard.sync_stats(stream_stats)
                     out.append(remapped)
                     last_beat = time.monotonic()
         return out
@@ -1399,6 +1661,7 @@ def stream_agent_chat(
                                 return
                             yield evt
                             if not abort_chat:
+                                loop_guard.sync_stats(stream_stats)
                                 should_abort, code, msg = loop_guard.should_abort()
                                 if should_abort:
                                     abort_chat = True
@@ -1443,6 +1706,7 @@ def stream_agent_chat(
                     return
                 yield evt
                 if not abort_chat:
+                    loop_guard.sync_stats(stream_stats)
                     should_abort, code, msg = loop_guard.should_abort()
                     if should_abort:
                         abort_chat = True

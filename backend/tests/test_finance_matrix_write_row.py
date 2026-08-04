@@ -20,7 +20,7 @@ def test_write_row_uses_poll_case_when_retry_queue_empty(tmp_path: Path, monkeyp
         "category": "pnl",
         "subject": "研发费用",
         "mode": "deep",
-        "query": "出一份华清25、24两年研发费用明细的对比分析报告",
+        "query": "出一份可比公司E25、24两年研发费用明细的对比分析报告",
         "tier_line": "执行过程(Tier 2（Hermes 深度） · 深度（Hermes 全编排）)",
         "citations": 12,
         "extract": {"len": 1200, "hasMoney": True},

@@ -17,6 +17,7 @@ def test_orientg_route_is_kb_task():
 def test_is_forbidden_kb_tool():
     assert is_forbidden_kb_tool("terminal")
     assert is_forbidden_kb_tool("terminal.run")
+    assert is_forbidden_kb_tool("read_file")
     assert not is_forbidden_kb_tool("orientg_kb_ask")
 
 
@@ -26,13 +27,30 @@ def test_tool_progress_shell_patterns():
     assert not tool_progress_looks_like_shell("orientg_kb_ask query=费用")
 
 
-def test_guard_blocks_terminal_tool_progress():
+def test_guard_blocks_terminal_and_suggests_mcp_tool():
     blocked = guard_kb_forbidden_tool_sse(
         {"type": "tool_progress", "status": "running", "tool": "terminal", "message": "ls"},
         orientg_route="hermes_lite",
+        session_key="sk1",
+        user_query="人员结构",
     )
     assert blocked is not None
-    assert blocked.get("type") == "tool_progress"
+    assert "mcp_orientg_orientg_kb_ask" in str(blocked.get("message") or "")
+
+
+def test_guard_blocks_read_file_on_kb_route():
+    blocked = guard_kb_forbidden_tool_sse(
+        {
+            "type": "tool_progress",
+            "status": "running",
+            "tool": "read_file",
+            "message": "read uploads/report.md",
+        },
+        orientg_route="hermes_full",
+        session_key="sk1",
+        user_query="人员结构",
+    )
+    assert blocked is not None
     assert blocked.get("status") == "failed"
 
 

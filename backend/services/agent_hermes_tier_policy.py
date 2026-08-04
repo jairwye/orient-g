@@ -101,6 +101,7 @@ def hermes_orientg_context_extras(
     evidence_pack: dict[str, Any] | None,
     user_query: str = "",
     enabled_skills: list[str] | None = None,
+    kb_scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from backend.services.agent_kb_supplemental import plan_supplemental_queries
     from backend.services.kb_retrieval_plan import query_wants_analyst_report
@@ -136,6 +137,28 @@ def hermes_orientg_context_extras(
         return extras
 
     if tier == "full":
+        from backend.services.kb_retrieval_plan import plan_hermes_recovery_queries
+        from backend.services.orientg_agent_presentation import kb_scope_nonempty
+
+        extras: dict[str, Any] = {
+            "orientg_tool_reminder": (
+                "深度编排：成稿前须调用 mcp_orientg_orientg_kb_ask（orientg_kb_ask）拉取证据；"
+                "禁止 terminal/shell/execute_code/curl；分项须来自 MCP 原文，禁止估算。"
+            ),
+        }
+        if kb_scope_nonempty(kb_scope):
+            from backend.services.kb_retrieval_plan import query_wants_personnel_compare
+
+            extras["orientg_kb_ask_required"] = True
+            # E：人员深横比至少取证+核证；其它 deep KB 仍 ≥1
+            min_calls = 2 if query_wants_personnel_compare(user_query) else 1
+            extras["orientg_kb_ask_min_calls_before_final_answer"] = min_calls
+            extras["orientg_suggested_kb_queries"] = plan_hermes_recovery_queries(
+                user_query,
+                max_queries=2,
+            )
+            return extras
+
         from backend.services.kb_retrieval_plan import (
             TaskType,
             detect_entity,
@@ -215,10 +238,29 @@ def hermes_orientg_context_extras(
 
 def hermes_answer_requirements(*, tier: PrefetchTier, user_query: str) -> str:
     from backend.services.agent_kb_fast_path import comparison_answer_addon
-    from backend.services.kb_retrieval_plan import TaskType, infer_task_type
+    from backend.services.kb_retrieval_plan import (
+        TaskType,
+        infer_task_type,
+        query_wants_personnel_structure,
+    )
 
     parts: list[str] = []
     tt = infer_task_type(user_query)
+    personnel = query_wants_personnel_structure(user_query)
+
+    if personnel:
+        parts.append(
+            "【Orient-G 深度·人员结构】**首轮必须先**调用 mcp_orientg_orientg_kb_ask，"
+            "禁止未调工具先写终稿或长分析。"
+            "人员横比须 **至少 2 次** MCP：首轮取证后，再用**不同 query** 对缺口维度或另一主体核证，然后成稿。"
+            "终稿须中文；以 MCP `agent_payload` / 参考表硬数字为准（禁止把骨架标题上屏）。"
+            "必含：`### 人员结构对照`（职能分项表）+ `### 对比分析` + `### 口径说明`。"
+            "禁止「核心指标对照/表」、禁止员工总数倍数（如 22.6 倍）、禁止英文 planning、"
+            "禁止把 139/3138 当人员结构主表。"
+            "禁止推算/推断/「约 N 人」无证据区间；禁止用「请勿采信」脚注掩盖违规句。"
+            "对照表填证据数字即可，勿扩写无依据销售规模推断。"
+        )
+        return "\n".join(parts).strip()
 
     if tier == "full":
         parts.append(

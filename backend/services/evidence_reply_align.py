@@ -102,6 +102,121 @@ def reply_falsely_denies_kb_breakdown(reply: str, *, user_query: str = "") -> bo
     return "费用" in t or "明细" in t
 
 
+def reply_denies_primary_compare_subject(reply: str, *, user_query: str = "") -> bool:
+    """对比问句：终稿对主题科目写「缺少证据/未覆盖」且未给出该科目可核查金额。"""
+    from backend.services.kb_evidence_probe import primary_compare_subject
+    from backend.services.kb_retrieval_plan import TaskType, infer_task_type
+
+    q = (user_query or "").strip()
+    if infer_task_type(q) != TaskType.compare:
+        return False
+    label = primary_compare_subject(q)
+    if not label:
+        return False
+    t = reply or ""
+    if re.search(rf"\|\s*{re.escape(label)}\s*\|\s*缺少证据", t):
+        return True
+    if re.search(
+        rf"未覆盖.*{re.escape(label)}|无法给出.*{re.escape(label)}|"
+        rf"未命中.*{re.escape(label)}|{re.escape(label)}[^\n]{{0,40}}缺少证据",
+        t,
+    ):
+        if not _subject_line_has_amount(t, label):
+            return True
+    if re.search(r"不确定|缺少证据|未能获取|无法提取|无法进行对比", t):
+        if label in t and not _subject_line_has_amount(t, label):
+            return True
+    return False
+
+
+def _subject_line_has_amount(text: str, label: str) -> bool:
+    for ln in (text or "").split("\n"):
+        if label in ln and _AMOUNT_RE.search(ln):
+            return True
+    return bool(
+        re.search(
+            rf"{re.escape(label)}[^\n]{{0,{200}}}{_AMOUNT_RE.pattern}",
+            text or "",
+        )
+    )
+
+
+def pack_has_compare_subject_amounts(
+    user_query: str,
+    prefetch_result: dict[str, Any] | None,
+) -> bool:
+    from backend.services.kb_evidence_probe import blob_has_subject_near_amount, primary_compare_subject
+
+    label = primary_compare_subject(user_query)
+    if not label:
+        return False
+    pack = (prefetch_result or {}).get("evidence_pack") or {}
+    cites = (prefetch_result or {}).get("citations") or []
+    blob = _citations_blob(cites, pack)
+    return blob_has_subject_near_amount(blob, label)
+
+
+def build_compare_subject_reply_from_prefetch(
+    user_query: str,
+    prefetch_result: dict[str, Any] | None,
+) -> str | None:
+    """对比问句：从 pack/citations 摘录主题科目两期金额成稿（Hermes 误报缺证据时兜底）。"""
+    from backend.services.kb_evidence_probe import primary_compare_subject
+    from backend.services.kb_retrieval_plan import TaskType, infer_task_type, query_wants_change_reasons
+
+    q = (user_query or "").strip()
+    if infer_task_type(q) != TaskType.compare:
+        return None
+    label = primary_compare_subject(q)
+    if not label or not pack_has_compare_subject_amounts(q, prefetch_result):
+        return None
+    pack = (prefetch_result or {}).get("evidence_pack") or {}
+    blob = _citations_blob((prefetch_result or {}).get("citations") or [], pack)
+
+    amounts: list[str] = []
+    for ln in blob.split("\n"):
+        if label not in ln:
+            continue
+        for amt in extract_tabular_amounts(ln, limit=4):
+            if amt not in amounts:
+                amounts.append(amt)
+    if len(amounts) < 2:
+        window = re.search(
+            rf"{re.escape(label)}[^\n]{{0,{400}}}",
+            blob,
+        )
+        if window:
+            amounts = extract_tabular_amounts(window.group(0), limit=4)
+    if len(amounts) < 1:
+        return None
+
+    y2025, y2024 = amounts[0], amounts[1] if len(amounts) > 1 else "—"
+    parts = [
+        f"## {label}对比（证据摘录）",
+        "",
+        f"结论：证据中含「{label}」可核查金额（以下摘自知识库 pack / citations，非 LLM 推断）。",
+        "",
+        "| 项目 | 2025年 | 2024年 |",
+        "| --- | --- | --- |",
+        f"| {label} | {y2025} | {y2024} |",
+        "",
+    ]
+    if query_wants_change_reasons(q):
+        reason_lines = [
+            ln.strip()
+            for ln in blob.split("\n")
+            if re.search(r"变动原因|主要系|主要是由于|项目重大变动", ln)
+        ][:4]
+        if reason_lines:
+            parts.append("### 变动说明（证据原文摘录）")
+            parts.extend(reason_lines)
+            parts.append("")
+    parts.append(
+        "说明：若需完整分析师级报告，请使用深度档；本摘录仅保证主题科目金额与 pack 一致。"
+    )
+    return "\n".join(parts).strip()
+
+
 def reply_has_contradictory_change_reason(reply: str) -> bool:
     """同篇报告既写「无变动原因」又引用原因原文。"""
     t = reply or ""

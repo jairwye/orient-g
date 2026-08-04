@@ -268,6 +268,7 @@ export function parseHermesStreamStats(raw: unknown): HermesStreamStats | undefi
     gateway_orientg_kb_ask_calls: n("gateway_orientg_kb_ask_calls"),
     orientg_kb_ask_calls: n("orientg_kb_ask_calls"),
     orientg_kb_supplemental_calls: n("orientg_kb_supplemental_calls"),
+    hermes_mcp_retry_count: n("hermes_mcp_retry_count"),
   };
   return Object.values(stats).some((v) => v !== undefined) ? stats : undefined;
 }
@@ -288,17 +289,19 @@ export function formatHermesStreamStatsLine(
     parts.push("推理流 0（上游未推送 thinking）");
   }
   if (typeof stats.delta_chars === "number") parts.push(`正文流 ${stats.delta_chars} 字`);
-  const toolProg = stats.tool_progress_events;
-  if (typeof toolProg === "number") {
-    parts.push(
-      toolProg === 0
-        ? "Hermes 工具进度 0（本 run 未调用 MCP）"
-        : `Hermes 工具进度 ${toolProg} 次`,
-    );
-  }
   const hermesKb = stats.hermes_orientg_kb_ask_calls ?? 0;
   const gatewayKb = stats.gateway_orientg_kb_ask_calls ?? 0;
   const supp = stats.orientg_kb_supplemental_calls ?? 0;
+  const toolProg = stats.tool_progress_events;
+  if (typeof toolProg === "number") {
+    const hermesToolProg =
+      hermesKb > 0 ? toolProg : gatewayKb > 0 && hermesKb === 0 ? 0 : toolProg;
+    parts.push(
+      hermesToolProg === 0
+        ? "Hermes 工具进度 0（本 run 未调用 MCP）"
+        : `Hermes 工具进度 ${hermesToolProg} 次`,
+    );
+  }
   if (hermesKb > 0) {
     parts.push(`Hermes 内 orientg_kb_ask ×${hermesKb}`);
   }
@@ -312,6 +315,10 @@ export function formatHermesStreamStatsLine(
     );
   } else if (meta?.agent_tier === 2 && hermesKb <= 0) {
     parts.push("Hermes 单轮 completion（深度可触发 Orient-G 网关补检索）");
+  }
+  const retryN = stats.hermes_mcp_retry_count ?? 0;
+  if (retryN > 0) {
+    parts.push(`hermes_mcp_retry ×${retryN}`);
   }
   return parts.length ? `编排观测：${parts.join(" · ")}` : "";
 }
@@ -337,6 +344,11 @@ export function buildAgentMetaFromDone(evt: Record<string, unknown>): AgentMeta 
     kb_supplemental: evt.kb_supplemental === true,
     supplemental_adopted:
       typeof evt.supplemental_adopted === "boolean" ? evt.supplemental_adopted : undefined,
+    reply_source: typeof evt.reply_source === "string" ? evt.reply_source : undefined,
+    structured_gate_applied:
+      typeof evt.structured_gate_applied === "boolean"
+        ? evt.structured_gate_applied
+        : undefined,
   };
 }
 
@@ -384,7 +396,17 @@ export function doneTraceMessage(meta: AgentMeta): string {
   if (meta.agent_route === "hermes_full" || meta.agent_tier === 2) {
     const obs = formatHermesStreamStatsLine(meta.hermes_stream_stats, meta);
     const sup = supplementalDoneSuffix(meta);
-    return `完成：Tier 2（Hermes 深度编排）${packSuffix}${sup}${obs ? ` · ${obs}` : ""}`;
+    const src =
+      meta.reply_source === "hermes"
+        ? " · 终稿出处：Hermes"
+        : meta.reply_source === "orientg_structured_gate" || meta.structured_gate_applied
+          ? " · 终稿出处：Orient-G门禁"
+          : meta.reply_source === "orientg_misattribution_gate"
+            ? " · 终稿出处：Orient-G门禁"
+            : meta.reply_source === "orientg_supplemental"
+              ? " · 终稿出处：Orient-G补检索"
+              : "";
+    return `完成：Tier 2（Hermes 深度编排）${packSuffix}${sup}${src}${obs ? ` · ${obs}` : ""}`;
   }
   if (meta.agent_route === "hermes_lite" || meta.agent_tier === 1) {
     const sup = supplementalDoneSuffix(meta);

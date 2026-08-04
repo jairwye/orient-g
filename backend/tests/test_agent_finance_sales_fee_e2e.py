@@ -32,7 +32,7 @@ FEE_APPENDIX_DOC = "ud_2ccb589f993b43d5892a637150cbc6af"
 PARENT_PL_DOC = "ud_67d0f860dbbb4196861d5ab97b472584"
 MERGED_PL_DOC = "ud_91f55322e2594b9c9d3ba7ceb89fafb2"
 
-QUERY = "出一份华清25、24两年销售费用明细的对比分析报告"
+QUERY = "出一份可比公司E25、24两年销售费用明细的对比分析报告"
 
 client = TestClient(app)
 

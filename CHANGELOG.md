@@ -6,6 +6,9 @@
 
 ### Added
 
+- **Hermes native MCP 成稿**：`HERMES_NATIVE_MCP_REPLY` / skip-supplemental / prefetch 上限；`orientg_kb_ask` agent_payload v2；人员横比结构化成稿与质量门。
+- **Hermes MCP HTTP 会话桥**：`/api/internal/hermes/session/resolve` 与 ask-budget consume；`hermes_session_store` 跨进程共享；`ORIENTG_MCP_BRIDGE_SECRET`（生产禁用回退 AUTH_SECRET）。
+- **人员矩阵浏览器验收**：personnel cases / CDP runner / validate；`kb_compare_entities` 公开仓占位（YYCQ / 可比公司A），生产真实名仅经本地 env 扩展。
 - **Agent KB 三路分流（Tier 0–2）**：`fast` / `hermes_lite` / `hermes_full` 路由；Evidence Pack 预检索、ask budget、KB scope 解析与 fast path 本地综合。
 - **Hermes 集成**：`/api/agent` 阻塞/流式对话、运行注册与取消；`hermes_client`、token bridge、Orient-G MCP 工具与 `docker-compose.hermes.yml` 示例。
 - **知识库检索增强**：检索计划/打包/直答（`kb_retrieval_plan`、`kb_retrieve_pack`、`kb_retrieve_answer`）、文件夹子树 scope、fixture bindings、RAG 审计桥接。

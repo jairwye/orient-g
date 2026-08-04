@@ -117,7 +117,7 @@ def test_finance_agent_chat_default_uses_hermes_not_local(monkeypatch):
         "/api/agent/chat",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "messages": [{"role": "user", "content": "华清损益"}],
+            "messages": [{"role": "user", "content": "可比公司E损益"}],
             "kb_scope": {"selected_collection_ids": ["c_finance_public_1"]},
         },
     )
@@ -257,7 +257,7 @@ def test_finance_agent_stream_kb_fast_path_skips_hermes(monkeypatch):
         "/api/agent/chat/stream",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "messages": [{"role": "user", "content": "出具华清25、24两年损益的对比分析表"}],
+            "messages": [{"role": "user", "content": "出具可比公司E25、24两年损益的对比分析表"}],
             "kb_scope": {"selected_collection_ids": ["c_finance_public_1"]},
             "agent_mode": "fast",
         },
@@ -293,7 +293,7 @@ def test_finance_agent_chat_kb_fast_path_blocking(monkeypatch):
         "backend.services.agent_kb_prefetch.synthesize_kb_reply",
         lambda **k: {
             "ok": True,
-            "reply": "华清对比表（本地综合）",
+            "reply": "可比公司E对比表（本地综合）",
             "citations": [{"doc_id": "d1"}],
             "synthesis": "local_llm",
         },
@@ -303,7 +303,7 @@ def test_finance_agent_chat_kb_fast_path_blocking(monkeypatch):
         "/api/agent/chat",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "messages": [{"role": "user", "content": "华清25、24损益对比"}],
+            "messages": [{"role": "user", "content": "可比公司E25、24损益对比"}],
             "kb_scope": {"selected_collection_ids": ["c_finance_public_1"]},
             "agent_mode": "fast",
         },
@@ -335,7 +335,7 @@ def test_finance_agent_chat_kb_uses_local_llm_when_synthesize_disabled(monkeypat
         "backend.services.agent_kb_local.run_agent_kb_local_answer",
         lambda **k: {
             "ok": True,
-            "reply": "华清 2025 年营收约为证据所示金额（LLM 综合）",
+            "reply": "可比公司E 2025 年营收约为证据所示金额（LLM 综合）",
             "citations": [{"doc_id": "d_finance_public_rules_1", "chunk_id": "ch1"}],
             "synthesis": "local_llm",
             "llm_model": "test-model",
@@ -347,7 +347,7 @@ def test_finance_agent_chat_kb_uses_local_llm_when_synthesize_disabled(monkeypat
         "/api/agent/chat",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "messages": [{"role": "user", "content": "华清25年营收是多少"}],
+            "messages": [{"role": "user", "content": "可比公司E25年营收是多少"}],
             "kb_scope": {"selected_collection_ids": ["c_finance_public_1"]},
         },
     )
@@ -418,7 +418,7 @@ def test_finance_agent_chat_live_hermes_simple():
 
 @pytest.mark.integration
 def test_finance_live_huaqing_stream_uses_kb_fast_path(monkeypatch):
-    """华清损益对比流式：优先连本机 uvicorn；否则 TestClient + mock 走 Tier 0。"""
+    """可比公司E损益对比流式：优先连本机 uvicorn；否则 TestClient + mock 走 Tier 0。"""
     import httpx
 
     live_fast_path = False
@@ -434,7 +434,7 @@ def test_finance_live_huaqing_stream_uses_kb_fast_path(monkeypatch):
         "messages": [
             {
                 "role": "user",
-                "content": "出具一份华清25、24两年损益的对比分析表，仅依据知识库证据。",
+                "content": "出具一份可比公司E25、24两年损益的对比分析表，仅依据知识库证据。",
             }
         ],
         "kb_scope": {"selected_collection_ids": ["c_finance_public_1"]},
@@ -495,7 +495,7 @@ def test_finance_live_huaqing_stream_uses_kb_fast_path(monkeypatch):
     monkeypatch.setattr(
         "backend.routers.agent.prefetch_kb_context",
         _mock_prefetch_factory(
-            reply="华清 2025 营业收入 834,527,936.00；2024 年 798,118,000.00",
+            reply="可比公司E 2025 营业收入 834,527,936.00；2024 年 798,118,000.00",
             citations=[{"doc_id": "d_finance_huaqing_pl_1", "chunk_id": "ch_pl", "evidence_type": "doc_chunk"}],
         ),
     )
@@ -513,7 +513,7 @@ def test_finance_live_huaqing_stream_uses_kb_fast_path(monkeypatch):
         yield {
             "type": "done",
             "ok": True,
-            "reply": "华清对比表 834527936 / 798118000",
+            "reply": "可比公司E对比表 834527936 / 798118000",
             "kb_fast_path": True,
             "hermes_used": False,
             "kb_prefetch": True,

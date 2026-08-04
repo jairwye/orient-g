@@ -80,7 +80,7 @@ def test_build_messages_no_kb_skips_kb_mcp_tools():
 def test_kb_scope_fast_mode_unchanged_tier0():
     """已选知识库 + 快速：仍为 Tier 0，不受无 KB 规则影响。"""
     got = resolve_agent_route(
-        user_query="华清25年营收是多少",
+        user_query="可比公司E25年营收是多少",
         agent_mode="fast",
         allow_kb_write=False,
         has_kb_scope=True,

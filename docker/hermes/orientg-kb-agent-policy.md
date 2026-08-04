@@ -25,5 +25,18 @@
 - **知识库问答**仍仅通过 `orientg_kb_*` MCP 取证与写库；**禁止** `terminal` / shell / curl / loopback 调 Orient-G API。
 - 写库须前端 **深度 + 写库开关**（`allow_kb_write=true`），且 MCP 写操作绑定用户 `kb_scope` 内 `folder_id`。
 - 深度编排可有多轮 MCP；产物须 `orientg_kb_import_artifact` 落入选定文件夹，不得写 Hermes 工作区临时文件充当 KB 答案。
+- **Orient-G v1 限制**：网关经 Runs `instructions` + `orientg_kb_ask_tool` JSON 引导模型调 MCP；**不能**从 Orient-G 侧强制 Hermes `tool_choice`（需 Hermes preset / agent 策略配合）。见 `backend/services/hermes_kb_mcp_bridge.py` 的 `first_tool_round_required` 提示字段。
+
+## Tier 2 观测（A 路线）
+
+Trace / `hermes_stream_stats` 分列：
+
+| 字段 | 含义 |
+|------|------|
+| `hermes_orientg_kb_ask_calls` | **A 路线主指标**：Hermes Runs 进程内 MCP |
+| `gateway_orientg_kb_ask_calls` | 预检索 + Runs 前 primer + 补检索（**degraded / bootstrap**） |
+| `orientg_kb_ask_calls` | 合计 |
+
+验收脚本：`backend/scripts/verify_hermes_mcp_connectivity.py`、`audit_hermes_mcp_l1_l2.py`。
 
 详见项目根 [docs/hermes.md](../../docs/hermes.md) 与 [specs/plans/1.2.3.b-acceptance-tests.md](../../specs/plans/1.2.3.b-acceptance-tests.md)。

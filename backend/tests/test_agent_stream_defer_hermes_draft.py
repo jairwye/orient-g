@@ -137,11 +137,21 @@ def test_tier2_deferred_draft_skips_supplemental_when_rich_hermes(mock_sup, mock
     assert len(done.get("reply") or "") > 1500
 
 
+@patch("backend.services.agent_kb_supplemental.run_supplemental_kb_asks")
 @patch("backend.routers.agent.stream_agent_chat")
-def test_hermes_full_error_does_not_local_fallback(mock_stream):
+def test_hermes_full_error_runs_tier2_recovery_instead_of_bare_error(mock_stream, mock_sup_kb):
     mock_stream.return_value = iter(
         [{"type": "error", "message": "Hermes Runs 已超过 120 秒无数据。", "code": "hermes_stall"}]
     )
+    mock_sup_kb.return_value = (
+        {
+            **PREFETCH,
+            "reply": "恢复后答案：人员结构对比",
+            "kb_supplemental": True,
+        },
+        [{"name": "orientg_kb_ask", "status": "ok", "supplemental": True, "query": "q"}],
+    )
+
     raw = list(
         _agent_chat_stream_events(
             token="tok",
@@ -158,8 +168,10 @@ def test_hermes_full_error_does_not_local_fallback(mock_stream):
         )
     )
     evts = _parse_sse(raw)
-    assert any(e.get("type") == "error" for e in evts)
-    assert not any(e.get("type") == "done" and e.get("hermes_fallback") for e in evts)
+    assert any(e.get("step") == "tier2_error_recovery" for e in evts)
+    done = [e for e in evts if e.get("type") == "done"][-1]
+    assert done.get("tier2_error_recovery") is True
+    assert not any(e.get("type") == "error" and e.get("code") == "hermes_stall" for e in evts)
 
 
 @patch("backend.routers.agent.synthesize_kb_reply")

@@ -39,7 +39,7 @@ def test_generate_answer_with_evidence_includes_full_chunk(monkeypatch):
     llm.generate_answer_with_evidence(
         tenant_id="tenant1",
         model="test",
-        user_query="华清25年营收",
+        user_query="可比公司E25年营收",
         citations=[{"evidence_type": "doc_chunk", "doc_id": "ud_abc", "chunk_id": "s0001"}],
         fixtures={"documents": []},
     )

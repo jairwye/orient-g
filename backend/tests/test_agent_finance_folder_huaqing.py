@@ -1,4 +1,4 @@
-"""财务账号 + 竞品财报25 文件夹：Agent 流式应能完成华清损益对比。"""
+"""财务账号 + 竞品财报25 文件夹：Agent 流式应能完成可比公司E损益对比。"""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ from backend.routers.settings import DEPARTMENT_FINANCE
 from backend.services.dev_users import ensure_department_test_user
 from backend.tests.test_acl_folder_shared_docs import FOLDER_JINGPIN_CAIBAO_25
 
-# 竞品财报25 文件夹内：华清年报主文档（目录为主）与含损益表 chunk 的解析文档
+# 竞品财报25 文件夹内：可比公司E年报主文档（目录为主）与含损益表 chunk 的解析文档
 HUAQING_PL_DOC = "ud_91f55322e2594b9c9d3ba7ceb89fafb2"  # 合并利润表（默认口径）
 HUAQING_PARENT_PL_DOC = "ud_67d0f860dbbb4196861d5ab97b472584"
 
 client = TestClient(app)
-QUERY = "做一张华清25和24年损益对比的表，仅依据知识库证据，缺项请说明。"
+QUERY = "做一张可比公司E25和24年损益对比的表，仅依据知识库证据，缺项请说明。"
 
 
 def _finance_token() -> str:
@@ -51,7 +51,7 @@ def test_agent_stream_folder_jingpin_huaqing(monkeypatch):
         yield {
             "type": "done",
             "reply": (
-                "## 华清损益对比（测试桩）\n\n"
+                "## 可比公司E损益对比（测试桩）\n\n"
                 "| 项目 | 2025年 | 2024年 |\n|---|---|---|\n"
                 "| 营业收入 | 100,148,026.24 | 138,539,446.45 |\n"
             ),

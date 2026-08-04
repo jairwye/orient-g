@@ -6,6 +6,10 @@
         "exec",
         "-i",
         "-e",
+        "ORIENTG_INTERNAL_BASE_URL",
+        "-e",
+        "ORIENTG_MCP_BRIDGE_SECRET",
+        "-e",
         "ORIENTG_USER_TOKEN",
         "BACKEND_CONTAINER_NAME",
         "python",
@@ -13,6 +17,8 @@
         "backend.mcp.orientg_server"
       ],
       "env": {
+        "ORIENTG_INTERNAL_BASE_URL": "http://127.0.0.1:8000",
+        "ORIENTG_MCP_BRIDGE_SECRET": "${ORIENTG_MCP_BRIDGE_SECRET}",
         "ORIENTG_USER_TOKEN": "仅 CLI 单人调试；生产多用户勿依赖此 env，见 docs/hermes.md §4"
       }
     }

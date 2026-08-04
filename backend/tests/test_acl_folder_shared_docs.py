@@ -67,7 +67,7 @@ def test_ask_knowledge_via_folder_scope_finds_huaqing_chunk():
     )
     out2 = ask_knowledge(
         token,
-        "华清25、24两年损益对比分析表",
+        "可比公司E25、24两年损益对比分析表",
         selected_collection_ids=resolved["collection_ids"] or None,
         attached_doc_ids=resolved["attached_doc_ids"] or None,
         limit_to_attached=bool(resolved.get("limit_to_attached")),
@@ -87,7 +87,7 @@ def test_top_citations_prefers_pl_table_over_toc():
     fixtures = load_fixtures()
     from backend.services.kb_scope_resolve import resolve_kb_scope_for_ask
 
-    q = "做一张华清25和24年损益对比的表，仅依据知识库证据，缺项请说明。"
+    q = "做一张可比公司E25和24年损益对比的表，仅依据知识库证据，缺项请说明。"
     resolved = resolve_kb_scope_for_ask(
         "tenant1",
         {"selected_folder_ids": [FOLDER_JINGPIN_CAIBAO_25]},

@@ -44,11 +44,11 @@ describe("appendAgentTraceStep", () => {
     });
     const b = appendAgentTraceStep(a, {
       kind: "thinking",
-      message: "### 华清对比\n| 项目 | 2025 |\n| 销售费用 | 13,722,360.23 |",
+      message: "### 可比公司E对比\n| 项目 | 2025 |\n| 销售费用 | 13,722,360.23 |",
       step: "hermes_draft",
     });
     expect(b).toHaveLength(1);
-    expect(b[0].message).toContain("### 华清对比");
+    expect(b[0].message).toContain("### 可比公司E对比");
     expect(b[0].message).not.toContain("乱码###");
   });
 
@@ -76,7 +76,7 @@ describe("buildAgentMetaFromDone / routeLabel", () => {
       evidence_pack: {
         task_type: "fact",
         coverage_score: 0.82,
-        retrieval_queries: ["华清营收"],
+        retrieval_queries: ["可比公司E营收"],
       },
     });
     expect(routeLabel(meta)).toContain("未走 Hermes");
@@ -164,6 +164,32 @@ describe("buildAgentMetaFromDone / routeLabel", () => {
     expect(line).toContain("Hermes 内 orientg_kb_ask ×2");
     expect(line).toContain("Orient-G 网关 KB ×1");
     expect(line).toContain("推理流 400");
+  });
+
+  it("tier2 done exposes hermes_mcp_retry when forced", () => {
+    const meta = buildAgentMetaFromDone({
+      agent_route: "hermes_full",
+      agent_tier: 2,
+      hermes_stream_mode: "runs",
+      hermes_stream_stats: {
+        hermes_orientg_kb_ask_calls: 1,
+        gateway_orientg_kb_ask_calls: 0,
+        hermes_mcp_retry_count: 1,
+      },
+    });
+    expect(doneTraceMessage(meta)).toContain("hermes_mcp_retry ×1");
+  });
+
+  it("tier2 done exposes hermes reply_source for anti-gate", () => {
+    const meta = buildAgentMetaFromDone({
+      agent_route: "hermes_full",
+      agent_tier: 2,
+      reply_source: "hermes",
+      structured_gate_applied: false,
+      hermes_stream_stats: { hermes_orientg_kb_ask_calls: 1, orientg_kb_ask_calls: 1 },
+    });
+    expect(meta.reply_source).toBe("hermes");
+    expect(doneTraceMessage(meta)).toContain("终稿出处：Hermes");
   });
 
   it("tier1 supplemental kept hermes shows distinct done line", () => {

@@ -18,7 +18,8 @@ from backend.services.kb_retrieval_plan import (
 from backend.services.kb_scope_resolve import resolve_kb_scope_for_ask
 from backend.services.knowledge_acl import load_fixtures
 from backend.services.kb_scope_context import build_scope_folder_context
-from backend.services.knowledge_pipeline import ask_knowledge, entity_scope_relaxed_from_kb
+from backend.services.kb_ask_mcp_reply import execute_kb_subquery_ask
+from backend.services.knowledge_pipeline import entity_scope_relaxed_from_kb
 
 
 def retrieve_kb_evidence_pack(
@@ -77,7 +78,36 @@ def retrieve_kb_evidence_pack(
     )
 
     finance_ctx = build_finance_retrieval_context(enabled_skills, q, entity=entity)
-    if finance_ctx and finance_annual_report_skill_enabled(enabled_skills):
+    tier = (prefetch_tier or "").strip().lower()
+    if tier == "full":
+        from backend.services.kb_retrieval_plan import (
+            native_personnel_prefetch_max_queries,
+            query_wants_personnel_structure,
+        )
+
+        if query_wants_personnel_structure(q):
+            slim_cap = native_personnel_prefetch_max_queries(q, prefetch_tier=prefetch_tier)
+            if slim_cap is not None:
+                # 目标 4：硬上限。勿走 plan_retrieval_queries — analyst/full 会把 cap 抬到 8。
+                from backend.services.kb_retrieval_plan import personnel_retrieval_subqueries
+
+                if slim_cap <= 0:
+                    queries = []
+                else:
+                    queries = [q]
+                    for sq in personnel_retrieval_subqueries(q):
+                        if len(queries) >= slim_cap:
+                            break
+                        if sq not in queries:
+                            queries.append(sq)
+                    queries = queries[:slim_cap]
+            else:
+                queries = plan_retrieval_queries(
+                    q, task_type, entity=entity, prefetch_tier=prefetch_tier, max_queries=8
+                )
+        else:
+            queries = [q]
+    elif finance_ctx and finance_annual_report_skill_enabled(enabled_skills):
         queries = (
             plan_retrieval_queries_finance(
                 q,
@@ -102,16 +132,18 @@ def retrieve_kb_evidence_pack(
     deny_reasons: list[str] = []
 
     for sub_q in queries:
-        res = ask_knowledge(
+        res = execute_kb_subquery_ask(
             user_token,
             sub_q,
-            selected_collection_ids=cols or None,
-            selected_table_ids=tables or None,
-            fixtures=fixtures,
-            attached_doc_ids=attached or None,
-            limit_to_attached=bool(lim),
-            entity_scope_relaxed=relax_entity,
-            finance_retrieval_context=finance_ctx,
+            ask_kwargs={
+                "selected_collection_ids": cols or None,
+                "selected_table_ids": tables or None,
+                "fixtures": fixtures,
+                "attached_doc_ids": attached or None,
+                "limit_to_attached": bool(lim),
+                "entity_scope_relaxed": relax_entity,
+                "finance_retrieval_context": finance_ctx,
+            },
         )
         if res.get("denied"):
             reason = str(res.get("deny_reason") or res.get("reason") or "denied")
@@ -147,6 +179,39 @@ def retrieve_kb_evidence_pack(
             "reason": "; ".join(deny_reasons),
             "citations": [],
         }, tool_calls
+
+    # native slim max=0：无子检索，仍给 Hermes 空 pack + 指令线索
+    if not queries and not cite_lists and not deny_reasons:
+        pack = build_evidence_pack(
+            user_query=q,
+            task_type=task_type.value,
+            retrieval_queries=[],
+            citations=[],
+            reply_parts=["（native slim prefetch：网关未连查；请 Hermes 调 orientg_kb_ask）"],
+            tenant_id=tenant_id,
+            fixtures=fixtures,
+            doc_folder_labels=doc_labels,
+            multi_company_scope=multi_co,
+            finance_meta=finance_ctx,
+        )
+        if relax_entity:
+            pack = {**pack, "entity_scope_relaxed": True}
+        if scope_ctx.get("doc_folder_labels"):
+            pack = {
+                **pack,
+                "doc_folder_labels": scope_ctx.get("doc_folder_labels"),
+                "scope_folders": scope_ctx.get("scope_folders") or [],
+                "multi_company_scope": bool(scope_ctx.get("multi_company_scope")),
+            }
+        return {
+            "ok": True,
+            "citations": [],
+            "reply": pack.get("reply") or "",
+            "evidence_pack": pack,
+            "task_type": task_type.value,
+            "partial_denied": False,
+            "native_slim_prefetch": True,
+        }, []
 
     merged = merge_citations(cite_lists)
     if tables:

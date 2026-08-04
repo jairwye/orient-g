@@ -24,7 +24,7 @@ from backend.routers.settings import DEPARTMENT_FINANCE
 from backend.services.dev_users import ensure_department_test_user
 from backend.tests.test_acl_folder_shared_docs import FOLDER_JINGPIN_CAIBAO_25
 
-QUERY = "出一份华清25、24两年销售费用明细的对比分析报告"
+QUERY = "出一份可比公司E25、24两年销售费用明细的对比分析报告"
 
 # 附注分项锚点（验收用，非生产硬编码）
 FEE_TOTAL_2025 = "13,722,360.23"

@@ -19,6 +19,19 @@ mcp_servers:
     cwd: "%USERPROFILE%/Projects/orient-g"
     env:
       PYTHONPATH: "%USERPROFILE%/Projects/orient-g"
+      ORIENTG_INTERNAL_BASE_URL: "http://127.0.0.1:8000"
+      ORIENTG_MCP_BRIDGE_SECRET: "${ORIENTG_MCP_BRIDGE_SECRET}"
       ORIENTG_USER_TOKEN: "${ORIENTG_USER_TOKEN}"
     timeout: 180
     connect_timeout: 60
+
+# Hermes 官方 tool_loop_guardrails 默认仅 warn，模型可空转至 max_iterations（见
+# NousResearch/hermes-agent issue #25823）。Orient-G Tier2 人员/KB 任务建议开启 hard_stop：
+#
+# tool_loop_guardrails:
+#   warnings_enabled: true
+#   hard_stop_enabled: true
+#   hard_stop_after:
+#     exact_failure: 5
+#     same_tool_failure: 6
+#     idempotent_no_progress: 4

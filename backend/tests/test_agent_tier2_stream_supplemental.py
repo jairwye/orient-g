@@ -14,7 +14,7 @@ from backend.routers.settings import DEPARTMENT_FINANCE
 from backend.services.dev_users import ensure_department_test_user
 from backend.tests.test_acl_folder_shared_docs import FOLDER_JINGPIN_CAIBAO_25
 
-QUERY = "出一份华清25、24两年销售费用明细的对比分析报告"
+QUERY = "出一份可比公司E25、24两年销售费用明细的对比分析报告"
 client = TestClient(app)
 
 PREFETCH_WITH_FACETS = {
@@ -35,7 +35,7 @@ PREFETCH_WITH_FACETS = {
 }
 
 HERMES_LAZY = (
-    "### 华清销售费用对比\n\n"
+    "### 可比公司E销售费用对比\n\n"
     "| 项目 | 2025 | 2024 |\n| --- | --- | --- |\n"
     "| 销售费用 | 13,722,360.23 | 25,081,092.51 |\n\n"
     "#### 2. 费用变动分析\n\n"

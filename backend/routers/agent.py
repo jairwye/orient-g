@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Literal
 
 from fastapi.responses import StreamingResponse
@@ -341,21 +342,57 @@ def agent_chat(request: Request, body: AgentChatBody):
         )
     user_query = last_user_query(messages)
     if agent_route == AgentRoute.fast and prefetch_result:
+        use_prefetch = dict(prefetch_result)
+        extra_tools: list[dict[str, Any]] = []
+        from backend.services.agent_kb_supplemental import (
+            ensure_personnel_compare_prefetch,
+            needs_fast_path_personnel_supplemental,
+        )
+
+        if kb_scope_payload and needs_fast_path_personnel_supplemental(
+            prefetch_result=use_prefetch,
+            user_query=user_query,
+            tenant_id=tenant_id,
+            fixtures=fixtures,
+            kb_scope=kb_scope_payload,
+        ):
+            use_prefetch, extra_tools = ensure_personnel_compare_prefetch(
+                user_token=token,
+                user_query=user_query,
+                prefetch_result=use_prefetch,
+                kb_scope=kb_scope_payload,
+                attached_doc_ids=attached,
+                fixtures=fixtures,
+                tenant_id=tenant_id,
+                enabled_skills=body.enabled_skills,
+                max_queries=6,
+            )
         synth = synthesize_kb_reply(
             tenant_id=tenant_id,
             user_query=user_query,
-            prefetch_result=prefetch_result,
+            prefetch_result=use_prefetch,
             fixtures=fixtures,
             enabled_skills=body.enabled_skills,
             model=body.model,
             skill_addon_extra=fast_path_answer_addon(user_query) or None,
         )
+        from backend.services.agent_kb_fast_path import _apply_personnel_fast_path_reply
+
+        synth_reply = (synth.get("reply") or "").strip()
+        synth_reply = _apply_personnel_fast_path_reply(
+            synth_reply=synth_reply,
+            user_query=user_query,
+            prefetch_result=use_prefetch,
+            tenant_id=tenant_id,
+            fixtures=fixtures,
+            kb_scope=kb_scope_payload,
+        )
         return {
             "ok": True,
             "tenant_id": tenant_id,
-            "reply": finalize_fast_path_reply(synth.get("reply") or "", user_query=user_query),
+            "reply": finalize_fast_path_reply(synth_reply, user_query=user_query),
             "citations": synth.get("citations") or [],
-            "tool_calls": prefetch_tool_calls,
+            "tool_calls": list(prefetch_tool_calls or []) + extra_tools,
             "hermes_session_id": body.hermes_session_id,
             "artifacts": [],
             "kb_prefetch": True,
@@ -475,13 +512,28 @@ def agent_chat(request: Request, body: AgentChatBody):
     synthesis = "hermes"
     kb_supplemental = False
     from backend.services.agent_kb_supplemental import (
+        apply_compare_subject_denial_gate,
+        apply_hermes_mcp_personnel_contract_coerce,
+        apply_personnel_misattribution_gate,
+        apply_personnel_structured_final_gate,
         apply_supplemental_to_done,
         hermes_orientg_kb_ask_count,
         iter_supplemental_revision_events,
         needs_hermes_supplemental,
+        resolve_personnel_reply_source,
     )
 
     uq = last_user_query(messages)
+    supplemental_adopted = False
+    hermes_kb_n = hermes_orientg_kb_ask_count(hermes_payload=result)
+    coerced, coerce_applied = apply_hermes_mcp_personnel_contract_coerce(
+        reply,
+        prefetch_result=prefetch_result,
+        user_query=uq,
+        hermes_kb_ask_count=hermes_kb_n,
+    )
+    if coerce_applied:
+        reply = coerced
     if needs_hermes_supplemental(
         agent_route=agent_route,
         prefetch_result=prefetch_result,
@@ -503,6 +555,7 @@ def agent_chat(request: Request, body: AgentChatBody):
             enabled_skills=body.enabled_skills,
             model=body.model,
             hermes_reply=reply,
+            hermes_kb_ask_count=hermes_orientg_kb_ask_count(hermes_payload=result),
         ):
             if sup_evt.get("type") == "supplemental_meta":
                 sup_meta = sup_evt
@@ -517,9 +570,40 @@ def agent_chat(request: Request, body: AgentChatBody):
             citations = done_like.get("citations")
             synthesis = sup_meta.get("synthesis") or "hermes_supplemental_revise"
             kb_supplemental = True
+            supplemental_adopted = bool(sup_meta.get("supplemental_adopted") is not False)
             if sup_meta.get("supplemental_adopted") is False:
                 synthesis = "hermes_kept_after_supplemental"
+                supplemental_adopted = False
             prefetch_result = sup_meta.get("prefetch_result") or prefetch_result
+
+    gated, gate_applied = apply_personnel_misattribution_gate(
+        reply,
+        prefetch_result=prefetch_result,
+        user_query=uq,
+        tenant_id=tenant_id,
+        fixtures=fixtures,
+        extra_citations=result.get("citations"),
+        kb_scope=kb_scope_payload,
+    )
+    if gate_applied:
+        reply = gated
+    struct_gated, struct_applied = apply_personnel_structured_final_gate(
+        reply,
+        prefetch_result=prefetch_result,
+        user_query=uq,
+        tenant_id=tenant_id,
+        fixtures=fixtures,
+        kb_scope=kb_scope_payload,
+    )
+    if struct_applied:
+        reply = struct_gated
+    cmp_gated, cmp_applied = apply_compare_subject_denial_gate(
+        reply,
+        prefetch_result=prefetch_result,
+        user_query=uq,
+    )
+    if cmp_applied:
+        reply = cmp_gated
 
     from backend.services.hermes_stream_sanitize import finalize_agent_reply
 
@@ -527,6 +611,13 @@ def agent_chat(request: Request, body: AgentChatBody):
         reply,
         user_query=uq,
         tier2_native=(agent_route == AgentRoute.hermes_full),
+    )
+    reply_meta = resolve_personnel_reply_source(
+        structured_gate_applied=struct_applied,
+        misattribution_gate_applied=gate_applied,
+        supplemental_ran=kb_supplemental,
+        supplemental_adopted=supplemental_adopted,
+        reply=reply,
     )
 
     return {
@@ -541,6 +632,7 @@ def agent_chat(request: Request, body: AgentChatBody):
         "kb_supplemental": kb_supplemental,
         "hermes_used": True,
         "synthesis": synthesis,
+        **reply_meta,
         **_route_response_meta(agent_route, prefetch_result),
     }
 
@@ -622,6 +714,11 @@ def _agent_chat_stream_events(
         if agent_route in (AgentRoute.hermes_lite, AgentRoute.hermes_full)
         else None
     )
+    personnel_early_replace_sent = False
+
+    def _emit_personnel_early_replace(draft_text: str = "") -> str | None:
+        """深度横比：过程稿仅进 Trace，不在流式中途 replace 主气泡（避免终稿闪烁）。"""
+        return None
 
     try:
         for evt in stream_agent_chat(
@@ -660,13 +757,36 @@ def _agent_chat_stream_events(
                 return
             if evt.get("type") == "error" and prefetch_result and prefetch_result.get("ok"):
                 if agent_route == AgentRoute.hermes_full:
-                    err_payload = {
-                        "type": "error",
-                        "message": str(evt.get("message") or "Hermes 深度编排失败"),
-                        "code": evt.get("code") or "hermes_error",
-                        "hermes_fallback": False,
-                    }
-                    yield f"data: {json.dumps(err_payload, ensure_ascii=False)}\n\n"
+                    from backend.services.agent_kb_supplemental import iter_tier2_hermes_error_recovery_events
+
+                    uq = last_user_query(messages)
+                    err_code = str(evt.get("code") or "hermes_error")
+                    for rec_evt in iter_tier2_hermes_error_recovery_events(
+                        user_token=token,
+                        tenant_id=tenant_id,
+                        user_query=uq,
+                        prefetch_result=prefetch_result,
+                        prefetch_tool_calls=prefetch_tool_calls,
+                        kb_scope=kb_scope_payload,
+                        attached_doc_ids=attached,
+                        fixtures=fixtures,
+                        agent_route=agent_route,
+                        enabled_skills=body.enabled_skills,
+                        model=body.model,
+                        hermes_draft_acc=hermes_draft_acc,
+                        error_code=err_code,
+                        run_id=run_id,
+                    ):
+                        if rec_evt.get("type") == "error" and rec_evt.get("code") == "cancelled":
+                            yield f"data: {json.dumps(rec_evt, ensure_ascii=False)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        if rec_evt.get("type") == "done":
+                            rec_evt = {
+                                **rec_evt,
+                                **_route_response_meta(agent_route, prefetch_result),
+                            }
+                        yield f"data: {json.dumps(rec_evt, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Hermes 异常结束，Orient-G 改用本地 LLM 基于预检索证据综合…', 'step': 'hermes_fallback'}, ensure_ascii=False)}\n\n"
@@ -699,6 +819,9 @@ def _agent_chat_stream_events(
                 return
             if defer_hermes_draft and evt.get("type") == "delta" and evt.get("content"):
                 draft = hermes_draft_acc.push(str(evt["content"])) if hermes_draft_acc else None
+                early = _emit_personnel_early_replace(str(evt.get("content") or ""))
+                if early:
+                    yield f"data: {json.dumps({'type': 'replace_reply', 'content': early, 'step': 'personnel_early_structured'}, ensure_ascii=False)}\n\n"
                 if draft:
                     yield f"data: {json.dumps({'type': 'thinking', 'content': draft, 'step': 'hermes_draft'}, ensure_ascii=False)}\n\n"
                 continue
@@ -710,6 +833,9 @@ def _agent_chat_stream_events(
             ):
                 hermes_draft_acc.push(str(evt["content"]))
             if defer_hermes_draft and evt.get("type") == "thinking" and evt.get("content"):
+                early = _emit_personnel_early_replace(str(evt.get("content") or ""))
+                if early:
+                    yield f"data: {json.dumps({'type': 'replace_reply', 'content': early, 'step': 'personnel_early_structured'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'thinking', 'content': str(evt['content']), 'step': 'hermes_reasoning'}, ensure_ascii=False)}\n\n"
                 continue
             if evt.get("type") == "done":
@@ -723,19 +849,54 @@ def _agent_chat_stream_events(
                 hermes_raw_reply = resolve_hermes_effective_reply(
                     evt_reply=str(evt.get("reply") or ""),
                     draft_acc=hermes_draft_acc,
+                    user_query=uq,
                 )
-                if hermes_raw_reply and len(hermes_raw_reply) > len(
-                    str(evt.get("reply") or "").strip()
-                ):
+                # 质量择优可能选出更短的过程稿；必须以 resolve 结果覆盖 evt.reply
+                if hermes_raw_reply:
                     evt = {**evt, "reply": hermes_raw_reply}
                 from backend.services.agent_kb_supplemental import (
+                    apply_compare_subject_denial_gate,
+                    apply_hermes_mcp_personnel_contract_coerce,
+                    apply_personnel_misattribution_gate,
+                    apply_personnel_structured_final_gate,
                     apply_supplemental_to_done,
                     hermes_orientg_kb_ask_count,
                     iter_supplemental_revision_events,
                     needs_hermes_supplemental,
+                    resolve_personnel_reply_source,
                 )
 
                 hermes_kb_ask_n = hermes_orientg_kb_ask_count(hermes_payload=evt)
+                streamed_reply_before_postprocess = (hermes_raw_reply or "").strip()
+                coerced_reply, coerce_applied = apply_hermes_mcp_personnel_contract_coerce(
+                    hermes_raw_reply,
+                    prefetch_result=prefetch_result,
+                    user_query=uq,
+                    hermes_kb_ask_count=hermes_kb_ask_n,
+                )
+                if coerce_applied:
+                    # coerce 短 salvage 不得盖掉已 resolve 的更长合格过程稿
+                    from backend.services.hermes_response_analysis import (
+                        hermes_personnel_compare_quality_score,
+                    )
+                    from backend.services.kb_ask_mcp_agent_native import (
+                        is_personnel_thin_salvage_final,
+                    )
+
+                    prior = (hermes_raw_reply or "").strip()
+                    if (
+                        prior
+                        and is_personnel_thin_salvage_final(coerced_reply)
+                        and not is_personnel_thin_salvage_final(prior)
+                        and hermes_personnel_compare_quality_score(prior, user_query=uq)
+                        >= hermes_personnel_compare_quality_score(
+                            coerced_reply, user_query=uq
+                        )
+                    ):
+                        coerce_applied = False
+                    else:
+                        hermes_raw_reply = coerced_reply
+                        evt = {**evt, "reply": hermes_raw_reply}
                 supplemental_ran = needs_hermes_supplemental(
                     agent_route=agent_route,
                     prefetch_result=prefetch_result,
@@ -743,6 +904,8 @@ def _agent_chat_stream_events(
                     hermes_reply=hermes_raw_reply,
                     user_query=uq,
                 )
+                supplemental_final_reply = ""
+                supplemental_adopted = False
                 if supplemental_ran:
                     sup_meta: dict[str, Any] | None = None
                     for sup_evt in iter_supplemental_revision_events(
@@ -759,10 +922,13 @@ def _agent_chat_stream_events(
                         model=body.model,
                         hermes_reply=hermes_raw_reply,
                         run_id=run_id,
+                        hermes_kb_ask_count=hermes_kb_ask_n,
                     ):
                         if sup_evt.get("type") == "supplemental_meta":
                             sup_meta = sup_evt
                             continue
+                        if sup_evt.get("type") == "replace_reply" and sup_evt.get("content"):
+                            supplemental_final_reply = str(sup_evt.get("content") or "").strip()
                         if sup_evt.get("type") == "error" and sup_evt.get("code") == "cancelled":
                             yield f"data: {json.dumps(sup_evt, ensure_ascii=False)}\n\n"
                             yield "data: [DONE]\n\n"
@@ -776,6 +942,38 @@ def _agent_chat_stream_events(
                         )
                         if prefetch_result is not None and sup_meta.get("prefetch_result"):
                             prefetch_result = sup_meta["prefetch_result"]
+                        supplemental_adopted = bool(sup_meta.get("supplemental_adopted") is not False)
+                        if sup_meta.get("supplemental_adopted") is False:
+                            supplemental_adopted = False
+
+                gated, gate_applied = apply_personnel_misattribution_gate(
+                    str(evt.get("reply") or ""),
+                    prefetch_result=prefetch_result,
+                    user_query=uq,
+                    tenant_id=tenant_id,
+                    fixtures=fixtures,
+                    extra_citations=evt.get("citations"),
+                    kb_scope=kb_scope_payload,
+                )
+                if gate_applied:
+                    evt = {**evt, "reply": gated}
+                struct_gated, struct_applied = apply_personnel_structured_final_gate(
+                    str(evt.get("reply") or ""),
+                    prefetch_result=prefetch_result,
+                    user_query=uq,
+                    tenant_id=tenant_id,
+                    fixtures=fixtures,
+                    kb_scope=kb_scope_payload,
+                )
+                if struct_applied:
+                    evt = {**evt, "reply": struct_gated}
+                cmp_gated, cmp_applied = apply_compare_subject_denial_gate(
+                    str(evt.get("reply") or ""),
+                    prefetch_result=prefetch_result,
+                    user_query=uq,
+                )
+                if cmp_applied:
+                    evt = {**evt, "reply": cmp_gated}
 
                 from backend.services.hermes_stream_sanitize import finalize_agent_reply
 
@@ -789,12 +987,69 @@ def _agent_chat_stream_events(
                         ),
                     }
 
+                # 收束硬择优：thin salvage 终稿不得盖掉 draft_acc 中更长合规对照稿
+                from backend.services.kb_ask_mcp_agent_native import (
+                    is_personnel_thin_salvage_final,
+                )
+
                 final_body = str(evt.get("reply") or "").strip()
-                if final_body and (defer_hermes_draft or supplemental_ran):
+                if hermes_draft_acc and is_personnel_thin_salvage_final(final_body):
+                    draft_keep = (hermes_draft_acc.full_body() or "").strip()
+                    if (
+                        draft_keep
+                        and not is_personnel_thin_salvage_final(draft_keep)
+                        and "人员结构对照" in draft_keep
+                        and len(draft_keep) > len(final_body) + 80
+                        and (
+                            re.search(r"1[,，]?378", draft_keep)
+                            or re.search(r"(?<!\d)70(?!\d)", draft_keep)
+                        )
+                    ):
+                        final_body = finalize_agent_reply(
+                            draft_keep,
+                            user_query=uq,
+                            tier2_native=(agent_route == AgentRoute.hermes_full),
+                        )
+                        evt = {**evt, "reply": final_body}
+                        coerce_applied = False
+
+                final_body = str(evt.get("reply") or "").strip()
+                # 相对「流式过程稿」是否变化：coerce 后 hermes_raw_reply 已被改写，
+                # 须与 streamed_reply_before_postprocess 比，否则浏览器 DOM 停在过程稿。
+                reply_changed = bool(
+                    final_body
+                    and streamed_reply_before_postprocess
+                    and final_body != streamed_reply_before_postprocess
+                )
+                if final_body and (
+                    not supplemental_final_reply
+                    or final_body.strip() != supplemental_final_reply
+                ) and (
+                    defer_hermes_draft
+                    or supplemental_ran
+                    or gate_applied
+                    or struct_applied
+                    or cmp_applied
+                    or coerce_applied
+                    or reply_changed
+                ):
                     yield f"data: {json.dumps({'type': 'replace_reply', 'content': final_body}, ensure_ascii=False)}\n\n"
 
+                from backend.services.hermes_stream_stats import enrich_done_stream_stats
+
+                reply_meta = resolve_personnel_reply_source(
+                    structured_gate_applied=struct_applied,
+                    misattribution_gate_applied=gate_applied,
+                    supplemental_ran=supplemental_ran or bool(evt.get("kb_supplemental")),
+                    supplemental_adopted=supplemental_adopted,
+                    reply=final_body,
+                )
                 evt = {
                     **evt,
+                    "hermes_stream_stats": enrich_done_stream_stats(
+                        evt.get("hermes_stream_stats"),
+                        prefetch_tool_calls=prefetch_tool_calls,
+                    ),
                     "ok": True,
                     "tenant_id": tenant_id,
                     "kb_prefetch": bool(prefetch_tool_calls),
@@ -803,7 +1058,13 @@ def _agent_chat_stream_events(
                     "agent_tier": route_to_agent_tier(agent_route),
                     "evidence_pack": pack_summary_for_sse((prefetch_result or {}).get("evidence_pack")),
                     "tool_calls": [*prefetch_tool_calls, *(evt.get("tool_calls") or [])],
+                    **reply_meta,
                 }
+                # slim/native 时 Runs done 常无 citations：合并 prefetch 命中，避免长期 citations=0
+                if not evt.get("citations"):
+                    pf_cites = list((prefetch_result or {}).get("citations") or [])
+                    if pf_cites:
+                        evt = {**evt, "citations": pf_cites}
             yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
     finally:

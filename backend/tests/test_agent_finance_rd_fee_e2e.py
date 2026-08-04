@@ -1,6 +1,6 @@
 """财务测试账号 + 竞品财报25：研发费用明细 MCP/预检索验收（通用，非生产硬编码）。
 
-doc_id 仅作验收锚点；生产逻辑不写死华清/研发费用金额。
+doc_id 仅作验收锚点；生产逻辑不写死可比公司E/研发费用金额。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from backend.services.knowledge_pipeline import is_fee_appendix_chunk, query_wan
 from backend.services import orientg_mcp_tools as mcp_tools
 from backend.tests.test_acl_folder_shared_docs import FOLDER_JINGPIN_CAIBAO_25
 
-QUERY = "出一份华清25、24两年研发费用明细的对比分析报告"
+QUERY = "出一份可比公司E25、24两年研发费用明细的对比分析报告"
 FEE_NOTE_DOC = "ud_2ccb589f993b43d5892a637150cbc6af"
 MERGED_PL_DOC = "ud_91f55322e2594b9c9d3ba7ceb89fafb2"
 
@@ -109,7 +109,7 @@ def test_mcp_ask_rd_fee_returns_numeric_evidence(finance_rd_pack):
     resolved = finance_rd_pack["resolved"]
     out = mcp_tools.orientg_kb_ask(
         token,
-        "华清 研发费用 附注 2024 2025 职工薪酬",
+        "可比公司E 研发费用 附注 2024 2025 职工薪酬",
         attached_doc_ids=list(resolved.get("attached_doc_ids") or [])[:200],
         limit_to_attached=bool(resolved.get("limit_to_attached")),
     )

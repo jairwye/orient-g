@@ -51,7 +51,7 @@ def test_agent_folder_scope_uses_direct_read(monkeypatch):
         "/api/agent/chat",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "messages": [{"role": "user", "content": "做华清25与24年损益对比表"}],
+            "messages": [{"role": "user", "content": "做可比公司E25与24年损益对比表"}],
             "kb_scope": {"selected_folder_ids": ["f_finance_public"]},
         },
     )

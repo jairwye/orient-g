@@ -32,13 +32,17 @@ def resolve(session_key: str | None) -> Optional[str]:
     now = time.time()
     with _lock:
         entry = _store.get(key)
-        if not entry:
-            return None
-        token, expires = entry
-        if now >= expires:
+        if entry:
+            token, expires = entry
+            if now < expires:
+                return token
             _store.pop(key, None)
-            return None
-        return token
+    from backend.services.hermes_shared_session import load_session
+
+    row = load_session(key)
+    if row and row.get("user_token"):
+        return str(row["user_token"])
+    return None
 
 
 def clear(session_key: str | None) -> None:
@@ -61,3 +65,11 @@ def normalize_session_key(session_key: str) -> str:
 def reset_for_tests() -> None:
     with _lock:
         _store.clear()
+
+
+def _memory_entry(session_key: str) -> tuple[str, float] | None:
+    key = normalize_session_key(session_key)
+    if not key:
+        return None
+    with _lock:
+        return _store.get(key)

@@ -22,9 +22,9 @@ def test_build_pack_has_facets_and_score():
         {"doc_id": "ud_x", "chunk_id": "c1", "evidence_type": "doc_chunk"},
     ]
     pack = build_evidence_pack(
-        user_query="华清营收",
+        user_query="可比公司E营收",
         task_type="fact",
-        retrieval_queries=["华清营收"],
+        retrieval_queries=["可比公司E营收"],
         citations=cites,
         reply_parts=["hit 1"],
         tenant_id="tenant1",
@@ -64,14 +64,14 @@ def test_compare_with_gaps_needs_orchestration():
 
 def test_breakdown_detail_without_gaps_still_needs_orchestration():
     pack = {"task_type": "breakdown", "gaps": [], "coverage_score": 0.9}
-    assert query_needs_hermes_orchestration("华清25、24两年销售费用明细对比报告", pack)
+    assert query_needs_hermes_orchestration("可比公司E25、24两年销售费用明细对比报告", pack)
 
 
 def test_change_reason_gap_not_raised_when_excerpt_has_narrative():
     pack = build_evidence_pack(
-        user_query="出一份华清25、24两年销售费用明细的对比分析报告",
+        user_query="出一份可比公司E25、24两年销售费用明细的对比分析报告",
         task_type="breakdown",
-        retrieval_queries=["华清 销售费用 附注"],
+        retrieval_queries=["可比公司E 销售费用 附注"],
         citations=[{"doc_id": "ud_a", "chunk_id": "c1", "evidence_type": "doc_chunk"}],
         reply_parts=["ok"],
         tenant_id="tenant1",

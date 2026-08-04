@@ -38,6 +38,8 @@ export type HermesStreamStats = {
   orientg_kb_ask_calls?: number;
   /** Orient-G 网关在 Hermes 完成后执行的补检索次数（gateway 子集） */
   orientg_kb_supplemental_calls?: number;
+  /** 首轮未调 MCP 后的强制重试次数（宽尺子：常态应为 0） */
+  hermes_mcp_retry_count?: number;
 };
 
 export type AgentMeta = {
@@ -57,6 +59,9 @@ export type AgentMeta = {
   hermes_stream_stats?: HermesStreamStats;
   kb_supplemental?: boolean;
   supplemental_adopted?: boolean;
+  /** hermes | orientg_structured_gate | orientg_supplemental | … */
+  reply_source?: string;
+  structured_gate_applied?: boolean;
 };
 
 export type ChatMessage = {

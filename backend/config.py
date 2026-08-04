@@ -155,12 +155,28 @@ class Settings(BaseSettings):
     hermes_agent_stream: bool = True
     # True：在 Gateway 支持时改用 POST /v1/runs + GET .../events（可 POST .../stop 中断）
     hermes_agent_use_runs_api: bool = False
+    # True：orientg_kb_ask 返回 agent_payload v2 + 成稿契约（充分调用 Hermes 编排；见 1.2.3.d）
+    hermes_native_mcp_reply: bool = False
+    # True：Hermes 终稿已合格且已调 MCP 时跳过网关补检索（实验；见 1.2.3.d Phase 3）
+    hermes_native_skip_supplemental: bool = False
+    # native + deep/full + 人员：预检索多 query 上限（硬数字仍剥离；≥1 避免 Pack 0%+空 citations）
+    # 默认 1：slim 命中线索 + 逼 Hermes 首轮自调 MCP 取硬数字
+    hermes_native_prefetch_max_kb_asks: int = 1
     # False：Hermes 上下文 orientg_stream_reasoning=false，与 LLM 侧关闭 think/reasoning 一致
     hermes_stream_reasoning: bool = False
     # 证据综合时单 chunk 最大字符（与 kb_documents.max_section_chars 对齐；超长才截断）
     kb_evidence_chunk_max_chars: int = 15000
     # True：带 kb_scope 的 /api/agent/chat/stream 须带 X-Agent-Run-Id（防 Hermes loopback 重放）
     agent_require_run_id: bool = False
+
+    # Hermes MCP 子进程 → backend HTTP 会话桥（跨进程 JWT / kb_scope / 预算）
+    orientg_internal_base_url: Optional[str] = None  # 例 http://127.0.0.1:8000；MCP env ORIENTG_INTERNAL_BASE_URL 优先
+    orientg_mcp_bridge_secret: Optional[str] = None  # 与 MCP env ORIENTG_MCP_BRIDGE_SECRET 一致；未设则回退 AUTH_SECRET（仅开发）
+
+    # 人员/财务横比主体：公开仓默认 YYCQ / 可比公司A；生产真实名仅写本地 .env（勿提交）
+    kb_compare_entity_extra_markers: Optional[str] = None  # 逗号分隔，并入问句实体识别
+    kb_compare_entity_primary_aliases: Optional[str] = None  # 本公司侧额外匹配名
+    kb_compare_entity_peer_aliases: Optional[str] = None  # 可比公司侧额外匹配名
 
     # 竞品财报：无 upload Snapshot 时回退到仓库内 YYCQ 蓝本 fixture（None=按 app_env：dev 开、production 关）
     competitor_fixture_fallback: bool | None = None

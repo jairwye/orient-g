@@ -17,7 +17,7 @@ from backend.services.kb_retrieval_plan import (
 )
 from backend.services.kb_retrieval_plan import TaskType
 
-SALES_FEE_REPORT = "出一份华清25、24两年销售费用明细的对比分析报告"
+SALES_FEE_REPORT = "出一份可比公司E25、24两年销售费用明细的对比分析报告"
 
 
 def test_prefetch_tier_maps_agent_mode_to_local_lite_full():
@@ -110,14 +110,14 @@ def test_discourage_repeat_kb_ask_local_and_lite_only():
 
 def test_query_wants_analyst_report_for_sales_fee_report():
     assert query_wants_analyst_report(SALES_FEE_REPORT) is True
-    assert query_wants_analyst_report("华清25和24损益对比表") is False
+    assert query_wants_analyst_report("可比公司E25和24损益对比表") is False
 
 
 def test_deep_retrieval_includes_narrative_subqueries():
     qs = plan_retrieval_queries(
         SALES_FEE_REPORT,
         TaskType.breakdown,
-        entity="华清",
+        entity="可比公司E",
         prefetch_tier="full",
     )
     joined = " ".join(qs)

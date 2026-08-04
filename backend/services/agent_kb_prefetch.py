@@ -13,6 +13,27 @@ from backend.services.kb_scope_resolve import resolve_kb_scope_for_ask
 from backend.services.knowledge_acl import load_fixtures
 
 
+# 人员对照硬数字（含千分位）：native prefetch 注入前剥离，避免未调 MCP 先出表
+_PERSONNEL_HEADCOUNT_NUM = re.compile(
+    r"(?<!\d)(?:1[,，]?378|1[,，]?066|946|312|242|70|95|139|3[,，]?138)(?!\d)"
+)
+_PERSONNEL_TABLEISH = re.compile(
+    r"\|[^\n]{0,80}\d{2,4}[^\n]{0,40}\|",
+)
+
+
+def _scrub_native_personnel_prefetch_numbers(reply: str, pack_json: str) -> tuple[str, str]:
+    """去掉可直接抄写成对照表的人数/表行，仅留范围线索。"""
+
+    def _scrub(text: str) -> str:
+        t = _PERSONNEL_HEADCOUNT_NUM.sub("—", text or "")
+        t = re.sub(r"在职员工[^。\n]{0,48}", "（总人数略）", t)
+        t = _PERSONNEL_TABLEISH.sub("| … |", t)
+        return t
+
+    return _scrub(reply), _scrub(pack_json)
+
+
 def _citation_base_score(c: dict[str, Any], index: int) -> float:
     """统一 citation.score：None 用检索序位；0~1 视为相似度；其余为 pipeline 原始分。"""
     sc = c.get("score")
@@ -62,6 +83,9 @@ def _top_citations_for_llm(
     q_join = (user_query or "").replace(" ", "")
     wants_compare = any(x in q_join for x in ("对比", "比较", "两年", "24", "25", "2024", "2025"))
     wants_fee = any(x in q_join for x in ("销售费用", "管理费用", "费用明细", "明细"))
+    from backend.services.kb_retrieval_plan import query_wants_personnel_structure
+
+    wants_personnel = query_wants_personnel_structure(user_query)
     per_doc_cap = max(1, int(max_chunks_per_doc or 1))
     per_doc: dict[str, list[tuple[float, dict[str, Any]]]] = {}
     for i, c in enumerate(citations):
@@ -85,6 +109,9 @@ def _top_citations_for_llm(
                     for ch in s.get("chunks") or []:
                         if ch.get("chunk_id") == c.get("chunk_id"):
                             txt = str(ch.get("text") or "")
+        src = str(c.get("source") or "")
+        if "personnel" in src and "boost" in src:
+            base += 8000.0
         if txt:
             base += float(
                 _score_chunk_for_retrieval(
@@ -99,6 +126,11 @@ def _top_citations_for_llm(
                 money_n = len(re.findall(r"\d{1,3}(?:,\d{3})+\.\d{2}", txt))
                 if "目录" in txt and money_n < 2:
                     base -= 450.0
+            if wants_personnel:
+                if re.search(r"研发人员情况|1\.1信息-人员|员工情况|在职员工", txt, re.I):
+                    base += 900.0
+                if re.search(r"期末人数|期初人数", txt):
+                    base += 120.0
         if did:
             bucket = per_doc.setdefault(did, [])
             bucket.append((base, c))
@@ -314,6 +346,17 @@ def prefetch_kb_context(
     pack_labels = {}
     if isinstance(evidence_pack, dict) and isinstance(evidence_pack.get("doc_folder_labels"), dict):
         pack_labels = evidence_pack.get("doc_folder_labels") or {}
+    from backend.services.kb_retrieval_plan import query_wants_personnel_structure
+    from backend.services.kb_ask_mcp_reply import boost_personnel_compare_citations
+
+    if query_wants_personnel_structure(query):
+        cites = boost_personnel_compare_citations(
+            cites,
+            user_query=query,
+            tenant_id=tenant_id,
+            doc_folder_labels=pack_labels,
+        )
+        ask_res = {**ask_res, "citations": cites}
     finance_ctx = None
     if isinstance(evidence_pack, dict) and evidence_pack.get("finance_meta"):
         finance_ctx = evidence_pack.get("finance_meta")
@@ -367,14 +410,38 @@ def prefetch_kb_context(
             "【检索策略】除非证据明显不足或需切换口径（如合并↔母公司），请勿重复调用 orientg_kb_ask；"
             "需要补充检索时请换用更具体 query（如「合并利润表 营业收入 2025」）。\n"
         )
+    from backend.config import settings as _settings
+    from backend.services.kb_retrieval_plan import query_wants_personnel_structure as _q_personnel
+
+    reply_summary = str(compact.get("reply") or "")
+    pack_json = json.dumps(compact, ensure_ascii=False)
+    if (
+        via_hermes
+        and getattr(_settings, "hermes_native_mcp_reply", False)
+        and _q_personnel(query)
+    ):
+        lead += (
+            "【人员结构 native · 硬约束】**首轮必须先**调用 mcp_orientg_orientg_kb_ask；"
+            "禁止根据下方预检索摘要/JSON 直接写「人员结构对照」或长分析。"
+            "预检索仅作范围线索（doc/folder），**硬数字一律以 MCP agent_payload / 参考表为准**；"
+            "禁止把参考表标题原样上屏；禁止员工总数倍数对照；禁止推算/推测/~N人。\n"
+        )
+        # 剥离子人数/对照表可用数字，避免 Hermes 空转先出终稿（手测：未调 MCP 就出对照表）
+        reply_summary, pack_json = _scrub_native_personnel_prefetch_numbers(
+            reply_summary, pack_json
+        )
+        # 不再注入可当终稿的详情 JSON；仅保留 doc 引用线索
+        pack_json = (
+            '{"native_slim":true,"note":"硬数字已剥离；须 mcp_orientg_orientg_kb_ask 取证"}'
+        )
     prefetch_msg = {
         "role": "system",
         "content": (
             lead
-            + f"摘要：{compact.get('reply') or ''}\n"
+            + f"摘要：{reply_summary}\n"
             + ("引用：\n" + "\n".join(cite_lines) + "\n" if cite_lines else "")
             + "详情 JSON：\n"
-            + json.dumps(compact, ensure_ascii=False)
+            + pack_json
         ),
     }
     out_messages = [prefetch_msg, *messages]
@@ -417,8 +484,11 @@ def synthesize_kb_reply(
         from backend.services.finance_annual_report_profile import build_finance_retrieval_context
 
         finance_ctx = build_finance_retrieval_context(enabled_skills, user_query)
-    max_per_doc = 2 if task_type == "breakdown" else 1
-    default_limit = 12 if multi_co else (10 if task_type in ("breakdown", "compare") else 5)
+    from backend.services.kb_retrieval_plan import query_wants_personnel_structure
+
+    wants_personnel = query_wants_personnel_structure(user_query)
+    max_per_doc = 2 if task_type == "breakdown" or wants_personnel else 1
+    default_limit = 12 if multi_co or wants_personnel else (10 if task_type in ("breakdown", "compare") else 5)
     cite_lim = int(cite_limit) if cite_limit is not None else default_limit
     citations = _top_citations_for_llm(
         list(prefetch_result.get("citations") or []),

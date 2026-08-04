@@ -18,20 +18,20 @@ from backend.services.kb_retrieval_plan import infer_task_type, plan_retrieval_q
 pytestmark = pytest.mark.agent_finance_matrix
 
 MATRIX_ROWS: list[tuple[str, str, str]] = [
-    ("pnl", "研发费用", "出一份华清25、24两年研发费用明细的对比分析报告"),
-    ("pnl", "销售费用", "出一份华清25、24两年销售费用明细的对比分析报告"),
-    ("pnl", "管理费用", "出一份华清25、24两年管理费用明细的对比分析报告"),
-    ("pnl", "营业收入", "华清2025年与2024年营业收入对比及变动说明"),
-    ("pnl", "净利润", "华清2025年与2024年净利润对比分析"),
-    ("bs", "货币资金", "华清2025年末与2024年末货币资金对比"),
-    ("bs", "应收账款", "华清2025年末与2024年末应收账款余额对比"),
-    ("bs", "存货", "华清2025年末与2024年末存货对比"),
-    ("bs", "固定资产", "华清2025年末与2024年末固定资产账面价值对比"),
-    ("cf", "经营活动现金流", "华清2025年与2024年经营活动产生的现金流量净额对比"),
-    ("cf", "投资活动现金流", "华清2025年与2024年投资活动现金流量对比"),
-    ("cf", "筹资活动现金流", "华清2025年与2024年筹资活动现金流量对比"),
-    ("note", "附注-费用", "华清财报附注中2025与2024年三项期间费用合计对比"),
-    ("note", "附注-研发", "根据附注说明华清两年研发支出构成变化"),
+    ("pnl", "研发费用", "出一份可比公司E25、24两年研发费用明细的对比分析报告"),
+    ("pnl", "销售费用", "出一份可比公司E25、24两年销售费用明细的对比分析报告"),
+    ("pnl", "管理费用", "出一份可比公司E25、24两年管理费用明细的对比分析报告"),
+    ("pnl", "营业收入", "可比公司E2025年与2024年营业收入对比及变动说明"),
+    ("pnl", "净利润", "可比公司E2025年与2024年净利润对比分析"),
+    ("bs", "货币资金", "可比公司E2025年末与2024年末货币资金对比"),
+    ("bs", "应收账款", "可比公司E2025年末与2024年末应收账款余额对比"),
+    ("bs", "存货", "可比公司E2025年末与2024年末存货对比"),
+    ("bs", "固定资产", "可比公司E2025年末与2024年末固定资产账面价值对比"),
+    ("cf", "经营活动现金流", "可比公司E2025年与2024年经营活动产生的现金流量净额对比"),
+    ("cf", "投资活动现金流", "可比公司E2025年与2024年投资活动现金流量对比"),
+    ("cf", "筹资活动现金流", "可比公司E2025年与2024年筹资活动现金流量对比"),
+    ("note", "附注-费用", "可比公司E财报附注中2025与2024年三项期间费用合计对比"),
+    ("note", "附注-研发", "根据附注说明可比公司E两年研发支出构成变化"),
 ]
 
 TIER_CASES = [
@@ -71,7 +71,7 @@ def test_matrix_route_tier(
 @pytest.mark.parametrize("category,subject,query", MATRIX_ROWS)
 def test_matrix_retrieval_plan_has_query(category: str, subject: str, query: str):
     tt = infer_task_type(query)
-    plan = plan_retrieval_queries(query, tt, entity="华清", max_queries=6)
+    plan = plan_retrieval_queries(query, tt, entity="可比公司E", max_queries=6)
     assert plan[0] == query
     assert len(plan) >= 1
 
@@ -136,10 +136,10 @@ def test_live_finance_mcp_pack_smoke(category: str, subject: str, query: str):
         multi_query=True,
     )
     assert pack_res.get("ok"), pack_res
-    subq = subject.replace("费用", "")[:8] or "华清"
+    subq = subject.replace("费用", "")[:8] or "可比公司E"
     mcp_out = mcp_tools.orientg_kb_ask(
         token,
-        f"华清 {subq} 2024 2025",
+        f"可比公司E {subq} 2024 2025",
         attached_doc_ids=list(resolved.get("attached_doc_ids") or [])[:200],
         limit_to_attached=bool(resolved.get("limit_to_attached")),
     )

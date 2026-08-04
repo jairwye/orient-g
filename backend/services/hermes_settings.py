@@ -73,6 +73,8 @@ def diagnose_hermes() -> dict[str, Any]:
         "hermes_agent_simple_query_fast": bool(settings.hermes_agent_simple_query_fast),
         "hermes_agent_stream": bool(settings.hermes_agent_stream),
         "hermes_agent_use_runs_api": bool(settings.hermes_agent_use_runs_api),
+        "hermes_native_mcp_reply": bool(getattr(settings, "hermes_native_mcp_reply", False)),
+        "hermes_native_skip_supplemental": bool(getattr(settings, "hermes_native_skip_supplemental", False)),
         "hermes_capabilities": caps,
         "hermes_runs_api_ready": runs_api_ready,
         "kb_evidence_chunk_max_chars": int(settings.kb_evidence_chunk_max_chars or 15000),

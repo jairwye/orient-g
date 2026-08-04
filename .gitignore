@@ -119,22 +119,11 @@ backend/data/.data_parse_sessions/
 # 前端编译追踪数据
 frontend/traceDir/
 
-# 浏览器矩阵验收：本地报告与临时产物（不入库；脚本与规制见 docs/finance-matrix-browser-testing.md）
-backend/tests/reports/finance_matrix_browser_report.json
-backend/tests/reports/_*
-backend/tests/reports/.chrome_matrix_profile2/
-backend/tests/reports/.finance_matrix_loop_*
-backend/tests/reports/finance_matrix_live_report.json
-backend/tests/reports/finance_matrix_browser_blocked.json
-backend/tests/reports/finance_matrix_browser_cdp_run.log
-backend/tests/reports/finance_matrix_browser_report.pre_full_*.json
-backend/tests/reports/browser_matrix_final.json
-backend/tests/reports/matrix_summary.json
-backend/tests/reports/pending_cases.json
-backend/tests/reports/queue_next.json
-backend/tests/reports/*.log
-backend/tests/reports/*.out
-backend/tests/reports/live_*
+# 浏览器矩阵 / Hermes 探针：本地报告与临时产物（不入库）
+backend/tests/reports/**
+!backend/tests/reports/.gitkeep
+docker/hermes/*.filled.example
+docker/hermes/*.filled.yaml
 
 # 竞品财报：本地由蓝本生成的 snapshot 产物（不入库；开发 fallback 用 minimal.md）
 backend/tests/fixtures/competitor_report_yycq.snapshot.json

@@ -20,6 +20,7 @@ class HermesSessionContext:
     allow_kb_write: bool = False
     kb_scope: dict[str, list[str]] = field(default_factory=dict)
     orientg_route: str | None = None
+    native_mcp_reply: bool = False
 
 
 def register(
@@ -28,14 +29,21 @@ def register(
     allow_kb_write: bool = False,
     kb_scope: dict[str, Any] | None = None,
     orientg_route: str | None = None,
+    native_mcp_reply: bool | None = None,
     ttl_seconds: int = 3600,
 ) -> str:
+    from backend.config import settings
     from backend.services.hermes_token_bridge import normalize_session_key
 
     key = normalize_session_key(session_key)
     if not key:
         raise ValueError("session_key required")
     scope_raw = kb_scope or {}
+    native = (
+        bool(settings.hermes_native_mcp_reply)
+        if native_mcp_reply is None
+        else bool(native_mcp_reply)
+    )
     ctx = HermesSessionContext(
         allow_kb_write=bool(allow_kb_write),
         kb_scope={
@@ -56,6 +64,7 @@ def register(
             ],
         },
         orientg_route=(orientg_route or "").strip() or None,
+        native_mcp_reply=native,
     )
     expires = time.time() + max(1, int(ttl_seconds))
     with _lock:
@@ -72,13 +81,39 @@ def resolve(session_key: str | None) -> Optional[HermesSessionContext]:
     now = time.time()
     with _lock:
         entry = _store.get(key)
-        if not entry:
-            return None
-        ctx, expires = entry
-        if now >= expires:
+        if entry:
+            ctx, expires = entry
+            if now < expires:
+                return ctx
             _store.pop(key, None)
-            return None
-        return ctx
+    from backend.services.hermes_shared_session import load_session
+
+    row = load_session(key)
+    if not row:
+        return None
+    scope_raw = row.get("kb_scope") or {}
+    return HermesSessionContext(
+        allow_kb_write=bool(row.get("allow_kb_write")),
+        kb_scope={
+            "selected_folder_ids": [
+                str(x).strip()
+                for x in (scope_raw.get("selected_folder_ids") or [])
+                if str(x).strip()
+            ],
+            "selected_collection_ids": [
+                str(x).strip()
+                for x in (scope_raw.get("selected_collection_ids") or [])
+                if str(x).strip()
+            ],
+            "selected_table_ids": [
+                str(x).strip()
+                for x in (scope_raw.get("selected_table_ids") or [])
+                if str(x).strip()
+            ],
+        },
+        orientg_route=(row.get("orientg_route") or "").strip() or None,
+        native_mcp_reply=bool(row.get("native_mcp_reply")),
+    )
 
 
 def clear(session_key: str | None) -> None:

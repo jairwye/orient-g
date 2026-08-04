@@ -40,18 +40,19 @@ def check_and_consume_ask(session_key: str | None) -> Optional[str]:
     now = time.time()
     with _lock:
         entry = _store.get(key)
-        if not entry:
-            return None
-        max_calls, used, expires = entry
-        if now >= expires:
+        if entry:
+            max_calls, used, expires = entry
+            if now < expires:
+                if max_calls is None:
+                    return None
+                if used >= max_calls:
+                    return f"orientg_kb_ask budget exhausted (max {max_calls} per session)"
+                _store[key] = (max_calls, used + 1, expires)
+                return None
             _store.pop(key, None)
-            return None
-        if max_calls is None:
-            return None
-        if used >= max_calls:
-            return f"orientg_kb_ask budget exhausted (max {max_calls} per session)"
-        _store[key] = (max_calls, used + 1, expires)
-        return None
+    from backend.services.hermes_shared_session import consume_kb_budget_db
+
+    return consume_kb_budget_db(session_key)
 
 
 def clear_session_budget(session_key: str | None) -> None:

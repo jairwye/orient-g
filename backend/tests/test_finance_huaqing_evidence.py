@@ -1,4 +1,4 @@
-"""华清损益：财务公共库应有可引用证据（非「缺少证据」）。"""
+"""可比公司E损益：财务公共库应有可引用证据（非「缺少证据」）。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from backend.services.knowledge_pipeline import ask_knowledge
 client = TestClient(app)
 FINANCE_TEST_PASSWORD = "FinanceTest!2026"
 FINANCE_USER = "finance_test"
-QUERY = "出具一份华清25、24两年损益的对比分析表，仅依据知识库证据。"
+QUERY = "出具一份可比公司E25、24两年损益的对比分析表，仅依据知识库证据。"
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +108,7 @@ def test_mcp_ask_huaqing_has_numeric_evidence_in_synthesis(monkeypatch):
 
     monkeypatch.setattr(
         "backend.services.ai_interaction_llm.generate_answer_with_evidence",
-        lambda **k: "华清 2025 年营业收入 834,527,936.00；2024 年 798,118,000.00",
+        lambda **k: "可比公司E 2025 年营业收入 834,527,936.00；2024 年 798,118,000.00",
     )
 
     synth = synthesize_kb_reply(
@@ -135,7 +135,7 @@ def test_agent_stream_huaqing_reply_contains_numbers(monkeypatch):
     def _mock_prefetch(user_token, messages, kb_scope, **kwargs):
         ask_res = {
             "ok": True,
-            "reply": "华清 2025 营业收入 834,527,936.00；2024 年 798,118,000.00",
+            "reply": "可比公司E 2025 营业收入 834,527,936.00；2024 年 798,118,000.00",
             "citations": [{"doc_id": HUAQING_DOC_ID, "chunk_id": "ch_pl", "evidence_type": "doc_chunk"}],
             "evidence_pack": {
                 "task_type": "compare",
@@ -159,7 +159,7 @@ def test_agent_stream_huaqing_reply_contains_numbers(monkeypatch):
         yield {
             "type": "done",
             "ok": True,
-            "reply": "华清 2025 营业收入 834527936；2024 年 798118000",
+            "reply": "可比公司E 2025 营业收入 834527936；2024 年 798118000",
             "kb_fast_path": True,
             "hermes_used": False,
             "tool_calls": [],

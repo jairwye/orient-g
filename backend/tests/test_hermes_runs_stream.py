@@ -39,7 +39,7 @@ def test_hermes_run_event_tool_lifecycle():
         {
             "event": "tool.started",
             "tool": "orientg_kb_ask",
-            "preview": "kb: 华清",
+            "preview": "kb: 可比公司E",
             "run_id": "run_1",
             "timestamp": 1.0,
         },

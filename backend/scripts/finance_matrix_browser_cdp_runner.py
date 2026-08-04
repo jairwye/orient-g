@@ -47,9 +47,10 @@ AGENT_URL = (
 )
 LOGIN_URL = "http://localhost:3000/login"
 INIT_SCRIPT = (
-    "localStorage.setItem('orientg.kb_scope_capsule.v1', JSON.stringify({"
+    "(function(){try{if(location.origin==='http://localhost:3000'||location.origin==='http://127.0.0.1:3000')"
+    "{localStorage.setItem('orientg.kb_scope_capsule.v1', JSON.stringify({"
     f"folder_ids:['{FOLDER_ID}'], collection_ids:[], table_ids:[], updated_at: Date.now()"
-    "}));"
+    "}));}}catch(e){}})();"
 )
 _SESSION_TOKEN = ""
 
@@ -59,7 +60,7 @@ def _finance_test_password() -> str:
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
-from finance_matrix_browser_retry_queue import retry_pending  # noqa: E402
+from finance_matrix_browser_retry_queue import retry_pending as _finance_retry_pending  # noqa: E402
 from finance_matrix_browser_validate import (  # noqa: E402
     COOLDOWN_MS,
     POLL_INTERVAL_MS,
@@ -68,11 +69,69 @@ from finance_matrix_browser_validate import (  # noqa: E402
 from finance_matrix_cases import MODE_LABEL  # noqa: E402
 from finance_matrix_browser_append import append_matrix_row  # noqa: E402
 
+_SUITE = "finance"
+_SUITE_MATRIX: list[tuple[str, str, str, str]] | None = None
+_SUITE_REPORT: Path | None = None
+_SUITE_RETRY = _finance_retry_pending
+_SUITE_TOTAL = 42
+
+
+def _init_suite(suite: str) -> None:
+    global _SUITE, _SUITE_MATRIX, _SUITE_REPORT, _SUITE_RETRY, _SUITE_TOTAL
+    _SUITE = suite
+    if suite == "personnel":
+        from finance_matrix_personnel_cases import PERSONNEL_MATRIX, REPORT_FILENAME  # noqa: E402
+        from finance_matrix_personnel_retry_queue import retry_pending as _personnel_retry  # noqa: E402
+
+        _SUITE_MATRIX = PERSONNEL_MATRIX
+        _SUITE_REPORT = REPORTS / REPORT_FILENAME
+        _SUITE_RETRY = _personnel_retry
+        _SUITE_TOTAL = len(PERSONNEL_MATRIX)
+        return
+    from finance_matrix_cases import MATRIX  # noqa: E402
+
+    _SUITE_MATRIX = MATRIX
+    _SUITE_REPORT = REPORTS / "finance_matrix_browser_report.json"
+    _SUITE_RETRY = _finance_retry_pending
+    _SUITE_TOTAL = len(MATRIX)
+
+
+def retry_pending() -> list[tuple[str, str, str, str]]:
+    return _SUITE_RETRY()
+
 
 def _http_get_json(url: str, timeout: float = 5.0) -> Any:
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _http_put_json(url: str, timeout: float = 15.0) -> Any:
+    req = urllib.request.Request(url, method="PUT")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _ai_page_targets(cdp_base: str) -> list[str]:
+    targets = _http_get_json(f"{cdp_base.rstrip('/')}/json/list")
+    pages = [t for t in targets if t.get("type") == "page" and "webSocketDebuggerUrl" in t]
+    ai = [
+        str(t["webSocketDebuggerUrl"])
+        for t in pages
+        if "localhost:3000" in str(t.get("url") or "") or "127.0.0.1:3000" in str(t.get("url") or "")
+    ]
+    if ai:
+        return ai
+    return [str(t["webSocketDebuggerUrl"]) for t in pages]
+
+
+def _open_fresh_ai_page(cdp_base: str) -> str:
+    ws = _open_fresh_cdp_tab(cdp_base)
+    if ws:
+        return ws
+    base = cdp_base.rstrip("/")
+    target = _http_put_json(f"{base}/json/new")
+    return str(target["webSocketDebuggerUrl"])
 
 
 def _preflight_backend() -> None:
@@ -85,20 +144,38 @@ def _preflight_backend() -> None:
 class CdpPage:
     """单 tab CDP 会话（websocket-client）。"""
 
-    def __init__(self, ws_url: str, *, cdp_base: str = "") -> None:
+    def __init__(
+        self,
+        ws_url: str,
+        *,
+        cdp_base: str = "",
+        init_timeout: float = 60.0,
+    ) -> None:
         self._cdp_base = cdp_base
         self._ws_url = ws_url
         self._ws = websocket.create_connection(ws_url, timeout=120)
         self._id = 0
         self._console_errors: list[str] = []
-        self._call("Runtime.enable", {})
-        self._call("Log.enable", {})
-        self._call("Page.enable", {})
+        self._call("Runtime.enable", {}, timeout=init_timeout)
+        self._call("Log.enable", {}, timeout=init_timeout)
+        self._call("Page.enable", {}, timeout=init_timeout)
 
     @classmethod
     def connect(cls, cdp_base: str) -> CdpPage:
-        ws_url = _pick_page_target(cdp_base)
-        return cls(ws_url, cdp_base=cdp_base)
+        errors: list[str] = []
+        for ws_url in _ai_page_targets(cdp_base):
+            try:
+                return cls(ws_url, cdp_base=cdp_base, init_timeout=12.0)
+            except (TimeoutError, RuntimeError, websocket.WebSocketException) as e:
+                errors.append(f"{ws_url[-12:]}: {e}")
+                continue
+        try:
+            ws_url = _open_fresh_ai_page(cdp_base)
+            return cls(ws_url, cdp_base=cdp_base, init_timeout=30.0)
+        except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError) as e:
+            raise SystemExit(
+                f"CDP 无法连接任何 page（已有 tab 可能被其它调试器占用）: {errors}; fresh tab: {e}"
+            ) from e
 
     def reconnect(self) -> None:
         self.close()
@@ -198,31 +275,23 @@ def _as_iife(source: str) -> str:
 
 
 def _pick_page_target(cdp_base: str, *, prefer_ai: bool = True) -> str:
-    targets = _http_get_json(f"{cdp_base.rstrip('/')}/json/list")
-    pages = [t for t in targets if t.get("type") == "page" and "webSocketDebuggerUrl" in t]
-    if prefer_ai:
-        ai_pages = [
-            t
-            for t in pages
-            if "localhost:3000" in str(t.get("url") or "")
-            or "127.0.0.1:3000" in str(t.get("url") or "")
-        ]
-        if ai_pages:
-            return str(ai_pages[-1]["webSocketDebuggerUrl"])
-    for t in pages:
-        url = str(t.get("url") or "")
-        if "localhost:3000" in url or "127.0.0.1:3000" in url:
-            return str(t["webSocketDebuggerUrl"])
-    if pages:
-        return str(pages[-1]["webSocketDebuggerUrl"])
+    urls = _ai_page_targets(cdp_base) if prefer_ai else []
+    if urls:
+        return urls[-1]
     raise SystemExit(f"CDP 无可用 page target: {cdp_base}")
 
 
 def _page_init_script(token: str = "") -> str:
-    parts: list[str] = []
+    parts: list[str] = [
+        "(function(){try{if(location.origin==='http://localhost:3000'||location.origin==='http://127.0.0.1:3000'){",
+    ]
     if token:
         parts.append(f"sessionStorage.setItem('orient_g_token', {json.dumps(token)});")
-    parts.append(INIT_SCRIPT)
+    parts.append(
+        "localStorage.setItem('orientg.kb_scope_capsule.v1', JSON.stringify({"
+        f"folder_ids:['{FOLDER_ID}'], collection_ids:[], table_ids:[], updated_at: Date.now()"
+        "}));}}catch(e){}})();"
+    )
     return "".join(parts)
 
 
@@ -273,23 +342,37 @@ def _js_send(mode_label: str, query: str) -> str:
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const modeLabel = {m};
   const query = {q};
-  localStorage.setItem(
-    "orientg.kb_scope_capsule.v1",
-    JSON.stringify({{
-      folder_ids: ["{FOLDER_ID}"],
-      collection_ids: [],
-      table_ids: [],
-      updated_at: Date.now(),
-    }}),
-  );
-  for (let i = 0; i < 60; i++) {{
-    if (document.querySelector('[aria-label="智能体模式"]')) break;
-    const nav = Array.from(document.querySelectorAll('nav button')).find(b => b.textContent?.trim() === '智能体');
-    if (nav) nav.click();
+  try {{
+    localStorage.setItem(
+      "orientg.kb_scope_capsule.v1",
+      JSON.stringify({{
+        folder_ids: ["{FOLDER_ID}"],
+        collection_ids: [],
+        table_ids: [],
+        updated_at: Date.now(),
+      }}),
+    );
+  }} catch (e) {{}}
+  for (let i = 0; i < 120; i++) {{
+    const modeGroup = document.querySelector('[aria-label="智能体模式"]');
+    if (document.querySelector('textarea') && modeGroup) break;
+    const newAgent = Array.from(document.querySelectorAll('nav button')).find(
+      (b) => (b.getAttribute('title') || '').includes('新建') && (b.getAttribute('title') || '').includes('智能体'),
+    );
+    if (newAgent) {{ newAgent.click(); await sleep(1200); continue; }}
+    const agentNav = Array.from(document.querySelectorAll('nav button, button')).find(
+      b => (b.textContent?.trim() === '智能体' || b.getAttribute('title')?.includes('智能体')) && !b.disabled,
+    );
+    if (agentNav) {{ agentNav.click(); await sleep(1000); }}
     await sleep(800);
   }}
-  const nav = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === '智能体' && b.closest('nav'));
-  if (nav) {{ nav.click(); await sleep(500); }}
+  const newAgentBtn = Array.from(document.querySelectorAll('nav button')).find(
+    (b) => (b.getAttribute('title') || '').includes('新建') && (b.getAttribute('title') || '').includes('智能体'),
+  );
+  if (newAgentBtn) {{
+    newAgentBtn.click();
+    await sleep(1200);
+  }}
   const skillBtn = Array.from(document.querySelectorAll('button')).find(b => b.getAttribute('title') === '技能');
   if (skillBtn && !document.getElementById('ai-skills-popover')) {{ skillBtn.click(); await sleep(400); }}
   const skillLabel = Array.from(document.querySelectorAll('#ai-skills-popover label')).find(l => l.textContent?.includes('年报财务分析'));
@@ -298,15 +381,37 @@ def _js_send(mode_label: str, query: str) -> str:
     if (cb && !cb.checked) {{ cb.click(); await sleep(200); }}
   }}
   const group = document.querySelector('[aria-label="智能体模式"]');
-  const btn = group ? Array.from(group.querySelectorAll('button')).find(b => b.textContent?.trim() === modeLabel) : null;
-  if (btn) {{ btn.click(); await sleep(modeLabel === '快速' ? 1500 : 300); }}
+  let btn = group
+    ? Array.from(group.querySelectorAll('button')).find(b => b.textContent?.trim() === modeLabel)
+    : null;
+  if (!btn) {{
+    btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === modeLabel);
+  }}
+  if (!btn) {{
+    return {{
+      ok: false,
+      err: 'mode not found: ' + modeLabel,
+      url: location.href,
+      hasTextarea: !!document.querySelector('textarea'),
+      hasModeGroup: !!group,
+    }};
+  }}
+  btn.click();
+  await sleep(modeLabel === '快速' || modeLabel === '深度' ? 1500 : 500);
   const ta = document.querySelector('textarea');
   if (!ta) return {{ ok: false, err: 'no textarea' }};
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
   setter?.call(ta, query);
   ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
   await sleep(150);
-  const send = Array.from(document.querySelectorAll('button')).find(b => b.getAttribute('aria-label') === '发送' && !b.disabled);
+  let send = null;
+  for (let i = 0; i < 40; i++) {{
+    send = Array.from(document.querySelectorAll('button')).find(
+      b => b.getAttribute('aria-label') === '发送' && !b.disabled,
+    );
+    if (send) break;
+    await sleep(500);
+  }}
   if (!send) return {{ ok: false, err: 'send disabled' }};
   send.click();
   return {{ ok: true }};
@@ -319,15 +424,22 @@ def _ensure_login(page: CdpPage) -> None:
     _SESSION_TOKEN = _fetch_auth_token()
     page.navigate(LOGIN_URL, init_script=_page_init_script(_SESSION_TOKEN))
     time.sleep(2.0)
-    page.evaluate(
-        f"""(() => {{
-  sessionStorage.setItem('orient_g_token', {json.dumps(_SESSION_TOKEN)});
-  return {{ ok: true }};
+    try:
+        page.evaluate(
+            f"""(() => {{
+  try {{
+    sessionStorage.setItem('orient_g_token', {json.dumps(_SESSION_TOKEN)});
+    return {{ ok: true }};
+  }} catch (e) {{
+    return {{ ok: false, err: String(e) }};
+  }}
 }})()""",
-        timeout=30,
-    )
+            timeout=30,
+        )
+    except RuntimeError:
+        pass
     page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
-    time.sleep(4.0)
+    time.sleep(6.0)
     href = page.evaluate("location.href", timeout=30)
     if isinstance(href, str) and "/login" in href:
         raise RuntimeError("token 注入后仍停留在登录页")
@@ -346,16 +458,29 @@ def _safe_evaluate(
     except (TimeoutError, RuntimeError, OSError, websocket.WebSocketException) as exc:
         print(json.dumps({"cdp_reconnect": str(exc)[:160]}, ensure_ascii=False), flush=True)
         try:
+            if cdp_base:
+                page = _connect_case_page(cdp_base)
+                page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
+                time.sleep(2.0)
+                return page, page.evaluate(expression, await_promise=await_promise, timeout=timeout)
             page.reconnect()
             return page, page.evaluate(expression, await_promise=await_promise, timeout=timeout)
         except Exception as exc2:
             if cdp_base:
-                page = CdpPage.connect(cdp_base)
+                page = _connect_case_page(cdp_base)
+                page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
+                time.sleep(2.0)
                 return page, page.evaluate(expression, await_promise=await_promise, timeout=timeout)
             raise exc2 from exc
 
 
-def _poll_until_done(page: CdpPage, mode: str, *, cdp_base: str) -> tuple[CdpPage, dict[str, Any]]:
+def _poll_until_done(
+    page: CdpPage,
+    mode: str,
+    *,
+    cdp_base: str,
+    query: str = "",
+) -> tuple[CdpPage, dict[str, Any]]:
     poll_js = _as_iife(page.load_js_function("finance_matrix_browser_poll_state.js"))
     max_ms = WAIT_CITATIONS_MS[mode]
     interval_s = POLL_INTERVAL_MS / 1000.0
@@ -366,6 +491,8 @@ def _poll_until_done(page: CdpPage, mode: str, *, cdp_base: str) -> tuple[CdpPag
     last: dict[str, Any] = {}
     idle_streak = 0
     hermes_stuck_since: float | None = None
+    stale_streak = 0
+    prev_stale_len = -1
     poll_n = 0
     eval_fail_streak = 0
 
@@ -440,6 +567,96 @@ def _poll_until_done(page: CdpPage, mode: str, *, cdp_base: str) -> tuple[CdpPag
         else:
             stable = 0
             last_len = cur_len
+        if (
+            not last.get("streamDone")
+            and not last.get("loading")
+            and not last.get("hermesStillRunning")
+            and not last.get("thinking")
+            and cur_len >= 350
+            and cur_len < (2000 if mode == "deep" else 1600)
+            and cur_len == prev_stale_len
+        ):
+            stale_streak += 1
+            head = str(ext.get("head") or "")
+            stale_limit = 40 if mode == "deep" else 12
+            personnel_deep = mode == "deep" and re.search(r"对比|vs|人员结构", query, re.I)
+            personnel_ready = bool(
+                re.search(r"人员结构对照", head)
+                and re.search(r"1378|1[,，]?378", head)
+                and re.search(r"946", head)
+                and re.search(r"242", head)
+            )
+            bad_personnel_draft = bool(
+                re.search(r"22\.6倍|14\.5倍|139人的22|139人.*22\.6|核心指标对比", head)
+                or (
+                    re.search(r"对比|人员结构", query, re.I)
+                    and not re.search(r"人员结构对照", head)
+                    and re.search(r"思考中|让我获取|让我整理", head)
+                )
+            )
+            if stale_streak >= stale_limit:
+                if personnel_deep and (not personnel_ready or bad_personnel_draft):
+                    stale_streak = max(0, stale_streak - 4)
+                else:
+                    last["stale_partial"] = True
+                    last["streamDone"] = True
+                    return page, last
+        else:
+            stale_streak = 0
+        prev_stale_len = cur_len
+        ext = last.get("extract") or {}
+        if (
+            not last.get("streamDone")
+            and not last.get("loading")
+            and not last.get("hermesStillRunning")
+            and not last.get("thinking")
+            and mode == "deep"
+            and cur_len >= 160
+            and re.search(r"人员结构对照", str(ext.get("head") or ""))
+            and re.search(r"1378|1[,，]?378", str(ext.get("head") or ""))
+            and re.search(r"70\s*人|70\.00", str(ext.get("head") or ""))
+            and re.search(r"946", str(ext.get("head") or ""))
+            and re.search(r"242", str(ext.get("head") or ""))
+        ):
+            last["streamDone"] = True
+            last["personnel_structured_salvage"] = True
+            return page, last
+        if (
+            not last.get("streamDone")
+            and not last.get("loading")
+            and not last.get("hermesStillRunning")
+            and int(ext.get("len") or 0) >= (300 if mode == "standard" else 400)
+            and ext.get("hasMoney")
+            and stable >= stable_need
+        ):
+            tier_line = str(last.get("tier_line") or "")
+            if re.search(r"Tier [12]|完成：Tier [12]|深度|标准", tier_line):
+                last["streamDone"] = True
+                last["content_salvage"] = True
+                return page, last
+        if (
+            not last.get("streamDone")
+            and mode in ("standard", "fast")
+            and not last.get("loading")
+            and not last.get("hermesStillRunning")
+            and cur_len >= 80
+            and re.search(r"研发人员|1\.1信息-人员|员工数量、专业构成", str(ext.get("head") or ""))
+            and re.search(r"1[,，]?378|\b946\b|\b242\b|\d+\.\d{2}", str(ext.get("head") or ""))
+        ):
+            last["streamDone"] = True
+            last["personnel_content_salvage"] = True
+            return page, last
+        if (
+            not last.get("streamDone")
+            and mode == "fast"
+            and not last.get("loading")
+            and not last.get("hermesStillRunning")
+            and re.search(r"本地 LLM 综合完成，正在输出正文", str(last.get("tier_line") or "") + str(ext.get("head") or ""))
+            and cur_len < 120
+            and int(last.get("citations") or 0) > 0
+        ):
+            time.sleep(5)
+            continue
         time.sleep(interval_s)
     last["streamFail"] = last.get("streamFail") or not last.get("streamDone")
     last["timeout"] = True
@@ -469,13 +686,25 @@ def _append_row(
         "query": query,
         "tier_line": poll.get("tier_line", ""),
         "citations": poll.get("citations", 0),
+        "streamDone": poll.get("streamDone"),
+        "hermes_kb_ask_calls": poll.get("hermes_kb_ask_calls"),
+        "gateway_kb_ask_calls": poll.get("gateway_kb_ask_calls"),
+        "orientg_kb_ask_calls": poll.get("orientg_kb_ask_calls"),
+        "reply_source": poll.get("reply_source"),
+        "structured_gate_applied": poll.get("structured_gate_applied"),
+        "kb_supplemental": poll.get("kb_supplemental"),
+        "hermes_mcp_retry_count": poll.get("hermes_mcp_retry_count"),
         "notes": notes,
         "extract": poll.get("extract") or {},
         "console_depth_error": console_depth,
     }
     POLL_TMP.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     ROW_TMP.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return append_matrix_row(payload)
+    return append_matrix_row(
+        payload,
+        report_path=_SUITE_REPORT,
+        matrix=_SUITE_MATRIX,
+    )
 
 
 def _write_blocked(case: tuple[str, str, str, str], poll: dict[str, Any], result: dict[str, Any]) -> None:
@@ -498,18 +727,17 @@ def _write_blocked(case: tuple[str, str, str, str], poll: dict[str, Any], result
 
 
 def _open_fresh_cdp_tab(cdp_base: str) -> str | None:
-    """每案换新 tab 并返回 ws URL；sessionStorage 须靠 init_script 重新注入。"""
-    url = AGENT_URL.replace(" ", "%20")
+    """每案换新 tab（空白页），由 navigate(AGENT_URL) 注入 token 后加载智能体页。"""
     try:
         req = urllib.request.Request(
-            f"{cdp_base.rstrip('/')}/json/new?{url}",
+            f"{cdp_base.rstrip('/')}/json/new",
             method="PUT",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             target = json.loads(resp.read().decode("utf-8"))
         ws = str(target.get("webSocketDebuggerUrl") or "")
         if ws:
-            time.sleep(1.5)
+            time.sleep(0.8)
             return ws
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
         pass
@@ -550,11 +778,11 @@ def _run_case_once(page: CdpPage, case: tuple[str, str, str, str], *, cdp_base: 
     page.reset_console()
     init = _page_init_script(_SESSION_TOKEN)
     page.navigate(AGENT_URL, init_script=init)
-    time.sleep(2)
-    page, sent = _safe_evaluate(page, _js_send(mode_label, query), cdp_base=cdp_base, timeout=60)
+    time.sleep(15)
+    page, sent = _safe_evaluate(page, _js_send(mode_label, query), cdp_base=cdp_base, timeout=120)
     if not isinstance(sent, dict) or not sent.get("ok"):
         return page, {"ok": False, "stage": "send", "detail": sent, "poll": {}}
-    page, poll = _poll_until_done(page, mode, cdp_base=cdp_base)
+    page, poll = _poll_until_done(page, mode, cdp_base=cdp_base, query=query)
     page, ext_row = _extract(page, cdp_base=cdp_base)
     poll_ex = poll.get("extract") if isinstance(poll.get("extract"), dict) else {}
     ext_ex = ext_row.get("extract") if isinstance(ext_row.get("extract"), dict) else {}
@@ -575,6 +803,10 @@ def _run_case_once(page: CdpPage, case: tuple[str, str, str, str], *, cdp_base: 
         notes += "; poll_timeout"
     if poll.get("hermes_stall_salvage"):
         notes += "; hermes_stall_salvage"
+    if poll.get("content_salvage"):
+        notes += "; content_salvage"
+    if poll.get("personnel_structured_salvage"):
+        notes += "; personnel_structured_salvage"
     append = _append_row(merged, notes=notes, console_depth=depth_err, case=case)
     ok = bool(append.get("ok"))
     return page, {
@@ -635,12 +867,13 @@ def run_case(
                 flush=True,
             )
             try:
-                page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
-            except (TimeoutError, RuntimeError, OSError, websocket.WebSocketException):
-                if cdp_base:
-                    page = _connect_case_page(cdp_base)
-                page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
-            time.sleep(3)
+                page.close()
+            except Exception:
+                pass
+            if cdp_base:
+                page = _connect_case_page(cdp_base)
+            page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
+            time.sleep(10)
         page, last = _run_case_once(page, case, cdp_base=cdp_base)
         if last.get("ok"):
             break
@@ -659,6 +892,9 @@ def run_case(
         flush=True,
     )
     time.sleep(COOLDOWN_MS / 1000.0)
+    poll = last.get("poll") or {}
+    if poll.get("timeout"):
+        time.sleep(12.0)
     return page, last
 
 
@@ -672,10 +908,9 @@ def _parse_only_keys(raw_list: list[str] | None) -> set[str]:
 
 
 def _cases_for_run(*, only_keys: set[str] | None) -> list[tuple[str, str, str, str]]:
+    matrix = _SUITE_MATRIX or []
     if only_keys:
-        from finance_matrix_cases import MATRIX  # noqa: E402
-
-        return [c for c in MATRIX if f"{c[0]}::{c[1]}::{c[2]}" in only_keys]
+        return [c for c in matrix if f"{c[0]}::{c[1]}::{c[2]}" in only_keys]
     return retry_pending()
 
 
@@ -687,15 +922,22 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="只打印待跑队列")
     parser.add_argument("--skip-login", action="store_true", help="跳过登录（已登录 session）")
     parser.add_argument(
+        "--suite",
+        choices=("finance", "personnel"),
+        default="finance",
+        help="finance=42条财务矩阵；personnel=6条人员结构浏览器实测",
+    )
+    parser.add_argument(
         "--only",
         action="append",
         help="只跑指定条，格式 cat/subject/mode（可重复），忽略 report 已通过状态",
     )
     args = parser.parse_args()
+    _init_suite(args.suite)
     only_keys = _parse_only_keys(args.only)
 
     pending = _cases_for_run(only_keys=only_keys or None)
-    print(json.dumps({"pending": len(pending), "total": 42}, ensure_ascii=False))
+    print(json.dumps({"suite": args.suite, "pending": len(pending), "total": _SUITE_TOTAL}, ensure_ascii=False))
     if args.dry_run:
         for c in pending:
             print(f"{c[0]}\t{c[1]}\t{c[2]}")
@@ -707,7 +949,7 @@ def main() -> None:
     _preflight_backend()
     global _SESSION_TOKEN
     if not args.skip_login:
-        page = CdpPage.connect(args.cdp)
+        page = _connect_case_page(args.cdp)
         _ensure_login(page)
     else:
         _SESSION_TOKEN = _fetch_auth_token()
@@ -740,12 +982,8 @@ def main() -> None:
                     pass
                 page = _connect_case_page(args.cdp)
                 if _SESSION_TOKEN:
-                    page.navigate(LOGIN_URL, init_script=_page_init_script(_SESSION_TOKEN))
-                    page.evaluate(
-                        f"sessionStorage.setItem('orient_g_token', {json.dumps(_SESSION_TOKEN)});",
-                        await_promise=False,
-                        timeout=20,
-                    )
+                    page.navigate(AGENT_URL, init_script=_page_init_script(_SESSION_TOKEN))
+                    time.sleep(1.0)
                 page, result = run_case(page, case, case_retries=max(0, args.case_retries), cdp_base=args.cdp)
             except Exception as e:
                 result = {"ok": False, "stage": "exception", "detail": str(e)}

@@ -169,6 +169,70 @@ def fast_path_status_message() -> str:
     return "Evidence Pack 已就绪，正在基于证据生成回答（Tier 0）…"
 
 
+def _apply_personnel_fast_path_reply(
+    *,
+    synth_reply: str,
+    user_query: str,
+    prefetch_result: dict[str, Any],
+    tenant_id: str,
+    fixtures: dict[str, Any],
+    kb_scope: dict[str, list[str]] | None,
+) -> str:
+    from backend.services.agent_kb_router import AgentRoute
+    from backend.services.agent_kb_supplemental import pick_personnel_compare_final_reply
+    from backend.services.agent_kb_supplemental import _is_missing_evidence_reply
+    from backend.services.kb_ask_mcp_reply import (
+        _personnel_single_reply_has_required_numbers,
+        personnel_compare_excerpt_is_valid,
+        personnel_compare_reply_from_prefetch,
+        personnel_single_subject_reply_from_prefetch,
+    )
+    from backend.services.kb_retrieval_plan import (
+        _personnel_subject_entities,
+        query_wants_personnel_compare,
+        query_wants_personnel_structure,
+    )
+
+    if query_wants_personnel_structure(user_query) and len(_personnel_subject_entities(user_query)) < 2:
+        single = personnel_single_subject_reply_from_prefetch(
+            prefetch_result,
+            user_query=user_query,
+            tenant_id=tenant_id,
+            fixtures=fixtures,
+            kb_scope=kb_scope,
+        )
+        if single and _personnel_single_reply_has_required_numbers(single, user_query=user_query):
+            if _is_missing_evidence_reply(synth_reply) or not _personnel_single_reply_has_required_numbers(
+                synth_reply, user_query=user_query
+            ):
+                return single
+        return synth_reply
+
+    if not query_wants_personnel_compare(user_query):
+        return synth_reply
+    excerpt = personnel_compare_reply_from_prefetch(
+        prefetch_result,
+        user_query=user_query,
+        tenant_id=tenant_id,
+        fixtures=fixtures,
+        kb_scope=kb_scope,
+    )
+    if excerpt and personnel_compare_excerpt_is_valid(excerpt, user_query=user_query):
+        return excerpt
+    final, adopted, _reason = pick_personnel_compare_final_reply(
+        hermes_reply="",
+        synth_reply=synth_reply,
+        excerpt_reply=excerpt,
+        user_query=user_query,
+        agent_route=AgentRoute.fast,
+        prefetch_result=prefetch_result,
+        kb_scope=kb_scope,
+        tenant_id=tenant_id,
+        fixtures=fixtures,
+    )
+    return final if adopted else synth_reply
+
+
 def finalize_fast_path_reply(reply: str, *, user_query: str) -> str:
     from backend.services.hermes_stream_sanitize import finalize_agent_reply
 
@@ -193,7 +257,9 @@ def stream_kb_fast_path_events(
     from backend.services.agent_kb_prefetch import synthesize_kb_reply
     from backend.services.agent_kb_router import AgentRoute, route_to_agent_tier
     from backend.services.agent_kb_supplemental import (
+        ensure_personnel_compare_prefetch,
         needs_fast_path_narrative_supplemental,
+        needs_fast_path_personnel_supplemental,
         run_supplemental_kb_asks,
     )
     from backend.services.agent_run_registry import is_cancelled
@@ -210,6 +276,50 @@ def stream_kb_fast_path_events(
         "agent_tier": route_to_agent_tier(AgentRoute.fast),
         "evidence_pack": pack_summary_for_sse(pack if isinstance(pack, dict) else None),
     }
+    if (
+        user_token
+        and kb_scope is not None
+        and needs_fast_path_personnel_supplemental(
+            prefetch_result=working_prefetch,
+            user_query=user_query,
+            tenant_id=tenant_id,
+            fixtures=fixtures,
+            kb_scope=kb_scope,
+        )
+    ):
+        yield {
+            "type": "status",
+            "message": "快速路径：人员横比缺双主体节选证据，正在补检索各主体人员 section…",
+            "step": "fast_personnel_supplemental_kb",
+        }
+        working_prefetch, sup_tools = ensure_personnel_compare_prefetch(
+            user_token=user_token,
+            user_query=user_query,
+            prefetch_result=working_prefetch,
+            kb_scope=kb_scope,
+            attached_doc_ids=attached_doc_ids,
+            fixtures=fixtures,
+            tenant_id=tenant_id,
+            enabled_skills=enabled_skills,
+            max_queries=6,
+        )
+        if sup_tools:
+            tool_calls.extend(sup_tools)
+            for tc in sup_tools:
+                q = str(tc.get("query") or "")[:60]
+                yield {
+                    "type": "tool_call",
+                    "name": "orientg_kb_ask",
+                    "status": tc.get("status") or "ok",
+                    "message": f"人员补检索：{q}" if q else "人员补检索：orientg_kb_ask",
+                }
+            pack = working_prefetch.get("evidence_pack")
+            yield {
+                "type": "status",
+                "message": "人员 section 补检索完成，继续本地综合…",
+                "step": "fast_personnel_supplemental_done",
+                "evidence_pack": pack_summary_for_sse(pack if isinstance(pack, dict) else None),
+            }
     if (
         user_token
         and kb_scope is not None
@@ -275,10 +385,28 @@ def stream_kb_fast_path_events(
         skill_addon_extra=skill_extra or None,
         run_id=run_id,
     )
-    reply = finalize_fast_path_reply(
-        (synth.get("reply") or "").strip() or "（未能生成回答）",
+    synth_reply = (synth.get("reply") or "").strip() or "（未能生成回答）"
+    synth_reply = _apply_personnel_fast_path_reply(
+        synth_reply=synth_reply,
         user_query=user_query,
+        prefetch_result=working_prefetch,
+        tenant_id=tenant_id,
+        fixtures=fixtures,
+        kb_scope=kb_scope,
     )
+    reply = finalize_fast_path_reply(synth_reply, user_query=user_query)
+    from backend.services.agent_kb_supplemental import apply_personnel_structured_final_gate
+
+    gated, struct_applied = apply_personnel_structured_final_gate(
+        reply,
+        prefetch_result=working_prefetch,
+        user_query=user_query,
+        tenant_id=tenant_id,
+        fixtures=fixtures,
+        kb_scope=kb_scope,
+    )
+    if struct_applied:
+        reply = gated
     yield {
         "type": "status",
         "message": "本地 LLM 综合完成，正在输出正文…",

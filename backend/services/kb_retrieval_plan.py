@@ -16,7 +16,11 @@ class TaskType(str, Enum):
     general = "general"
 
 
-_BREAKDOWN_PAT = re.compile(r"成本|费用|明细|拆解|分解|归因|下降|结构", re.I)
+_BREAKDOWN_PAT = re.compile(
+    r"成本|费用|明细|拆解|分解|归因|下降|(?:费用|成本|收入|业务|产品|资产|资本)结构",
+    re.I,
+)
+_PERSONNEL_PAT = re.compile(r"人员|员工|在职|人效|用工|headcount", re.I)
 _COMPARE_PAT = re.compile(r"对比|比较|两年|同比|24|25|2024|2025|损益", re.I)
 _PROCESS_PAT = re.compile(r"流程|制度|审批|规定|办法|如何办理", re.I)
 _FACT_PAT = re.compile(r"多少|是什么|什么意思|如何理解|营收|收入", re.I)
@@ -149,6 +153,8 @@ def query_wants_change_reasons(user_query: str) -> bool:
     qj = (user_query or "").replace(" ", "")
     if not qj:
         return False
+    if query_wants_personnel_structure(user_query):
+        return False
     if _REASON_PAT.search(qj):
         return True
     if _REASON_HOW_PAT.search(qj):
@@ -165,6 +171,10 @@ def infer_task_type(user_query: str) -> TaskType:
     qj = q.replace(" ", "")
     if _PROCESS_PAT.search(q):
         return TaskType.process
+    if _PERSONNEL_PAT.search(qj) and re.search(r"对比|比较", qj):
+        return TaskType.compare
+    if _PERSONNEL_PAT.search(qj):
+        return TaskType.general
     if _BREAKDOWN_PAT.search(qj):
         return TaskType.breakdown
     if _FACT_PAT.search(qj) and not re.search(r"对比|比较|两年|同比|损益", qj):
@@ -180,6 +190,174 @@ def detect_entity(user_query: str) -> str:
         if e and len(e) >= 2:
             return e
     return ""
+
+
+from backend.services.kb_compare_entities import (
+    PRIMARY_ENTITY,
+    PEER_ENTITY,
+    compare_entity_markers,
+    is_peer_text,
+    is_primary_text,
+)
+
+
+def normalize_compare_entity_phrase(phrase: str) -> str:
+    """横比问句实体清洗：去「对比分析」等前缀与「25年的人员结构」等后缀。"""
+    s = (phrase or "").strip()
+    for prefix in ("对比分析", "对比", "比较", "分析"):
+        if s.startswith(prefix):
+            s = s[len(prefix) :].strip()
+    s = re.sub(r"\d{2,4}年.*$", "", s).strip()
+    s = re.sub(r"的人员.*$", "", s).strip()
+    qj = s.replace(" ", "")
+    for marker in compare_entity_markers():
+        if marker.replace(" ", "") in qj or marker in s:
+            return marker
+    return s
+
+
+def extract_query_entity_phrases(user_query: str) -> list[str]:
+    q = (user_query or "").strip()
+    if not q:
+        return []
+    qj = q.replace(" ", "")
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        s = normalize_compare_entity_phrase(s)
+        if len(s) < 2 or s in seen:
+            return
+        seen.add(s)
+        found.append(s)
+
+    for marker in compare_entity_markers():
+        if marker.replace(" ", "") in qj or marker in q:
+            _add(marker)
+    if len(found) >= 2:
+        return found
+
+    for m in re.finditer(r"([\u4e00-\u9fffA-Za-z0-9·]{2,12})(?:和|与|、)([\u4e00-\u9fffA-Za-z0-9·]{2,12})", q):
+        _add(m.group(1))
+        _add(m.group(2))
+    ent = detect_entity(q)
+    if ent:
+        _add(ent)
+    return found
+
+
+def query_wants_personnel_structure(user_query: str) -> bool:
+    qj = (user_query or "").replace(" ", "")
+    return bool(_PERSONNEL_PAT.search(qj))
+
+
+def _personnel_subject_entities(user_query: str) -> list[str]:
+    """人员横比/专节：仅识别公司主体，排除「专业构成及教育程度」等误切词。"""
+    q = (user_query or "").strip()
+    found: list[str] = []
+    if is_peer_text(q):
+        found.append(PEER_ENTITY)
+    if is_primary_text(q):
+        found.append(PRIMARY_ENTITY)
+    return found
+
+
+def query_wants_personnel_compare(user_query: str) -> bool:
+    """两家及以上主体的人员结构横比（浏览器验收主路径）。"""
+    q = (user_query or "").strip()
+    if not query_wants_personnel_structure(q):
+        return False
+    ents = _personnel_subject_entities(q)
+    if len(ents) >= 2:
+        return True
+    return bool(re.search(r"(?:和|与|、).*(?:可比公司A|YYCQ|互娱|YYCQ)", q, re.I))
+
+
+def native_personnel_prefetch_max_queries(
+    user_query: str,
+    *,
+    prefetch_tier: str | None = None,
+) -> int | None:
+    """native + full/deep + 人员：返回 prefetch 子检索上限；None=沿用 legacy 多 query。
+
+    目标 4：证据获取更多落在 Hermes MCP，减少网关连查（见 1.2.3.d §0.1）。
+    """
+    from backend.config import settings
+
+    if not getattr(settings, "hermes_native_mcp_reply", False):
+        return None
+    if (prefetch_tier or "").strip().lower() != "full":
+        return None
+    if not query_wants_personnel_structure(user_query):
+        return None
+    return max(0, int(getattr(settings, "hermes_native_prefetch_max_kb_asks", 1) or 0))
+
+
+def personnel_retrieval_subqueries(user_query: str) -> list[str]:
+    """KB 人员结构：各主体 docling section（研发人员情况等）+ excel chunk（1.1信息-人员）。"""
+    q = (user_query or "").strip()
+    out: list[str] = []
+    section_terms = (
+        "研发人员情况",
+        "员工情况",
+        "员工数量、专业构成及教育程度",
+        "1.1信息-人员",
+        "在职员工",
+    )
+    for ent in extract_query_entity_phrases(q)[:3]:
+        for term in section_terms:
+            out.append(f"{ent} {term} 2025")
+        out.append(f"{ent} 2025年末 员工人数")
+        if re.search(r"可比公司A", ent):
+            out.extend(
+                [
+                    f"{ent} 员工数量 专业构成及教育程度 2025",
+                    f"{ent} 1、员工数量、专业构成及教育程度",
+                    f"{ent} 员工情况 专业构成 2025",
+                    f"{ent} 在职员工 人数 构成 2025",
+                    f"{ent} 销售人员 运营人员 2025",
+                ]
+            )
+    out.extend(
+        [
+            "研发人员情况 期末人数 占比 2025",
+            "1.1信息-人员 2025全年",
+            "公司研发人员 教育程度 期末人数",
+        ]
+    )
+    return out
+
+
+def enhance_kb_ask_query(query: str) -> str:
+    """MCP/Hermes 宽问句补 KB 人员 section 锚点（docling / excel chunk）。"""
+    q = (query or "").strip()
+    if not q or not query_wants_personnel_structure(q):
+        return q
+    if re.search(r"研发人员|1\.1信息-人员|员工情况", q, re.I):
+        return q
+    return f"{q} 研发人员情况 员工人数 2025"
+
+
+def plan_hermes_recovery_queries(user_query: str, *, max_queries: int = 2) -> list[str]:
+    q = (user_query or "").strip()
+    if not q:
+        return []
+    if query_wants_personnel_structure(q):
+        out = [enhance_kb_ask_query(q)]
+        for sq in personnel_retrieval_subqueries(q):
+            if sq not in out:
+                out.append(sq)
+            if len(out) >= max(1, max_queries):
+                break
+        return out[: max(1, max_queries)]
+    out = [q]
+    for ent in extract_query_entity_phrases(q):
+        cand = f"{ent} {q}"
+        if cand not in out:
+            out.append(cand)
+        if len(out) >= max(1, max_queries):
+            break
+    return out[: max(1, max_queries)]
 
 
 def _append_narrative_subqueries(
@@ -248,6 +426,9 @@ def plan_retrieval_queries(
         if _COMPARE_PAT.search(qj):
             _add(f"{prefix}母公司利润表 {primary} 2024 2025")
     elif tt == TaskType.compare:
+        if query_wants_personnel_structure(q):
+            for sq in personnel_retrieval_subqueries(q):
+                _add(sq)
         _add(f"{prefix}合并利润表 2024 2025")
         _add(f"{prefix}母公司利润表")
         _add(f"{prefix}主要会计数据 营业收入")

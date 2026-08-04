@@ -1665,6 +1665,17 @@ export default function AiInteractionPage() {
                 const step = typeof evt.step === "string" ? evt.step : undefined;
                 if (step === "hermes_draft_begin") {
                   agentDeferDraftRef.current = true;
+                  setMessages((prev) => {
+                    const copy = [...prev];
+                    const last = copy[copy.length - 1];
+                    if (last?.role === "assistant" && !(last.content || "").trim()) {
+                      copy[copy.length - 1] = {
+                        ...last,
+                        content: "Orient-G 正在综合终稿；Hermes 过程稿见下方执行过程。",
+                      };
+                    }
+                    return copy;
+                  });
                 }
                 if (step === "supplemental_kb" || step === "supplemental_synth") {
                   flushBatchedTrace();

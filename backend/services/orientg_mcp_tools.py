@@ -31,8 +31,9 @@ def resolve_user_token(user_token: str | None, hermes_session_key: str | None = 
     """
     解析 MCP 调用使用的 JWT：
     1. 显式 user_token（CLI / 测试）
-    2. hermes_session_key → hermes_token_bridge（/agent → Hermes 多用户）
-    3. 环境变量 ORIENTG_USER_TOKEN（开发 Hermes CLI）
+    2. hermes_session_key → hermes_token_bridge（同进程 /agent）
+    3. hermes_session_key → HTTP internal bridge（MCP stdio 子进程）
+    4. 环境变量 ORIENTG_USER_TOKEN（开发 Hermes CLI）
     """
     direct = (user_token or "").strip()
     if direct:
@@ -42,6 +43,16 @@ def resolve_user_token(user_token: str | None, hermes_session_key: str | None = 
     bridged = bridge_resolve(hermes_session_key)
     if bridged:
         return bridged
+    from backend.services.hermes_bridge_http import fetch_remote_session
+
+    remote = fetch_remote_session(hermes_session_key)
+    if remote and remote.user_token:
+        return str(remote.user_token).strip()
+    from backend.services.hermes_shared_session import load_session
+
+    row = load_session(hermes_session_key)
+    if row and row.get("user_token"):
+        return str(row["user_token"])
     import os
 
     from backend.config import settings
@@ -53,6 +64,28 @@ def resolve_user_token(user_token: str | None, hermes_session_key: str | None = 
             "use Hermes session_key bridge for per-user ACL in production"
         )
     return env_tok
+
+
+def _require_mcp_user_token(
+    effective_token: str,
+    hermes_session_key: str | None,
+    *,
+    tool: str,
+    tenant_id: str,
+    username: str | None,
+) -> dict[str, Any] | None:
+    """MCP 子进程须解析到 JWT；禁止 silent empty ACL（表现为「权限为空」）。"""
+    if (effective_token or "").strip():
+        return None
+    if hermes_session_key:
+        return _deny(
+            tool,
+            "session_token_unresolved",
+            tenant_id=tenant_id,
+            username=username,
+            extra={"hermes_session_key": (hermes_session_key or "")[:32]},
+        )
+    return _deny(tool, "user_token_required", tenant_id=tenant_id, username=username)
 
 
 def _audit(
@@ -143,6 +176,103 @@ def _folder_writable(scope: dict[str, Any], tenant_id: str, folder_id: str, *, u
     return False
 
 
+def _resolve_hermes_session_context(hermes_session_key: str | None):
+    """本地 session context；MCP 子进程未命中时经 HTTP 拉取 kb_scope。"""
+    from backend.services.hermes_session_context import HermesSessionContext, resolve as resolve_ctx
+
+    ctx = resolve_ctx(hermes_session_key)
+    if ctx:
+        return ctx
+    from backend.services.hermes_bridge_http import fetch_remote_session
+
+    remote = fetch_remote_session(hermes_session_key)
+    if not remote:
+        return None
+    return HermesSessionContext(
+        allow_kb_write=remote.allow_kb_write,
+        kb_scope=dict(remote.kb_scope or {}),
+        orientg_route=remote.orientg_route,
+        native_mcp_reply=bool(remote.native_mcp_reply),
+    )
+
+
+def _effective_native_mcp_reply(hermes_session_key: str | None) -> bool:
+    from backend.config import settings
+
+    if settings.hermes_native_mcp_reply:
+        return True
+    ctx = _resolve_hermes_session_context(hermes_session_key)
+    return bool(ctx and ctx.native_mcp_reply)
+
+
+def _token_acl_collection_ids(user_token: str) -> list[str]:
+    if not user_token:
+        return []
+    scope = _scope(user_token, load_fixtures())
+    return [str(x).strip() for x in (scope.get("allowed_collection_ids") or []) if str(x).strip()]
+
+
+def _apply_session_kb_scope_for_ask(
+    tenant_id: str,
+    hermes_session_key: str | None,
+    *,
+    selected_collection_ids: list[str] | None,
+    selected_table_ids: list[str] | None,
+    attached_doc_ids: list[str] | None,
+    limit_to_attached: bool,
+) -> tuple[list[str] | None, list[str] | None, list[str] | None, bool]:
+    """Hermes MCP 未显式传 scope 时，继承 /agent 登记的 kb_scope（与网关预检索一致）。"""
+    if (
+        selected_collection_ids
+        or selected_table_ids
+        or attached_doc_ids
+        or not hermes_session_key
+    ):
+        return selected_collection_ids, selected_table_ids, attached_doc_ids, limit_to_attached
+
+    from backend.services.orientg_agent_presentation import kb_scope_nonempty
+
+    ctx = _resolve_hermes_session_context(hermes_session_key)
+    if ctx and kb_scope_nonempty(ctx.kb_scope):
+        from backend.services.kb_scope_resolve import resolve_kb_scope_for_ask
+
+        resolved = resolve_kb_scope_for_ask(tenant_id, ctx.kb_scope)
+        cols = list(resolved.get("collection_ids") or [])
+        tables = list(resolved.get("table_ids") or [])
+        attached = list(resolved.get("attached_doc_ids") or [])
+        use_limit = bool(resolved.get("limit_to_attached"))
+        # folder 子树 doc 解析失败时勿 limit_to_attached+空 attached → doc allowed scope empty
+        if use_limit and not attached and cols:
+            use_limit = False
+        if cols or tables or attached:
+            logger.info(
+                "mcp_kb_scope_session session=%s collections=%d attached=%d limit=%s",
+                hermes_session_key[:24],
+                len(cols),
+                len(attached),
+                use_limit,
+            )
+            return (
+                cols or None,
+                tables or None,
+                attached or None,
+                use_limit,
+            )
+
+    # Session 无有效 kb_scope / 解析为空：继承 JWT ACL（与网关预检索一致）
+    effective_token = resolve_user_token("", hermes_session_key)
+    cols = _token_acl_collection_ids(effective_token)
+    if cols:
+        logger.info(
+            "mcp_kb_scope_fallback token_acl session=%s collections=%d",
+            hermes_session_key[:24],
+            len(cols),
+        )
+        return cols, None, None, False
+
+    return selected_collection_ids, selected_table_ids, attached_doc_ids, limit_to_attached
+
+
 def _check_mcp_write_gate(
     *,
     tool: str,
@@ -159,9 +289,7 @@ def _check_mcp_write_gate(
     """
     fid = (folder_id or "").strip()
     if hermes_session_key:
-        from backend.services.hermes_session_context import resolve as resolve_ctx
-
-        ctx = resolve_ctx(hermes_session_key)
+        ctx = _resolve_hermes_session_context(hermes_session_key)
         if not ctx:
             return _deny(tool, "session_context_missing", tenant_id=tenant_id, username=username)
         if not ctx.allow_kb_write:
@@ -193,9 +321,23 @@ def orientg_kb_ask(
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     username = _username_from_token(effective_token)
+    deny_tok = _require_mcp_user_token(
+        effective_token,
+        hermes_session_key,
+        tool="orientg_kb_ask",
+        tenant_id=tenant_id,
+        username=username,
+    )
+    if deny_tok:
+        return deny_tok
     from backend.services.kb_ask_budget import check_and_consume_ask
+    from backend.services.hermes_token_bridge import resolve as bridge_resolve
 
     budget_deny = check_and_consume_ask(hermes_session_key)
+    if budget_deny is None and hermes_session_key and not bridge_resolve(hermes_session_key):
+        from backend.services.hermes_bridge_http import consume_remote_kb_ask_budget
+
+        budget_deny = consume_remote_kb_ask_budget(hermes_session_key)
     if budget_deny:
         return _deny("orientg_kb_ask", budget_deny, tenant_id=tenant_id, username=username)
     _audit(
@@ -205,15 +347,37 @@ def orientg_kb_ask(
         query=query,
         meta={"has_attached": bool(attached_doc_ids)},
     )
-    res = ask_knowledge(
-        effective_token,
-        query,
+    (
+        selected_collection_ids,
+        selected_table_ids,
+        attached_doc_ids,
+        limit_to_attached,
+    ) = _apply_session_kb_scope_for_ask(
+        tenant_id,
+        hermes_session_key,
         selected_collection_ids=selected_collection_ids,
         selected_table_ids=selected_table_ids,
-        fixtures=fixtures,
         attached_doc_ids=attached_doc_ids,
         limit_to_attached=limit_to_attached,
     )
+    from backend.services.kb_retrieval_plan import enhance_kb_ask_query
+
+    effective_query = enhance_kb_ask_query(query)
+
+    def _ask(q: str) -> dict[str, Any]:
+        return ask_knowledge(
+            effective_token,
+            q,
+            selected_collection_ids=selected_collection_ids,
+            selected_table_ids=selected_table_ids,
+            fixtures=fixtures,
+            attached_doc_ids=attached_doc_ids,
+            limit_to_attached=limit_to_attached,
+        )
+
+    from backend.services.kb_ask_mcp_reply import personnel_structure_ask_results
+
+    res = personnel_structure_ask_results(_ask, effective_query)
     if res.get("denied"):
         return {
             "ok": False,
@@ -221,11 +385,35 @@ def orientg_kb_ask(
             "reason": res.get("deny_reason") or "denied",
             "citations": [],
         }
-    return {
+    from backend.config import settings
+    from backend.services.kb_ask_mcp_reply import build_kb_ask_mcp_reply
+
+    tenant_id = fixtures.get("tenant_id") or "tenant1"
+    mcp_reply, excerpts = build_kb_ask_mcp_reply(
+        res,
+        query=effective_query,
+        tenant_id=tenant_id,
+        fixtures=fixtures,
+    )
+    agent_payload: dict[str, Any] | None = None
+    if _effective_native_mcp_reply(hermes_session_key):
+        from backend.services.kb_ask_mcp_agent_native import build_hermes_agent_mcp_reply
+
+        mcp_reply, agent_payload = build_hermes_agent_mcp_reply(
+            query=effective_query,
+            base_reply=mcp_reply,
+            excerpts=excerpts,
+            citations=list(res.get("citations") or []),
+        )
+    out: dict[str, Any] = {
         "ok": True,
-        "reply": res.get("reply") or "",
+        "reply": mcp_reply,
         "citations": res.get("citations") or [],
+        "evidence_excerpts": excerpts,
     }
+    if agent_payload is not None:
+        out["agent_payload"] = agent_payload
+    return out
 
 
 def orientg_kb_list_docs(
@@ -239,9 +427,24 @@ def orientg_kb_list_docs(
     fixtures = load_fixtures()
     tenant_id = fixtures.get("tenant_id") or "tenant1"
     username = _username_from_token(effective_token)
+    deny_tok = _require_mcp_user_token(
+        effective_token,
+        hermes_session_key,
+        tool="orientg_kb_list_docs",
+        tenant_id=tenant_id,
+        username=username,
+    )
+    if deny_tok:
+        return deny_tok
     scope = _scope(effective_token, fixtures)
     allowed = set(scope.get("allowed_doc_ids") or [])
     _audit(tenant_id, username=username, tool="orientg_kb_list_docs", meta={"folder_id": folder_id, "limit": limit})
+
+    if not folder_id and hermes_session_key:
+        ctx = _resolve_hermes_session_context(hermes_session_key)
+        roots = list((ctx.kb_scope if ctx else {}).get("selected_folder_ids") or [])
+        if len(roots) == 1:
+            folder_id = roots[0]
 
     if folder_id:
         from backend.services.kb_folders import list_folder_user_doc_ids

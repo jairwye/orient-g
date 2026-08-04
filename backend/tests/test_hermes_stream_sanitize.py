@@ -21,6 +21,15 @@ def test_classify_planning_as_thinking():
     assert looks_like_planning(chunk)
 
 
+def test_looks_like_planning_chinese_mcp_orchestration():
+    chunk = (
+        "我需要先通过 MCP工具检索可比公司E2025年末与2024年末存货的对比数据。"
+        "首轮检索返回的证据主要是合并报表方法，没有直接找到存货对比数据。"
+        "现在我需要查找存货变动的具体原因说明。"
+    )
+    assert looks_like_planning(chunk)
+
+
 def test_classify_report_opening_as_delta_not_根据():
     chunk = "根据检索到的可比公司E2024年与2025年财务报告数据，以下是"
     assert classify_hermes_stream_chunk(chunk) == "delta"
@@ -436,3 +445,37 @@ def test_finalize_tier2_native_strips_speculation_keeps_hermes_body():
     assert "evidence_pack" not in out
     assert "盈利能力影响" in out
     assert "44,933,044.34" in out
+
+
+def test_finalize_personnel_strips_tuisuan_without_disclaimer_crutch():
+    """宽尺子 C：人员终稿剥离推算/推断/约N人，不得靠「请勿采信」掩盖。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "### 人员结构对照\n"
+        "| 职能 | 可比公司A | YYCQ |\n"
+        "| 研发 | 1378 人 | 70 人 |\n"
+        "| 销售 | 946 人 | 证据未覆盖 |\n"
+        "| 运营 | 242 人 | 61 人 |\n\n"
+        "### 对比分析\n"
+        "根据推算，可比公司A销售约1200人；可推断YYCQ为研发驱动型。\n"
+        "*(部分为模型推断，请勿采信)*\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert "人员结构对照" in out
+    assert "1378" in out
+    assert "推算" not in out
+    assert "推断" not in out
+    assert "约1200" not in out
+    assert "请勿采信" not in out
+
+
+def test_reply_has_unsupported_speculation_detects_tuisuan():
+    from backend.services.hermes_stream_sanitize import reply_has_unsupported_speculation
+
+    assert reply_has_unsupported_speculation("根据推算，销售约1200人。")
+    assert reply_has_unsupported_speculation("可推断其销售规模更大。")
+    assert reply_has_unsupported_speculation("可比公司A销售人员约1200人。")
+    assert reply_has_unsupported_speculation("销售人员~210人（推测）。")
+    assert reply_has_unsupported_speculation("运营约～180人。")

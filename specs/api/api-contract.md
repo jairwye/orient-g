@@ -589,3 +589,24 @@ type VerticalReportSnapshot = {
   - **响应补充字段**（按场景返回）：
     - `read_mode: "direct"`：表示本次走了直读模式；
     - `skipped_note`：提示被跳过的未解析/无权限文档数量说明。
+
+---
+
+## 10. Agent / Hermes（前缀 `/api/agent`，内网）
+
+- **流式对话**：`POST /api/agent/chat/stream`（SSE）
+  - **用途**：AI 内网 Agent 模式；可带 `kb_scope`、`X-Agent-Run-Id`、`mode`（auto/fast/standard/deep）。
+  - **行为**：按 tier 走 fast path / Hermes lite / Hermes full；可选 native MCP 成稿（`HERMES_NATIVE_MCP_REPLY`）。
+
+### 10.1 Hermes MCP 会话桥（内网，前缀 `/api/internal/hermes`）
+
+仅供 **Hermes MCP 子进程** 回调 backend 解析 `session_key` → JWT / kb_scope / ask budget。**不**对浏览器暴露。
+
+- **鉴权**：请求头 `X-OrientG-MCP-Bridge-Secret` 须等于 `ORIENTG_MCP_BRIDGE_SECRET`（生产必填专用密钥；开发可回退 `AUTH_SECRET`）。
+- **解析会话**：`POST /api/internal/hermes/session/resolve`
+  - 请求：`{ "hermes_session_key": "orientg-..." }`
+  - 成功：`{ "ok": true, "user_token": "...", "kb_scope": {}, "allow_kb_write": bool, "orientg_route": str|null, "native_mcp_reply": bool }`
+  - 失败：403（密钥无效）、404（session 未登记或过期）
+- **消费 ask 预算**：`POST /api/internal/hermes/session/kb-ask-budget/consume`
+  - 请求：`{ "hermes_session_key": "..." }`
+  - 响应：`{ "ok": true|false, "denied": bool, "reason": str? }`
