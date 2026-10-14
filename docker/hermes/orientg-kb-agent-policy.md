@@ -2,10 +2,13 @@
 
 将下列要点加入 Hermes `config.yaml` 的 agent 系统说明，或与 Gateway 注入的 `orientg_tool_policy` 保持一致。
 
-## Tier 1（`hermes_lite`）知识库问答
+## Tier 1 / Tier 2（Hermes 主答）知识库问答
 
+- **Hermes 是终稿作者**（深度编排默认 `reply_source=hermes`）；Orient-G 门禁/补检索不得常规整页顶替。
 - **仅**使用 `orientg_kb_*` MCP 获取与引用证据（`orientg_kb_ask`、`orientg_kb_list` 等）。
-- **禁止**使用 `terminal` / shell 读取本地路径、临时文件或编造 doc 内容充当答案。
+- **禁止**使用 `terminal` / shell / `execute_code` / `session_search` 读取本地路径、解析 MCP JSON 或编造 doc 内容。
+- 收到 MCP 证据节选 / `agent_payload` 后：**阅读返回文本即可，直接中文成稿**。
+- **KB 任务禁止** `memory` / `web_search` / `web-tools` 等外网或记忆空转；取证须 **MCP `orientg_kb_ask`**（`mcp__orientg__orientg_kb_ask`），勿声称「知识库权限受限」。
 - **允许且鼓励**使用 `orientg_kb_ask` / `orientg_kb_list` 等 `orientg_kb_*` MCP（禁用 terminal **不等于**禁用 KB 工具）。
 - **禁止**依赖 `skill_view` 替代 KB 检索（产品 Skill 由 Orient-G 网关注入，非 Hermes 内置 skill）。
 - 补检索次数受 Gateway `orientg_kb_ask_budget` 限制；超额调用将被 `denied`。

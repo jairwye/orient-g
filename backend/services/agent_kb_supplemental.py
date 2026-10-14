@@ -23,6 +23,39 @@ from backend.services.kb_ask_mcp_reply import execute_kb_subquery_ask
 from backend.services.knowledge_pipeline import ask_knowledge
 
 
+def doc_folder_entity_scope_addon(doc_folder_labels: dict[str, str] | None) -> str:
+    """把竞品财报子文件夹短名映射写进 skill addon，避免 Tier0「实体不明」拒答。"""
+    from backend.services.kb_ask_mcp_reply import _folder_label_entity_hint
+    from backend.services.kb_compare_entities import PEER_ENTITY, PRIMARY_ENTITY
+
+    labels = doc_folder_labels if isinstance(doc_folder_labels, dict) else {}
+    if not labels:
+        return ""
+    lines: list[str] = [
+        "【文档文件夹实体范围】以下 doc_id 已按文件夹短名绑定横比主体，禁止再以「实体不明」拒答：",
+    ]
+    for doc_id, lab in labels.items():
+        did = str(doc_id or "").strip()
+        label = str(lab or "").strip()
+        if not did:
+            continue
+        hint = _folder_label_entity_hint(label) or ""
+        if hint in (PRIMARY_ENTITY, "YYCQ", "本公司"):
+            ent = PRIMARY_ENTITY
+        elif hint in (PEER_ENTITY, "PeerA") or "PeerA" in label:
+            ent = PEER_ENTITY
+        else:
+            ent = hint or label or "（未映射）"
+        lines.append(f"- `{did}`（文件夹 `{label or '—'}`）→ **{ent}**")
+    if len(lines) <= 1:
+        return ""
+    lines.append(
+        f"检索与成稿时：本公司侧用 {PRIMARY_ENTITY}，对侧用 {PEER_ENTITY}；"
+        "禁止声称主体实体不明或知识库无对应主体文档。"
+    )
+    return "\n".join(lines)
+
+
 def _money_amount_count(text: str) -> int:
     return len(re.findall(r"\d{1,3}(?:,\d{3})+\.\d{2}", text or ""))
 
@@ -111,11 +144,16 @@ def pick_hermes_error_fallback_reply(
         sanitize_hermes_accumulated_reply,
     )
 
+    from backend.services.hermes_response_analysis import hermes_reply_is_user_facing_final
+
     salvaged_raw = resolve_hermes_effective_reply(evt_reply="", draft_acc=draft_acc)
     synth = (synth_reply or "").strip()
     if salvaged_raw:
         cand = sanitize_hermes_accumulated_reply(salvaged_raw, user_query=user_query).strip()
         cand = finalize_agent_reply(cand, user_query=user_query, tier2_native=False)
+        # 合格用户面终稿优先 salvage（人员无金额表不得被金额尺子拒收）
+        if cand and hermes_reply_is_user_facing_final(cand, user_query=user_query):
+            return cand, "hermes_salvaged"
         if cand and (
             hermes_reply_sufficient_against_pack(
                 cand,
@@ -423,12 +461,35 @@ def _personnel_compare_reply_insufficient(hermes_reply: str, *, user_query: str)
 
     if personnel_compare_hermes_draft_is_bad(h, user_query=q):
         return True
-    has_a = bool(re.search(r"可比公司A|可比公司A", h))
-    has_b = bool(re.search(r"YYCQ", h, re.I))
+    from backend.services.kb_compare_entities import (
+        PEER_ENTITY,
+        PRIMARY_ENTITY,
+        user_facing_entity_labels,
+    )
+
+    labels = user_facing_entity_labels(q)
+    peer_lab = str(labels.get(PEER_ENTITY) or PEER_ENTITY).strip()
+    primary_lab = str(labels.get(PRIMARY_ENTITY) or PRIMARY_ENTITY).strip()
+    has_peer = bool(
+        (peer_lab and peer_lab in h)
+        or PEER_ENTITY in h
+        or "可比公司A" in h
+    )
+    has_primary = bool(
+        (primary_lab and primary_lab in h)
+        or re.search(r"YYCQ", h, re.I)
+        or "本公司" in h
+    )
     has_num = bool(re.search(r"\d{2,4}", h))
-    has_table = "|" in h and ("---" in h or re.search(r"\t[^\t]+\t", h))
+    has_table = "|" in h or bool(re.search(r"\t[^\t]+\t", h))
     has_structure_table = bool(re.search(r"人员结构对照", h))
-    if has_a and has_b and has_num and (has_table or len(h) >= 400) and has_structure_table:
+    if (
+        has_peer
+        and has_primary
+        and has_num
+        and (has_table or len(h) >= 400)
+        and has_structure_table
+    ):
         return False
     return True
 
@@ -549,6 +610,114 @@ PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY = (
     "当前知识库证据不足或 Hermes 未给出合格人员结构对照成稿，"
     "无法展示可靠对照表。请确认已选择竞品财报文件夹后重试深度档。"
 )
+
+HERMES_INCOMPLETE_REPLY = (
+    "Hermes 深度编排未完成可用终稿（可能因禁工具空转或中断）。"
+    "请重试；取证请仅用 mcp__orientg__orientg_kb_ask，收到证据后直接中文成稿。"
+)
+
+
+def prefer_user_facing_hermes_final(
+    candidate: str,
+    *,
+    alt_draft: str = "",
+    user_query: str = "",
+) -> str:
+    """
+    全局：在候选终稿与过程稿/draft 之间择优保留合格 user-facing 中文成稿。
+    禁止把已有双侧分项/对照表的 Hermes 稿换成「证据不足/未成稿」套话。
+    """
+    from backend.services.hermes_response_analysis import hermes_reply_is_user_facing_final
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    uq = (user_query or "").strip()
+    insufficient = (
+        PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY,
+        HERMES_INCOMPLETE_REPLY,
+    )
+
+    def _normalize(raw: str) -> str:
+        body = (raw or "").strip()
+        if not body or body in insufficient:
+            return ""
+        if any(body.startswith(s[:20]) for s in insufficient if len(s) >= 20):
+            if re.search(r"证据不足|未完成可用终稿|未给出合格|无法展示可靠", body):
+                return ""
+        try:
+            out = finalize_agent_reply(body, user_query=uq, tier2_native=True).strip()
+        except Exception:
+            out = body
+        return out or body
+
+    for raw in (candidate, alt_draft):
+        body = _normalize(raw)
+        if body and hermes_reply_is_user_facing_final(body, user_query=uq):
+            return body
+    alt_body = _normalize(alt_draft)
+    if alt_body and hermes_reply_is_user_facing_final(alt_body, user_query=uq):
+        return alt_body
+    return (candidate or "").strip()
+
+
+def resolve_hermes_reply_source(
+    *,
+    structured_gate_applied: bool = False,
+    misattribution_gate_applied: bool = False,
+    supplemental_ran: bool = False,
+    supplemental_adopted: bool = False,
+    coerce_applied: bool = False,
+    hermes_salvaged: bool = False,
+    keep_hermes_final: bool = False,
+    reply: str = "",
+    user_query: str = "",
+) -> dict[str, Any]:
+    """全局终稿出处（深度档）；过程稿不得标 reply_source=hermes。"""
+    from backend.services.hermes_response_analysis import (
+        classify_hermes_response,
+        hermes_reply_is_user_facing_final,
+    )
+
+    body = (reply or "").strip()
+    uq = (user_query or "").strip()
+    tags = classify_hermes_response(body, user_query=uq).get("tags") or []
+    user_facing = hermes_reply_is_user_facing_final(body, user_query=uq)
+
+    if body in (PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY, HERMES_INCOMPLETE_REPLY) or (
+        body and any(body.startswith(s[:24]) for s in (PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY, HERMES_INCOMPLETE_REPLY))
+    ):
+        return {"reply_source": "hermes_incomplete", "structured_gate_applied": False}
+
+    if "process_draft" in tags or (body and not user_facing and (hermes_salvaged or keep_hermes_final)):
+        if not user_facing:
+            return {
+                "reply_source": "hermes_process_draft",
+                "structured_gate_applied": False,
+            }
+
+    if keep_hermes_final and user_facing:
+        return {"reply_source": "hermes", "structured_gate_applied": False}
+    if hermes_salvaged and user_facing:
+        return {"reply_source": "hermes", "structured_gate_applied": False}
+
+    personnel_meta = resolve_personnel_reply_source(
+        structured_gate_applied=structured_gate_applied,
+        misattribution_gate_applied=misattribution_gate_applied,
+        supplemental_ran=supplemental_ran,
+        supplemental_adopted=supplemental_adopted,
+        coerce_applied=coerce_applied,
+        reply=body,
+    )
+    if personnel_meta.get("reply_source") and personnel_meta["reply_source"] != "hermes":
+        return personnel_meta
+    # 仅 user-facing 终稿可标 hermes；有正文但非终稿 → 过程稿，避免过程粘贴冒充主答
+    if user_facing:
+        return {
+            "reply_source": "hermes",
+            "structured_gate_applied": bool(structured_gate_applied and not keep_hermes_final),
+        }
+    if body:
+        return {"reply_source": "hermes_process_draft", "structured_gate_applied": False}
+    return {"reply_source": "hermes_incomplete", "structured_gate_applied": False}
 
 
 def resolve_personnel_reply_source(
@@ -795,14 +964,20 @@ def apply_personnel_structured_final_gate(
             personnel_reply_has_analysis,
         )
 
-        # 目标3：合格 Hermes 稿保留（含 incomplete 表）；excerpt dump / 无分析仍走保险丝。
+        from backend.services.kb_ask_mcp_reply import personnel_compare_reply_misattributed
+
+        misattr = personnel_compare_reply_misattributed(body, user_query=uq)
+        roles_incomplete = personnel_compare_sanqi_table_incomplete(body)
+        # 目标3：合格 Hermes 稿保留；excerpt dump / 误归因 / 职能缺列 / 无分析仍走保险丝。
         acceptable = hermes_native_personnel_reply_sufficient(
             body, user_query=uq, hermes_kb_ask_count=1
         ) or bool(
             classify_hermes_response(body, user_query=uq).get("acceptable_personnel_final")
         )
         if (
-            acceptable
+            not misattr
+            and not roles_incomplete
+            and acceptable
             and not personnel_excerpt_dump_only(body)
             and (
                 personnel_reply_has_analysis(body, min_len=120)
@@ -810,17 +985,23 @@ def apply_personnel_structured_final_gate(
             )
         ):
             return reply, False
-        # 有分析正文或硬锚点：禁止再换 Orient-G 模板（缺表由 MCP coerce 处理）
-        if not personnel_excerpt_dump_only(body) and (
-            personnel_reply_has_analysis(body, min_len=80)
-            or (
-                re.search(r"1[,，]?378", body)
-                and re.search(r"(?<!\d)70(?!\d)", body)
-                and "对比分析" in body
+        # 有合格分析正文或硬锚点：禁止再换 Orient-G 模板；误归因/缺职能/不合格终稿除外
+        if (
+            not misattr
+            and not roles_incomplete
+            and acceptable
+            and not personnel_excerpt_dump_only(body)
+            and (
+                personnel_reply_has_analysis(body, min_len=80)
+                or (
+                    re.search(r"1[,，]?378", body)
+                    and re.search(r"(?<!\d)70(?!\d)", body)
+                    and "对比分析" in body
+                )
             )
         ):
             return reply, False
-        # dump / 不可接受：仅 MCP 骨架纠偏；native 下禁止 Orient-G structured 模板
+        # dump / 误归因 / 不可接受：优先 MCP 骨架纠偏；否则用 citations 重建 salvage
         coerced, c_ok = apply_hermes_mcp_personnel_contract_coerce(
             body,
             prefetch_result=prefetch_result,
@@ -828,17 +1009,35 @@ def apply_personnel_structured_final_gate(
             hermes_kb_ask_count=1,
         )
         if c_ok:
-            return coerced, False
+            # 误归因纠正视为 gate 已应用；普通 coerce 仍标 False（非 Orient-G 模板顶替）
+            return coerced, bool(misattr)
         from backend.services.kb_ask_mcp_agent_native import (
             build_agent_payload,
             build_personnel_salvage_final_from_payload,
         )
+        from backend.services.kb_ask_mcp_reply import (
+            build_personnel_compare_excerpts,
+            resolve_doc_folder_labels,
+        )
 
         pf = prefetch_result or {}
         excerpts = [x for x in list(pf.get("evidence_excerpts") or []) if isinstance(x, dict)]
+        cites = [c for c in list(pf.get("citations") or []) if isinstance(c, dict)]
+        if not excerpts and len(cites) >= 2:
+            labels = resolve_doc_folder_labels(
+                pf,
+                tenant_id=tenant_id,
+                kb_scope=kb_scope,
+            )
+            excerpts = build_personnel_compare_excerpts(
+                cites,
+                uq,
+                tenant_id=tenant_id,
+                fixtures=fixtures or {},
+                doc_folder_labels=labels,
+            )
         if not excerpts:
             summary = str(pf.get("reply") or "").strip()
-            cites = [c for c in list(pf.get("citations") or []) if isinstance(c, dict)]
             if summary and len(cites) >= 2:
                 excerpts = [
                     {
@@ -856,8 +1055,10 @@ def apply_personnel_structured_final_gate(
             )
             if payload.get("evidence_sufficient"):
                 skeleton = build_personnel_salvage_final_from_payload(payload)
-                if "人员结构对照" in skeleton and re.search(r"1[,，]?378|(?<!\d)1378(?!\d)", skeleton):
-                    return skeleton.strip(), False
+                if "人员结构对照" in skeleton and re.search(
+                    r"1[,，]?378|(?<!\d)1378(?!\d)", skeleton
+                ):
+                    return skeleton.strip(), True if misattr else False
         return reply, False
     if not personnel_compare_needs_structured_gate(body, user_query=uq):
         excerpt = personnel_compare_reply_from_prefetch(
@@ -987,6 +1188,23 @@ def needs_hermes_supplemental(
 
     if route == AgentRoute.hermes_full.value:
         from backend.config import settings
+        from backend.services.hermes_response_analysis import (
+            hermes_reply_has_substantive_draft,
+            hermes_reply_is_user_facing_final,
+        )
+
+        # 与假「未调 MCP」优先重试同类：kb=0 时
+        # - 实质过程稿：禁止空转补检索毁流（应成稿续跑）
+        # - 已 user-facing 终稿：仍允许无证据估算/分项缺口触发修订
+        if int(hermes_kb_ask_count or 0) == 0:
+            if hermes_reply_is_user_facing_final(hermes_reply, user_query=user_query):
+                return hermes_reply_needs_breakdown_revise(
+                    hermes_reply,
+                    prefetch_result=prefetch_result,
+                    user_query=user_query,
+                )
+            if hermes_reply_has_substantive_draft(hermes_reply, user_query=user_query):
+                return False
 
         if (
             settings.hermes_native_skip_supplemental
@@ -1008,7 +1226,9 @@ def needs_hermes_supplemental(
                 return False
         if not (hermes_reply or "").strip():
             return True
-        if looks_like_planning(hermes_reply):
+        if looks_like_planning(hermes_reply) and not hermes_reply_is_user_facing_final(
+            hermes_reply, user_query=user_query
+        ):
             return True
         if _personnel_compare_reply_insufficient(hermes_reply, user_query=user_query):
             return True
@@ -1717,14 +1937,29 @@ def iter_tier2_hermes_error_recovery_events(
         yield {"type": "error", "message": "已停止", "code": "cancelled"}
         return
 
+    from backend.config import settings
+
+    native_deep = bool(
+        settings.hermes_native_mcp_reply and settings.hermes_native_skip_supplemental
+    )
+
     extra_blocks = pack_facet_evidence_blocks(use_prefetch.get("evidence_pack"))
     from backend.services.kb_ask_mcp_reply import (
+        personnel_compare_excerpt_is_valid,
         personnel_compare_reply_from_prefetch,
         personnel_excerpt_reply_is_low_quality,
     )
     from backend.services.kb_retrieval_plan import query_wants_personnel_structure
+    from backend.services.hermes_response_analysis import classify_hermes_response
+    from backend.services.hermes_stream_sanitize import (
+        finalize_agent_reply,
+        looks_like_planning,
+        resolve_hermes_effective_reply,
+        sanitize_hermes_accumulated_reply,
+    )
 
     excerpt_reply: str | None = None
+    structured_ok = False
     if query_wants_personnel_structure(user_query):
         excerpt_reply = personnel_compare_reply_from_prefetch(
             use_prefetch,
@@ -1735,45 +1970,133 @@ def iter_tier2_hermes_error_recovery_events(
         )
         if excerpt_reply and personnel_excerpt_reply_is_low_quality(excerpt_reply):
             excerpt_reply = None
+        if excerpt_reply and personnel_compare_excerpt_is_valid(
+            excerpt_reply, user_query=user_query
+        ):
+            structured_ok = True
 
-    synth = synthesize_kb_reply(
-        tenant_id=tenant_id,
-        user_query=user_query,
-        prefetch_result=use_prefetch,
-        fixtures=fixtures,
-        enabled_skills=enabled_skills,
-        model=model,
-        skill_addon_extra=supplemental_answer_addon(user_query=user_query, tier="full") or None,
-        cite_limit=12,
-        extra_evidence_blocks=extra_blocks or None,
-        run_id=run_id,
-    )
+    synth: dict[str, Any] = {"reply": "", "citations": [], "llm_model": None, "synthesis": None}
+    if not native_deep and not structured_ok:
+        synth = synthesize_kb_reply(
+            tenant_id=tenant_id,
+            user_query=user_query,
+            prefetch_result=use_prefetch,
+            fixtures=fixtures,
+            enabled_skills=enabled_skills,
+            model=model,
+            skill_addon_extra=supplemental_answer_addon(user_query=user_query, tier="full") or None,
+            cite_limit=12,
+            extra_evidence_blocks=extra_blocks or None,
+            run_id=run_id,
+        )
     synth_reply = (synth.get("reply") or "").strip()
     salvaged = ""
+    salvage_mode = ""
     if hermes_draft_acc is not None:
-        salvaged, _mode = pick_hermes_error_fallback_reply(
+        salvaged, salvage_mode = pick_hermes_error_fallback_reply(
             draft_acc=hermes_draft_acc,
-            synth_reply=synth_reply,
+            synth_reply=synth_reply or (excerpt_reply or ""),
             prefetch_result=use_prefetch,
             user_query=user_query,
         )
-    final_reply = synth_reply or salvaged
-    if query_wants_personnel_structure(user_query):
-        final_reply, _adopted_pc, _reason_pc = pick_personnel_compare_final_reply(
-            hermes_reply=salvaged or "",
-            synth_reply=final_reply,
-            excerpt_reply=excerpt_reply,
+    hermes_salvaged = salvage_mode == "hermes_salvaged" and bool((salvaged or "").strip())
+    if hermes_salvaged and salvaged:
+        _tags = classify_hermes_response(salvaged, user_query=user_query).get("tags") or []
+        if "permission_denied" in _tags or "kb_empty_hallucination" in _tags:
+            hermes_salvaged = False
+            salvaged = ""
+            salvage_mode = ""
+    if not hermes_salvaged and hermes_draft_acc is not None:
+        raw_keep = resolve_hermes_effective_reply(
+            evt_reply="",
+            draft_acc=hermes_draft_acc,
             user_query=user_query,
-            agent_route=AgentRoute.hermes_full,
-            prefetch_result=use_prefetch,
-            kb_scope=kb_scope,
-            tenant_id=tenant_id,
-            fixtures=fixtures,
         )
-    if not final_reply.strip():
-        final_reply = str(use_prefetch.get("reply") or "").strip()
+        cand = sanitize_hermes_accumulated_reply(raw_keep or "", user_query=user_query).strip()
+        if (
+            cand
+            and len(cand) >= 80
+            and not looks_like_planning(cand)
+            and re.search(r"[\u4e00-\u9fff]", cand)
+            and (
+                len(cand) >= 160
+                or re.search(r"^#{1,3}\s+\S+", cand, re.M)
+                or "|" in cand
+            )
+        ):
+            _tags2 = classify_hermes_response(cand, user_query=user_query).get("tags") or []
+            if "permission_denied" not in _tags2 and "kb_empty_hallucination" not in _tags2:
+                salvaged = cand
+                hermes_salvaged = True
+                salvage_mode = "hermes_salvaged"
 
-    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+    allow_pack_recovery = False
+    if native_deep and not hermes_salvaged and hermes_draft_acc is not None:
+        raw_perm = resolve_hermes_effective_reply(
+            evt_reply="",
+            draft_acc=hermes_draft_acc,
+            user_query=user_query,
+        )
+        cand_perm = sanitize_hermes_accumulated_reply(
+            raw_perm or "", user_query=user_query
+        ).strip()
+        if cand_perm:
+            _ptags = classify_hermes_response(cand_perm, user_query=user_query).get("tags") or []
+            if "permission_denied" in _ptags or "kb_empty_hallucination" in _ptags:
+                allow_pack_recovery = True
+
+    struct_applied = False
+    if hermes_salvaged:
+        final_reply = salvaged
+    elif native_deep and allow_pack_recovery:
+        from backend.services.agent_kb_fast_path import prefetch_has_usable_evidence
+
+        if structured_ok and (excerpt_reply or "").strip():
+            final_reply = excerpt_reply or ""
+        elif prefetch_has_usable_evidence(use_prefetch):
+            if not synth_reply:
+                synth = synthesize_kb_reply(
+                    tenant_id=tenant_id,
+                    user_query=user_query,
+                    prefetch_result=use_prefetch,
+                    fixtures=fixtures,
+                    enabled_skills=enabled_skills,
+                    model=model,
+                    skill_addon_extra=supplemental_answer_addon(
+                        user_query=user_query, tier="full"
+                    )
+                    or None,
+                    cite_limit=12,
+                    extra_evidence_blocks=extra_blocks or None,
+                    run_id=run_id,
+                )
+                synth_reply = (synth.get("reply") or "").strip()
+            final_reply = (
+                (excerpt_reply or "").strip()
+                or synth_reply
+                or str(use_prefetch.get("reply") or "").strip()
+                or HERMES_INCOMPLETE_REPLY
+            )
+        else:
+            final_reply = HERMES_INCOMPLETE_REPLY
+    elif native_deep:
+        final_reply = HERMES_INCOMPLETE_REPLY
+    else:
+        final_reply = (excerpt_reply if structured_ok else "") or synth_reply or salvaged
+        if query_wants_personnel_structure(user_query):
+            final_reply, _adopted_pc, _reason_pc = pick_personnel_compare_final_reply(
+                hermes_reply=salvaged or "",
+                synth_reply=final_reply,
+                excerpt_reply=excerpt_reply,
+                user_query=user_query,
+                agent_route=AgentRoute.hermes_full,
+                prefetch_result=use_prefetch,
+                kb_scope=kb_scope,
+                tenant_id=tenant_id,
+                fixtures=fixtures,
+            )
+        if not final_reply.strip():
+            final_reply = str(use_prefetch.get("reply") or "").strip()
 
     final_reply = finalize_agent_reply(
         final_reply,
@@ -1781,38 +2104,54 @@ def iter_tier2_hermes_error_recovery_events(
         tier2_native=True,
     )
 
-    struct_gated, struct_applied = apply_personnel_structured_final_gate(
-        final_reply,
-        prefetch_result=use_prefetch,
-        user_query=user_query,
-        tenant_id=tenant_id,
-        fixtures=fixtures,
-        kb_scope=kb_scope,
-    )
-    if struct_applied:
-        final_reply = struct_gated
+    if not native_deep and not hermes_salvaged:
+        struct_gated, struct_applied = apply_personnel_structured_final_gate(
+            final_reply,
+            prefetch_result=use_prefetch,
+            user_query=user_query,
+            tenant_id=tenant_id,
+            fixtures=fixtures,
+            kb_scope=kb_scope,
+        )
+        if struct_applied:
+            final_reply = struct_gated
 
-    cmp_gated, cmp_applied = apply_compare_subject_denial_gate(
-        final_reply,
-        prefetch_result=use_prefetch,
-        user_query=user_query,
-    )
-    if cmp_applied:
-        final_reply = cmp_gated
+        cmp_gated, cmp_applied = apply_compare_subject_denial_gate(
+            final_reply,
+            prefetch_result=use_prefetch,
+            user_query=user_query,
+        )
+        if cmp_applied:
+            final_reply = cmp_gated
 
     if final_reply.strip():
         yield {"type": "replace_reply", "content": final_reply}
-        yield {
-            "type": "status",
-            "message": "（Hermes 已中断，终稿由 Orient-G 基于内网证据综合）",
-            "step": "tier2_recovery_done",
-        }
+        if hermes_salvaged:
+            yield {
+                "type": "status",
+                "message": "（Hermes 已中断，终稿沿用已生成的 Hermes 过程稿）",
+                "step": "tier2_recovery_hermes_salvage",
+            }
+        else:
+            yield {
+                "type": "status",
+                "message": "（Hermes 已中断，终稿由 Orient-G 基于内网证据综合）",
+                "step": "tier2_recovery_done",
+            }
 
     all_tools = list(prefetch_tool_calls)
     all_tools.extend(sup_tools)
     pack = use_prefetch.get("evidence_pack")
     from backend.services.evidence_pack import pack_summary_for_sse
 
+    reply_meta = resolve_hermes_reply_source(
+        reply=final_reply,
+        structured_gate_applied=struct_applied,
+        hermes_salvaged=hermes_salvaged,
+        keep_hermes_final=hermes_salvaged,
+        coerce_applied=(native_deep and not hermes_salvaged),
+        user_query=user_query,
+    )
     yield {
         "type": "done",
         "ok": bool(final_reply.strip()),
@@ -1820,13 +2159,14 @@ def iter_tier2_hermes_error_recovery_events(
         "tenant_id": tenant_id,
         "kb_prefetch": True,
         "hermes_fallback": False,
-        "hermes_salvaged": bool(salvaged and salvaged.strip() == final_reply.strip()),
-        "synthesis": "tier2_error_recovery",
+        "hermes_salvaged": hermes_salvaged,
+        "synthesis": "hermes_salvaged" if hermes_salvaged else "tier2_error_recovery",
         "citations": synth.get("citations") or use_prefetch.get("citations") or [],
         "tool_calls": all_tools,
         "evidence_pack": pack_summary_for_sse(pack if isinstance(pack, dict) else None),
-        "kb_supplemental": bool(sup_tools),
+        "kb_supplemental": bool(sup_tools) and not hermes_salvaged and not native_deep,
         "tier2_error_recovery": True,
         "tier2_error_code": error_code,
         "llm_model": synth.get("llm_model"),
+        **reply_meta,
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import patch
 
 from backend.routers.agent import _agent_chat_stream_events
@@ -222,6 +223,179 @@ def test_hermes_lite_error_salvages_rich_draft_over_synth(mock_stream, mock_synt
     assert done.get("hermes_salvaged") is True
     assert "44,933,044.34" in (done.get("reply") or "")
     assert "证据未提供" not in (done.get("reply") or "")
+
+
+PERSONNEL_LITE_QUERY = "对比分析YYCQ和可比公司A25年的人员结构"
+PERSONNEL_LITE_DRAFT = (
+    "两次MCP检索已完成。现在撰写终稿。\n"
+    "## 人员结构对照\n"
+    "| 职能归属 | 可比公司A | YYCQ |\n"
+    "|----------|----------|----------|\n"
+    "| 研发 | 1,378 | 70 |\n"
+    "| 销售 | 946 | 证据未覆盖 |\n"
+    "| 运营 | 242 | 61 |\n"
+    "| 管理 | 36 | 33 |\n"
+    "| 支持 | 115 | 46 |\n"
+    "| **员工合计** | **3,138** | **约210** |\n\n"
+    "## 对比分析\n"
+    "规模差异：可比公司A员工总数3,138人，YYCQ约210人。\n"
+    "研发导向：可比公司A研发1,378人；YYCQ研发70人。\n"
+    "## 口径说明\n"
+    "YYCQ为 excel 分项加总（分项合计 210）；可比公司A为年报口径。\n"
+)
+
+
+@patch("backend.routers.agent.synthesize_kb_reply")
+@patch("backend.routers.agent.stream_agent_chat")
+def test_hermes_lite_stall_salvages_personnel_draft_without_money(mock_stream, mock_synth):
+    """A2：Hermes lite 空转/stall 时须 salvage 人员过程稿并剥离约N，不得被金额尺子拒收。"""
+    chunks = [PERSONNEL_LITE_DRAFT[i : i + 90] for i in range(0, len(PERSONNEL_LITE_DRAFT), 90)]
+    mock_stream.return_value = iter(
+        [{"type": "delta", "content": c} for c in chunks]
+        + [{"type": "error", "message": "Hermes Runs 已超过 480 秒无数据。", "code": "hermes_stall"}]
+    )
+    mock_synth.return_value = {
+        "reply": "本地模板：人员结构对照占位（勿采用）。",
+        "citations": [{"doc_id": "ud_x"}],
+        "synthesis": "local",
+    }
+    raw = list(
+        _agent_chat_stream_events(
+            token="tok",
+            uname="finance_test",
+            tenant_id="tenant1",
+            messages=[{"role": "user", "content": PERSONNEL_LITE_QUERY}],
+            kb_scope_payload={"selected_folder_ids": ["f1"]},
+            attached=[],
+            body=type(
+                "B",
+                (),
+                {
+                    "allow_kb_write": False,
+                    "enabled_skills": None,
+                    "model": None,
+                    "hermes_session_id": None,
+                    "orientg_chat_session_id": None,
+                },
+            )(),
+            prefetch_tool_calls=[{"name": "orientg_kb_ask", "status": "ok", "prefetch": True}],
+            prefetch_result={
+                "ok": True,
+                "citations": [{"doc_id": "ud_x"}],
+                "evidence_pack": {
+                    "task_type": "compare",
+                    "coverage_score": 0.9,
+                    "gaps": [],
+                },
+            },
+            fixtures={"tenant_id": "tenant1", "documents": []},
+            agent_route=AgentRoute.hermes_lite,
+        )
+    )
+    evts = _parse_sse(raw)
+    done = [e for e in evts if e.get("type") == "done"][-1]
+    reply = done.get("reply") or ""
+    assert done.get("hermes_salvaged") is True or done.get("structured_gate_applied") is True
+    assert "人员结构对照" in reply
+    assert "YYCQ" in reply
+    assert "可比公司A" in reply
+    assert "946" in reply and "242" in reply
+    assert re.search(r"1[,，]?378", reply)
+    assert "约210" not in reply
+    assert "本地模板" not in reply
+    assert not any(e.get("type") == "error" and e.get("code") == "hermes_stall" for e in evts)
+
+
+@patch("backend.routers.agent.stream_agent_chat")
+@patch("backend.services.agent_kb_supplemental.iter_supplemental_revision_events")
+def test_substantive_process_draft_kb0_skips_supplemental_chain(mock_sup, mock_stream):
+    """手测毁流路径：实质过程稿 + kb=0 → 禁「未调 MCP 补检索」链，流须正常收束。"""
+    process = (
+        "首轮取证完成。可比公司A研发人员1378人，YYCQ70人。"
+        "正在做核证补缺计划后撰写终稿。evidence_sufficient=false"
+    )
+    mock_stream.return_value = iter(
+        [
+            {
+                "type": "status",
+                "message": "已有实质 Hermes 过程稿，跳过「未调 MCP」优先重试（避免清稿毁流）",
+                "step": "hermes_skip_mcp_retry_substantive_draft",
+            },
+            {"type": "delta", "content": process},
+            {
+                "type": "done",
+                "reply": process,
+                "hermes_stream_stats": {
+                    "hermes_orientg_kb_ask_calls": 0,
+                    "orientg_kb_ask_calls": 0,
+                    "gateway_orientg_kb_ask_calls": 0,
+                },
+            },
+        ]
+    )
+    mock_sup.side_effect = AssertionError(
+        "substantive process draft + kb=0 must not run no-MCP supplemental×N"
+    )
+
+    raw = list(
+        _agent_chat_stream_events(
+            token="tok",
+            uname="finance_test",
+            tenant_id="tenant1",
+            messages=[
+                {
+                    "role": "user",
+                    "content": "对比分析YYCQ和可比公司A25年的人员结构",
+                }
+            ],
+            kb_scope_payload={"selected_folder_ids": ["f1"]},
+            attached=[],
+            body=type(
+                "B",
+                (),
+                {
+                    "allow_kb_write": False,
+                    "enabled_skills": None,
+                    "model": None,
+                    "hermes_session_id": None,
+                    "orientg_chat_session_id": None,
+                },
+            )(),
+            prefetch_tool_calls=[
+                {"name": "orientg_kb_ask", "status": "ok", "prefetch": True}
+            ],
+            prefetch_result={
+                "ok": True,
+                "citations": [{"doc_id": "ud_x"}],
+                "evidence_pack": {
+                    "task_type": "compare",
+                    "coverage_score": 0.9,
+                    "gaps": ["x"],
+                },
+            },
+            fixtures={"tenant_id": "tenant1", "documents": []},
+            agent_route=AgentRoute.hermes_full,
+        )
+    )
+    evts = _parse_sse(raw)
+    assert mock_sup.call_count == 0
+    assert not any(
+        "自动执行定向" in str(e.get("message") or "")
+        or "未调用 MCP 补检索" in str(e.get("message") or "")
+        for e in evts
+    )
+    assert not any(e.get("type") == "error" for e in evts)
+    done = [e for e in evts if e.get("type") == "done"][-1]
+    assert not done.get("kb_supplemental")
+    reply = str(done.get("reply") or "")
+    assert reply.strip()
+    # 过程稿非终稿：允许未成稿说明或 salvage/门禁表；禁止空白毁流
+    assert (
+        "人员结构对照" in reply
+        or "未完成可用终稿" in reply
+        or "证据不足" in reply
+        or "1378" in reply
+    )
 
 
 @patch("backend.services.ai_interaction_llm.generate_chat_reply")

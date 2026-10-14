@@ -26,12 +26,24 @@
       .trim();
 
   const pickPersonnelStructuredBody = (raw) => {
-    const marker = "YYCQ vs 可比公司A · 2025 人员结构对比";
+    const markers = [
+      "YYCQ vs 可比公司A · 2025 人员结构对比",
+      "YYCQ vs可比公司A",
+      "YYCQ vs 可比公司A · 2025 人员结构对比",
+      "人员结构对照",
+    ];
     const t = raw || "";
-    const idx = t.lastIndexOf(marker);
+    let idx = -1;
+    for (const marker of markers) {
+      const i = t.lastIndexOf(marker);
+      if (i > idx) idx = i;
+    }
     if (idx < 0) return null;
+    // 若对照表前仍有取证独白，从对照表切开
+    const pc = t.indexOf("人员结构对照", idx > 0 ? Math.max(0, idx - 80) : 0);
+    const start = pc >= 0 && pc <= idx + 40 ? pc : idx;
     return t
-      .slice(idx)
+      .slice(start)
       .replace(/^模型：[^\n]+\n/m, "")
       .replace(/●完成：Tier[^\n]+\n?/m, "")
       .trim();
@@ -39,10 +51,28 @@
 
   const resolveReplaceFinalBody = (raw) => {
     const personnel = pickPersonnelStructuredBody(raw);
-    if (personnel) return personnel;
+    if (personnel && /人员结构对照/.test(personnel)) {
+      // 丢弃过程稿前缀已在 pick 内处理；勿再 head+tail 粘贴
+      if (
+        !/首轮取证|第二轮核证|撰写终稿|evidence_sufficient|next_action/i.test(
+          personnel.slice(0, 120),
+        )
+      ) {
+        return personnel.split(/引用证据/)[0].trim();
+      }
+    }
     const t = raw || "";
+    const pcIdx = t.search(/人员结构对照/);
+    if (
+      pcIdx > 0 &&
+      /首轮取证|第二轮核证|撰写终稿|evidence_sufficient|next_action|网关标记/i.test(
+        t.slice(0, pcIdx),
+      )
+    ) {
+      return t.slice(pcIdx).split(/引用证据/)[0].trim();
+    }
     const tierIdx = t.indexOf("●完成：Tier");
-    if (tierIdx < 0) return null;
+    if (tierIdx < 0) return personnel;
     const after = t.slice(tierIdx);
     const modelM = after.match(/模型：[^\n]+\n([\s\S]*)/);
     const tail = modelM ? modelM[1].split(/引用证据/)[0].trim() : "";
@@ -54,21 +84,50 @@
         .join("\n")
         .trim();
     }
+    if (
+      /首轮取证|第二轮核证|撰写终稿|evidence_sufficient|next_action|MCP\s*优先重试/i.test(
+        head,
+      )
+    ) {
+      if (tail.length >= 120 && /人员结构对照|1[,，]?378/.test(tail)) return tail;
+      const cut = head.search(/人员结构对照/);
+      if (cut >= 0) return head.slice(cut);
+    }
     if (tail.length >= 200 && /1[,，]?378|\d{1,3}(?:,\d{3})+\.\d{2}/.test(tail)) {
-      return head.length >= 100 ? `${head}\n\n${tail}` : tail;
+      if (
+        head.length >= 100 &&
+        /人员结构对照/.test(head) &&
+        !/首轮取证|撰写终稿|第二轮核证/i.test(head)
+      ) {
+        return `${head}\n\n${tail}`;
+      }
+      return tail;
     }
     if (head.length >= 150) return head;
-    return tail.length >= 80 ? tail : null;
+    return tail.length >= 80 ? tail : personnel;
   };
 
   const stripOrchestration = (text) => {
     let t = text || "";
-    const anchor = /(?:^|\n)(结论[:：]|YYCQ vs 可比公司A|#+\s|存货|缺少证据)/im;
+    const cnCut = t.search(
+      /(?:人员结构对照|#\s*\S{1,40}\s*vs|YYCQ\s*vs\s*可比公司A)/,
+    );
+    if (
+      cnCut > 0 &&
+      /首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|evidence_sufficient|next_action|网关标记证据不充分|需要第二轮|MCP\s*优先重试/i.test(
+        t.slice(0, cnCut),
+      )
+    ) {
+      t = t.slice(cnCut).trim();
+    }
+    const anchor = /(?:^|\n)(结论[:：]|YYCQ vs 可比公司A|#+\s|存货|缺少证据|人员结构对照)/im;
     const m = anchor.exec(t);
     if (
       m &&
       m.index > 0 &&
-      /Let me |The skill |Evidence Pack|Looking at the|doc_id:/i.test(t.slice(0, m.index))
+      /Let me |The skill |Evidence Pack|Looking at the|doc_id:|首轮取证|第二轮核证|撰写终稿/i.test(
+        t.slice(0, m.index),
+      )
     ) {
       t = t.slice(m.index).trim();
     }
@@ -96,12 +155,22 @@
       const el = pickAnswerElement(blk);
       const raw = (el?.innerText || blk.innerText || "").trim();
       const cleaned = stripOrchestration(stripTrace(raw));
+      const insufficientBubble =
+        /证据不足|未给出合格|无法展示可靠对照|未完成可用终稿|Hermes未成稿/.test(
+          cleaned,
+        );
       const score =
         cleaned.length +
-        (/\b946\b|\b242\b|1[,，]?378|\b70\b/.test(cleaned) ? 500 : 0) +
-        (/结论|研发人员|员工数量|1\.1信息-人员|人员结构对照/.test(cleaned)
+        ((/\|/.test(cleaned) || /\t[^\t]+\t/.test(cleaned)) &&
+        /\d{2,}/.test(cleaned)
+          ? 150
+          : 0) +
+        (/结论|研发人员|员工数量|1\.1信息-人员|人员结构对照|销售费用|对比分析/.test(
+          cleaned,
+        )
           ? 200
           : 0) -
+        (insufficientBubble ? 800 : 0) -
         (/^执行过程|Evidence Pack 已就绪|本地 LLM 综合完成/.test(cleaned)
           ? 300
           : 0);
@@ -192,7 +261,7 @@
     /\d+\.?\d*亿/.test(answerBody) ||
     /\d+元/.test(answerBody);
   const processInAnswerEarly =
-    /用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|根据(?:已获取|检索结果|Evidence Pack)|很明确了|直接成稿如下|Evidence Pack中缺少|Let me search|I need to find|我需要(?:先|针对|查找).*?(?:MCP|检索|查找)|现在我需要(?:查找|检索|确认)|首轮检索返回|没有直接找到|更精确的检索/i.test(
+    /用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|根据(?:已获取|检索结果|Evidence Pack)|很明确了|直接成稿如下|Evidence Pack中缺少|Let me search|I need to find|我需要(?:先|针对|查找).*?(?:MCP|检索|查找)|现在我需要(?:查找|检索|确认)|首轮检索返回|没有直接找到|更精确的检索|首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|evidence_sufficient|next_action\s*=|网关标记证据不充分|MCP\s*优先重试/i.test(
       answerBody,
     );
   const substantiveWithoutCites =
@@ -218,10 +287,10 @@
     } else {
       streamDone = false;
     }
-  } else if (citations > 0 && !loading && !thinking) {
+  } else if (citations > 0 && !loading && !thinking && !hermesStillRunning) {
     if (
       answerBody.length >= 80 &&
-      (!processInAnswerEarly || hasMoney || answerBody.length >= 400)
+      (!processInAnswerEarly || hasMoney || answerBody.length >= 350)
     ) {
       streamDone = true;
     }
@@ -310,6 +379,15 @@
   if (streamDone && processInAnswerEarly && !hasMoney && answerBody.length < 400) {
     streamDone = false;
   }
+  // 手测同路径：DOM 原文仍含取证独白+对照表 → 未收束（须等 replace_reply 清洗）
+  const rawDualDraft =
+    /人员结构对照/.test(answerTextRaw) &&
+    /首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|evidence_sufficient|next_action\s*=|MCP\s*优先重试/i.test(
+      answerTextRaw,
+    );
+  if (rawDualDraft) {
+    streamDone = false;
+  }
   if (
     streamDone &&
     /思考中|同步中|现在我已经获取|让我用正确的参数|让我整理成对比/.test(answerBody) &&
@@ -344,7 +422,7 @@
     /证据\s*`\s*`/.test(bodyForCite) ||
     /\(doc_id:\s*\)/i.test(bodyForCite);
   const processInAnswer =
-    /用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|根据(?:已获取|检索结果|Evidence Pack)|很明确了|直接成稿如下|Evidence Pack中缺少|Let me search|I need to find|我需要(?:先|针对|查找).*?(?:MCP|检索|查找)|现在我需要(?:查找|检索|确认)|首轮检索返回|没有直接找到|更精确的检索/i.test(
+    /用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|根据(?:已获取|检索结果|Evidence Pack)|很明确了|直接成稿如下|Evidence Pack中缺少|Let me search|I need to find|我需要(?:先|针对|查找).*?(?:MCP|检索|查找)|现在我需要(?:查找|检索|确认)|首轮检索返回|没有直接找到|更精确的检索|首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|evidence_sufficient|next_action\s*=|网关标记证据不充分|MCP\s*优先重试/i.test(
       answerBody,
     );
 
@@ -383,7 +461,11 @@
       structured_gate_applied = true;
     } else if (label === "Orient-G补检索") reply_source = "orientg_supplemental";
   }
-  const kb_supplemental = /Orient-G 自动补检索修订/.test(searchBlob);
+  // 含「未调 MCP 补检索 / 自动执行定向 orientg_kb_ask」链（手测毁流路径）
+  const kb_supplemental =
+    /Orient-G 自动补检索修订|自动执行定向\s*orientg_kb_ask|Hermes 未调用 MCP 补检索/.test(
+      searchBlob,
+    );
   // 宽尺子 B：强制 MCP 重试可观测（理想 = 0）
   let hermes_mcp_retry_count = 0;
   if (/MCP 优先重试|hermes_mcp_retry|未调用 orientg_kb_ask，发起/.test(searchBlob)) {
@@ -399,12 +481,12 @@
       body + answerTextRaw,
     );
 
-  // 目标3：不再等待 Orient-G gate 刷完整表；Hermes 主写骨架就绪即可。
+  // 目标3：不再等待 Orient-G gate 刷完整表；Hermes 主写骨架就绪即可（通用分项数字，禁硬编码）。
   const personnelHermesSkeletonReady =
     /人员结构对照/.test(answerBody) &&
     /对比分析/.test(answerBody) &&
-    (/1[,，]?378|1378/.test(answerBody) || (/\b946\b/.test(answerBody) && /\b70\b/.test(answerBody))) &&
-    (/\b946\b/.test(answerBody) || /\b242\b/.test(answerBody) || /\b70\b/.test(answerBody)) &&
+    /(研发|运营|销售|管理).{0,24}\d{2,}/.test(answerBody) &&
+    (answerBody.match(/\d{2,}/g) || []).length >= 3 &&
     !/doc_id:\s*[`\s,)]{0,4}/i.test(answerBody);
   const hermesAuthorshipLine = /终稿出处[：:]\s*Hermes/.test(searchBlob);
   const personnelReplacePending =
@@ -416,6 +498,14 @@
   if (streamDone && personnelReplacePending) {
     streamDone = false;
   }
+  // Spec 4.3：销售/运营仍「证据未覆盖」时不得判完成（避免过早 streamDone）
+  const peerRolesStillUncovered =
+    personnelCompareQuery &&
+    /证据未覆盖/.test(answerBody) &&
+    /(销售|运营).{0,40}证据未覆盖|证据未覆盖.{0,40}(销售|运营)/.test(answerBody);
+  if (streamDone && peerRolesStillUncovered) {
+    streamDone = false;
+  }
   // 流已静默且 Hermes 骨架/出处就绪：勿因缺 citations DOM 或短骨架（~180–280 字）永久卡住
   if (
     personnelCompareQuery &&
@@ -423,7 +513,8 @@
     !thinking &&
     !hermesStillRunning &&
     answerBody.length >= 160 &&
-    (personnelHermesSkeletonReady || hermesAuthorshipLine)
+    (personnelHermesSkeletonReady || hermesAuthorshipLine) &&
+    !peerRolesStillUncovered
   ) {
     streamDone = true;
   }
@@ -440,13 +531,10 @@
 
   const personnelStructuredReady =
     /人员结构对照/.test(answerBody) &&
-    /1378|1[,，]?378/.test(answerBody) &&
-    /70\s*人|70\.00/.test(answerBody) &&
-    /946/.test(answerBody) &&
-    /242/.test(answerBody) &&
-    !/\|\s*销售\s*\|[^|\n]*证据未覆盖/.test(answerBody) &&
-    !/\|\s*运营\s*\|[^|\n]*证据未覆盖/.test(answerBody) &&
-    bodyForMetrics.length >= 650 &&
+    /(研发|运营|销售|管理).{0,24}\d{2,}/.test(answerBody) &&
+    (answerBody.match(/\d{2,}/g) || []).length >= 4 &&
+    /对比分析|口径说明/.test(answerBody) &&
+    bodyForMetrics.length >= 400 &&
     !personnelReplacePending &&
     !thinking;
 
@@ -463,7 +551,9 @@
     !personnelSlice &&
     citations > 0 &&
     !!completionMatch &&
-    /1[,，]?378|\d{1,3}(?:,\d{3})+\.\d{2}/.test(finalSlice) &&
+    (/\d{1,3}(?:,\d{3})+\.\d{2}/.test(finalSlice) ||
+      (/\|/.test(finalSlice) && /\d/.test(finalSlice)) ||
+      (finalSlice.length >= 200 && /[\u4e00-\u9fff]/.test(finalSlice))) &&
     !loading &&
     !thinking &&
     !hermesStillRunning;

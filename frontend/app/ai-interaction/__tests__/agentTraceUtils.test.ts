@@ -10,6 +10,7 @@ import {
   mergeAssistantOnAgentDone,
   parseEvidencePackSummary,
   routeLabel,
+  salvageHermesDraftOnStreamFail,
   traceFromLegacyStreamStatus,
   upsertAgentToolTrace,
 } from "../agentTraceUtils";
@@ -64,6 +65,43 @@ describe("appendAgentTraceStep", () => {
       step: "hermes_reasoning",
     });
     expect(b).toHaveLength(2);
+  });
+});
+
+describe("salvageHermesDraftOnStreamFail", () => {
+  it("promotes hermes_draft when main bubble is defer placeholder", () => {
+    const draft =
+      "### 人员结构对照\n| 职能 | 可比公司A | YYCQ |\n| 研发 | 1378 人 | 70 人 |\n### 对比分析\n两家口径不同。";
+    const out = salvageHermesDraftOnStreamFail(
+      "Orient-G 正在综合终稿；Hermes 过程稿见下方执行过程。",
+      [{ at: 1, kind: "thinking", message: draft, step: "hermes_draft" }],
+    );
+    expect(out).toContain("人员结构对照");
+    expect(out).toContain("1378");
+  });
+
+  it("does not override a real final reply", () => {
+    const out = salvageHermesDraftOnStreamFail("已完成的对照表终稿正文足够长了", [
+      {
+        at: 1,
+        kind: "thinking",
+        message: "### 人员结构对照\n| 研发 | 1378 |",
+        step: "hermes_draft",
+      },
+    ]);
+    expect(out).toBeNull();
+  });
+
+  it("rejects orchestration process draft even if long", () => {
+    const draft =
+      "首轮取证完成。next_action=verify_gap_then_write_final。核证补缺计划如下。\n" +
+      "Let me first retrieve more evidence via orientg_kb_ask before writing the final table.\n" +
+      "证据显示研发人数待核证，稍后写入人员结构对照。";
+    const out = salvageHermesDraftOnStreamFail(
+      "Orient-G 正在综合终稿；Hermes 过程稿见下方执行过程。",
+      [{ at: 1, kind: "thinking", message: draft, step: "hermes_draft" }],
+    );
+    expect(out).toBeNull();
   });
 });
 

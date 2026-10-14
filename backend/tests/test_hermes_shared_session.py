@@ -128,6 +128,63 @@ def test_resolve_user_token_from_db_when_memory_empty(monkeypatch):
     assert resolved == tok
 
 
+def test_db_hydrate_native_mcp_reply_follows_settings(monkeypatch):
+    """多 worker：内存 ctx 清空后从 DB hydrate，不得把 native_mcp_reply 静默压成 False。"""
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    tok = _jwt()
+    sk = "orientg-native-hydrate"
+    shared.persist_session(
+        sk,
+        tok,
+        kb_scope={"selected_folder_ids": ["f1"]},
+        native_mcp_reply=True,
+    )
+    session_ctx.reset_for_tests()
+    loaded = shared.load_session(sk)
+    assert loaded is not None
+    assert loaded.get("native_mcp_reply") is True
+    assert "__orientg_native_mcp_reply" not in (loaded.get("kb_scope") or {})
+    ctx = session_ctx.resolve(sk)
+    assert ctx is not None
+    assert ctx.native_mcp_reply is True
+
+
+def test_db_hydrate_native_mcp_reply_missing_field_falls_back_to_settings(monkeypatch):
+    """旧行无 native 字段时回退 settings，避免覆盖 settings.hermes_native_mcp_reply。"""
+    from sqlalchemy import text
+
+    from backend.config import settings
+    from backend.database import engine, init_hermes_session_store_table
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    init_hermes_session_store_table()
+    tok = _jwt()
+    sk = "orientg-native-legacy"
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO hermes_session_store (
+                    session_key, user_token, kb_scope_json, allow_kb_write, expires_at
+                ) VALUES (
+                    :k, :t, '{"selected_folder_ids":["f1"]}', false, NOW() + INTERVAL '1 hour'
+                )
+                ON CONFLICT (session_key) DO UPDATE SET
+                    user_token = EXCLUDED.user_token,
+                    kb_scope_json = EXCLUDED.kb_scope_json
+                """
+            ),
+            {"k": sk, "t": tok},
+        )
+        conn.commit()
+    session_ctx.reset_for_tests()
+    ctx = session_ctx.resolve(sk)
+    assert ctx is not None
+    assert ctx.native_mcp_reply is True
+
+
 def test_orientg_kb_ask_inherits_kb_scope_from_db(monkeypatch):
     tok = _jwt()
     sk = bridge.register("orientg-shared-3", tok)

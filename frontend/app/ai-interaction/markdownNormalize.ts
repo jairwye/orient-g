@@ -75,6 +75,29 @@ export function normalizeAssistantMarkdown(text: string): string {
     "## $1",
   );
   t = t.replace(/([\u4e00-\u9fff\d\-%]+报告)\s*(\d+\.)/g, "$1\n\n#### $2");
+  // 英文过程开场 + 标题/分项粘连（与后端 hermes_stream_sanitize 对齐）
+  t = t.replace(/^Let me first\b[^#\n|]{0,240}?(?=#{1,4}|人员结构对照|\|)/i, "");
+  t = t.replace(/^Let me first\b[^\n。.!]{0,200}[。.!]?\s*/i, "");
+  t = t.replace(
+    /(#{2,4}\s*对比分析)\s*(\d+)[\.、]([\u4e00-\u9fff])/g,
+    "$1\n\n$2. $3",
+  );
+  t = t.replace(
+    /(对比分析)\s*(\d+)[\.、]([\u4e00-\u9fff])/g,
+    "$1\n\n$2. $3",
+  );
+  t = t.replace(
+    /([。；;！!?])\s*(\d+)[\.、]([\u4e00-\u9fff])/g,
+    "$1\n\n$2. $3",
+  );
+  t = t.replace(
+    /(?:^|\n)\s*1\.2\.3\.[^\n]{0,48}(?:分析|对照|如上|如下|三项)[^\n]*/g,
+    "\n",
+  );
+  t = t.replace(
+    /([。；;！!?])\s*1\.2\.3\.[^\n]{0,48}(?:分析|对照|如上|如下|三项)[^\n]*/g,
+    "$1",
+  );
   t = t.replace(/(\|\s*—\s*\|)\s*(#{2,4})/g, "$1\n\n$2");
   t = t.replace(/(\|\s*[^\n|]+\|)\s*(#{2,4}\s*\d+\.)/g, "$1\n\n$2");
   t = t.replace(/(\|[^|\n]+\|)\s*(#{2,4}[^\n|]+)/g, "$1\n\n$2");

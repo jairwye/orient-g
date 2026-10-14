@@ -21,12 +21,23 @@
       .trim();
 
   const pickPersonnelStructuredBody = (raw) => {
-    const marker = "YYCQ vs 可比公司A · 2025 人员结构对比";
+    const markers = [
+      "YYCQ vs 可比公司A · 2025 人员结构对比",
+      "YYCQ vs可比公司A",
+      "YYCQ vs 可比公司A · 2025 人员结构对比",
+      "人员结构对照",
+    ];
     const t = raw || "";
-    const idx = t.lastIndexOf(marker);
+    let idx = -1;
+    for (const marker of markers) {
+      const i = t.lastIndexOf(marker);
+      if (i > idx) idx = i;
+    }
     if (idx < 0) return null;
+    const pc = t.indexOf("人员结构对照", idx > 0 ? Math.max(0, idx - 80) : 0);
+    const start = pc >= 0 && pc <= idx + 40 ? pc : idx;
     return t
-      .slice(idx)
+      .slice(start)
       .replace(/^模型：[^\n]+\n/m, "")
       .replace(/●完成：Tier[^\n]+\n?/m, "")
       .trim();
@@ -36,6 +47,16 @@
     const personnel = pickPersonnelStructuredBody(raw);
     if (personnel) return personnel;
     const t = raw || "";
+    // 中文对照表：优先整段从「人员结构对照」起，勿把过程稿 head 粘到终稿
+    const pcIdx = t.search(/人员结构对照/);
+    if (
+      pcIdx > 0 &&
+      /首轮取证|第二轮核证|撰写终稿|evidence_sufficient|next_action|网关标记/i.test(
+        t.slice(0, pcIdx),
+      )
+    ) {
+      return t.slice(pcIdx).split(/引用证据/)[0].trim();
+    }
     const tierIdx = t.indexOf("●完成：Tier");
     if (tierIdx < 0) return null;
     const after = t.slice(tierIdx);
@@ -49,8 +70,26 @@
         .join("\n")
         .trim();
     }
+    // 过程稿 head 不得与 gate/终稿 tail 拼接（手测双稿）
+    if (
+      /首轮取证|第二轮核证|撰写终稿|evidence_sufficient|next_action|MCP\s*优先重试/i.test(
+        head,
+      )
+    ) {
+      if (tail.length >= 120 && /人员结构对照|1[,，]?378/.test(tail)) return tail;
+      const cut = head.search(/人员结构对照/);
+      if (cut >= 0) return head.slice(cut);
+    }
     if (tail.length >= 200 && /1[,，]?378|\d{1,3}(?:,\d{3})+\.\d{2}/.test(tail)) {
-      return head.length >= 100 ? `${head}\n\n${tail}` : tail;
+      // 仅当 head 已是对照表终稿时才保留；否则只用 tail
+      if (
+        head.length >= 100 &&
+        /人员结构对照/.test(head) &&
+        !/首轮取证|撰写终稿|第二轮核证/i.test(head)
+      ) {
+        return `${head}\n\n${tail}`;
+      }
+      return tail;
     }
     if (head.length >= 150) return head;
     return tail.length >= 80 ? tail : null;
@@ -58,12 +97,26 @@
 
   const stripOrchestration = (text) => {
     let t = text || "";
-    const anchor = /(?:^|\n)(结论[:：]|YYCQ vs 可比公司A|#+\s|存货|缺少证据|无法提供|Inventory\b)/im;
+    // 中文 Hermes 编排独白 → 从对照表/标题切开
+    const cnCut = t.search(
+      /(?:人员结构对照|#\s*\S{1,40}\s*vs|YYCQ\s*vs\s*可比公司A)/,
+    );
+    if (
+      cnCut > 0 &&
+      /首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|evidence_sufficient|next_action|网关标记证据不充分|需要第二轮|MCP\s*优先重试/i.test(
+        t.slice(0, cnCut),
+      )
+    ) {
+      t = t.slice(cnCut).trim();
+    }
+    const anchor = /(?:^|\n)(结论[:：]|YYCQ vs 可比公司A|#+\s|存货|缺少证据|无法提供|Inventory\b|人员结构对照)/im;
     const m = anchor.exec(t);
     if (
       m &&
       m.index > 0 &&
-      /Let me |The skill |Evidence Pack|Looking at the|doc_id:/i.test(t.slice(0, m.index))
+      /Let me |The skill |Evidence Pack|Looking at the|doc_id:|首轮取证|第二轮核证|撰写终稿/i.test(
+        t.slice(0, m.index),
+      )
     ) {
       t = t.slice(m.index).trim();
     }
@@ -85,18 +138,29 @@
     );
     if (!blocks.length) return null;
     let best = blocks[blocks.length - 1];
-    let bestScore = 0;
+    let bestScore = -1e9;
     for (let i = blocks.length - 1; i >= Math.max(0, blocks.length - 5); i--) {
       const blk = blocks[i];
       const el = pickAnswerElement(blk);
       const raw = (el?.innerText || blk.innerText || "").trim();
       const cleaned = stripOrchestration(stripTrace(raw));
+      // 主气泡套话 / 未成稿不得靠过程稿里的硬编码人数刷高分（假绿防护）
+      const insufficientBubble =
+        /证据不足|未给出合格|无法展示可靠对照|未完成可用终稿|Hermes未成稿/.test(
+          cleaned,
+        );
       const score =
         cleaned.length +
-        (/\b946\b|\b242\b|1[,，]?378|\b70\b/.test(cleaned) ? 500 : 0) +
-        (/结论|研发人员|员工数量|1\.1信息-人员|人员结构对照/.test(cleaned)
+        (/结论|研发人员|员工数量|1\.1信息-人员|人员结构对照|对比分析/.test(
+          cleaned,
+        )
           ? 200
+          : 0) +
+        ((/\|/.test(cleaned) || /\t[^\t]+\t/.test(cleaned)) &&
+        /\d{2,}/.test(cleaned)
+          ? 150
           : 0) -
+        (insufficientBubble ? 800 : 0) -
         (/^执行过程|Evidence Pack 已就绪|本地 LLM 综合完成/.test(cleaned)
           ? 300
           : 0);
@@ -166,15 +230,22 @@
       !/not available|不可用|does not contain|未.*披露/i.test(bodyForCite)) ||
     /证据\s*`\s*`/.test(bodyForCite);
   const processInAnswer =
-    /用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|根据(?:已获取|检索结果|Evidence Pack)|很明确了|直接成稿如下|Evidence Pack中缺少|Let me search|I need to find/i.test(
+    /用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|根据(?:已获取|检索结果|Evidence Pack)|很明确了|直接成稿如下|Evidence Pack中缺少|Let me search|I need to find|首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|evidence_sufficient|next_action\s*=|网关标记证据不充分|MCP\s*优先重试/i.test(
       answerBody,
     ) &&
-    !/^可比公司E|^结论|^#{1,3}\s|^The provided|^Based on/i.test(answerBody.slice(0, 60));
+    !/^可比公司E|^结论|^#{1,3}\s|^The provided|^Based on|^人员结构对照/i.test(
+      answerBody.slice(0, 60),
+    );
+  const insufficientFinal =
+    /当前知识库证据不足或 Hermes 未给出合格|无法展示可靠对照表|Hermes 深度编排未完成可用终稿/.test(
+      text,
+    );
 
   return {
     tier_line: tierLine,
     citations,
     extract: {
+      insufficientFinal,
       hasMoney:
         /\d{1,3}(?:,\d{3})+\.\d{2}/.test(text) ||
         /[\d,.]+万元/.test(text) ||

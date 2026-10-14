@@ -122,6 +122,86 @@ def test_extract_query_entity_phrases_personnel_compare():
     assert not any(e.startswith("对比") for e in ents)
 
 
+def test_chinese_aliases_canonicalize_to_yycq_peera(monkeypatch):
+    """展示别名经 env 归一到 YYCQ/可比公司A，便于 folder label / MCP 分主体。"""
+    from backend.config import settings
+    from backend.services import kb_compare_entities as ce
+    from backend.services.kb_retrieval_plan import extract_query_entity_phrases
+
+    monkeypatch.setattr(settings, "kb_compare_entity_primary_aliases", "甲公司")
+    monkeypatch.setattr(settings, "kb_compare_entity_peer_aliases", "乙公司")
+    monkeypatch.setattr(settings, "kb_compare_entity_extra_markers", "甲公司,乙公司")
+    monkeypatch.setenv("KB_COMPARE_ENTITY_PRIMARY_ALIASES", "甲公司")
+    monkeypatch.setenv("KB_COMPARE_ENTITY_PEER_ALIASES", "乙公司")
+    monkeypatch.setenv("KB_COMPARE_ENTITY_EXTRA_MARKERS", "甲公司,乙公司")
+    ce.clear_compare_entity_cache()
+    try:
+        ents = extract_query_entity_phrases("对比分析甲公司和乙公司25年的人员结构")
+        assert "YYCQ" in ents
+        assert "可比公司A" in ents
+        assert "甲公司" not in ents
+        assert "乙公司" not in ents
+    finally:
+        ce.clear_compare_entity_cache()
+
+
+def test_mcp_personnel_fallback_drops_foreign_139_headcount():
+    """人员横比 MCP：回退节选不得把华清/可比公司E 在职139当作本公司主证据。"""
+    import re
+
+    from backend.services.kb_ask_mcp_reply import (
+        build_kb_ask_mcp_reply,
+        is_foreign_small_headcount_chunk,
+    )
+
+    hq = "## 在职员工情况\n期末在职员工总数 139人\n技术人员 95人\n研发费用减少 30.06%"
+    assert is_foreign_small_headcount_chunk(hq)
+    assert not is_foreign_small_headcount_chunk(
+        "## 1.1信息-人员\n研发 70.00 运营 61.00 管理 33.15 支持 45.85"
+    )
+
+    res = {
+        "reply": "混合检索命中 3 条证据。",
+        "citations": [
+            {"doc_id": "ud_hq", "chunk_id": "c_hq"},
+            {"doc_id": "ud_yy", "chunk_id": "c_yy"},
+            {"doc_id": "ud_37", "chunk_id": "c_37"},
+        ],
+    }
+
+    def fake_load(_tid, did, _cid, _seq):
+        if did == "ud_hq":
+            return hq
+        if did == "ud_yy":
+            return "## 1.1信息-人员\n研发 70.00 运营 61.00 管理 33.15 支持 45.85"
+        if did == "ud_37":
+            return (
+                "## 员工数量、专业构成及教育程度\n销售人员 946\n运营人员 242\n"
+                "## 研发人员情况\n研发人员数量 1,378"
+            )
+        return ""
+
+    with (
+        patch(
+            "backend.services.kb_ask_mcp_reply.build_personnel_compare_excerpts",
+            return_value=[],
+        ),
+        patch(
+            "backend.services.ai_interaction_llm._load_doc_chunk_text",
+            side_effect=fake_load,
+        ),
+    ):
+        out, excerpts = build_kb_ask_mcp_reply(
+            res,
+            query=PERSONNEL_QUERY,
+            tenant_id="tenant1",
+            fixtures={},
+        )
+    joined = out + "\n" + "\n".join(str(x.get("excerpt") or "") for x in excerpts)
+    assert "期末在职员工总数 139" not in joined
+    assert not re.search(r"技术人员\s*95", joined)
+
+
 def test_format_personnel_compare_report_structured():
     from backend.services.kb_ask_mcp_reply import format_personnel_compare_report
 
@@ -167,6 +247,9 @@ def test_build_kb_ask_mcp_reply_includes_excerpts():
         ],
     }
     with patch(
+        "backend.services.kb_ask_mcp_reply.build_personnel_compare_excerpts",
+        return_value=[],
+    ), patch(
         "backend.services.agent_kb_prefetch.build_prefetch_evidence_excerpts",
         return_value=[
             {"doc_id": "ud_a", "chunk_id": "c1", "excerpt": "可比公司A 2025年末人数 3,138"},
@@ -188,6 +271,9 @@ def test_orientg_kb_ask_mcp_reply_has_excerpt_body(mock_ask):
         "citations": [{"doc_id": "ud_x", "chunk_id": "c1", "chunk_seq_no": 1}],
     }
     with patch(
+        "backend.services.kb_ask_mcp_reply.build_personnel_compare_excerpts",
+        return_value=[],
+    ), patch(
         "backend.services.agent_kb_prefetch.build_prefetch_evidence_excerpts",
         return_value=[{"doc_id": "ud_x", "chunk_id": "c1", "excerpt": "可比公司A 研发人员情况 3138"}],
     ):
@@ -207,6 +293,27 @@ def test_orientg_kb_ask_mcp_reply_has_excerpt_body(mock_ask):
     assert "证据节选" in reply
     assert "3138" in reply
     assert res.get("evidence_excerpts")
+
+
+def test_orientg_kb_ask_denied_hermes_reply_avoids_permission_hallucination():
+    from backend.services.kb_ask_mcp_agent_native import build_agent_payload
+    from backend.services.kb_ask_mcp_reply import orientg_kb_ask_denied_hermes_reply
+
+    denied = orientg_kb_ask_denied_hermes_reply("session_token_unresolved")
+    assert "权限受限" not in denied
+    assert "orientg_kb_ask" in denied
+    assert "mcp__orientg__orientg_kb_ask" in denied
+
+    scope_empty = orientg_kb_ask_denied_hermes_reply("doc allowed scope empty")
+    assert "权限受限" not in scope_empty
+    assert "文件夹" in scope_empty or "hermes_session_key" in scope_empty
+    assert "勿" in scope_empty  # 勿声称权限/空结论
+
+    payload = build_agent_payload(query=PERSONNEL_QUERY, excerpts=[], citations=[])
+    note = str(payload.get("kb_status", {}).get("note") or "")
+    assert payload.get("kb_status", {}).get("empty") is True
+    assert "权限受限" not in note
+    assert "orientg_kb_ask" in note
 
 
 def test_personnel_compare_excerpt_is_valid():

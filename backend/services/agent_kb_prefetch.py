@@ -421,7 +421,7 @@ def prefetch_kb_context(
         and _q_personnel(query)
     ):
         lead += (
-            "【人员结构 native · 硬约束】**首轮必须先**调用 mcp_orientg_orientg_kb_ask；"
+            "【人员结构 native · 硬约束】**首轮必须先**调用 mcp__orientg__orientg_kb_ask；"
             "禁止根据下方预检索摘要/JSON 直接写「人员结构对照」或长分析。"
             "预检索仅作范围线索（doc/folder），**硬数字一律以 MCP agent_payload / 参考表为准**；"
             "禁止把参考表标题原样上屏；禁止员工总数倍数对照；禁止推算/推测/~N人。\n"
@@ -432,7 +432,7 @@ def prefetch_kb_context(
         )
         # 不再注入可当终稿的详情 JSON；仅保留 doc 引用线索
         pack_json = (
-            '{"native_slim":true,"note":"硬数字已剥离；须 mcp_orientg_orientg_kb_ask 取证"}'
+            '{"native_slim":true,"note":"硬数字已剥离；须 mcp__orientg__orientg_kb_ask 取证"}'
         )
     prefetch_msg = {
         "role": "system",
@@ -539,8 +539,12 @@ def synthesize_kb_reply(
     ) or settings.ollama_model
     skill_addon = build_system_addon_for_enabled_skills(enabled_skills or [])
     extra = (skill_addon_extra or "").strip()
-    if extra:
-        skill_addon = "\n\n".join(x for x in [(skill_addon or "").strip(), extra] if x)
+    from backend.services.agent_kb_supplemental import doc_folder_entity_scope_addon
+
+    folder_addon = doc_folder_entity_scope_addon(doc_labels if isinstance(doc_labels, dict) else None)
+    skill_addon = "\n\n".join(
+        x for x in [(skill_addon or "").strip(), extra, folder_addon] if x
+    )
     try:
         llm_reply = generate_answer_with_evidence(
             tenant_id=tenant_id,
@@ -551,6 +555,10 @@ def synthesize_kb_reply(
             skill_addon=skill_addon or None,
             extra_evidence_blocks=extra_evidence_blocks,
         )
+        if wants_personnel:
+            from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+            llm_reply = finalize_agent_reply(llm_reply, user_query=user_query, tier2_native=False)
         return {
             "ok": True,
             "reply": llm_reply,

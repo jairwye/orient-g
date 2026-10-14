@@ -124,7 +124,12 @@ def _scope(user_token: str, fixtures: dict[str, Any] | None = None) -> dict[str,
 def _deny(tool: str, reason: str, *, tenant_id: str, username: str | None, extra: dict | None = None) -> dict[str, Any]:
     meta = {"ok": False, "reason": reason, **(extra or {})}
     _audit(tenant_id, username=username, tool=tool, meta=meta)
-    return {"ok": False, "denied": True, "reason": reason}
+    out: dict[str, Any] = {"ok": False, "denied": True, "reason": reason}
+    if (tool or "").strip() == "orientg_kb_ask":
+        from backend.services.kb_ask_mcp_reply import orientg_kb_ask_denied_hermes_reply
+
+        out["reply"] = orientg_kb_ask_denied_hermes_reply(reason)
+    return out
 
 
 def _doc_writable(scope: dict[str, Any], doc_id: str) -> bool:
@@ -221,56 +226,91 @@ def _apply_session_kb_scope_for_ask(
     attached_doc_ids: list[str] | None,
     limit_to_attached: bool,
 ) -> tuple[list[str] | None, list[str] | None, list[str] | None, bool]:
-    """Hermes MCP 未显式传 scope 时，继承 /agent 登记的 kb_scope（与网关预检索一致）。"""
-    if (
-        selected_collection_ids
-        or selected_table_ids
-        or attached_doc_ids
-        or not hermes_session_key
-    ):
-        return selected_collection_ids, selected_table_ids, attached_doc_ids, limit_to_attached
+    """
+    Hermes MCP 须与 /agent 用户会话 scope 一致（与网关预检索同源）。
+
+    模型常误把 folder_id / 臆造 id 塞进 selected_collection_ids；旧逻辑一旦见到显式
+    collection/attached 就 early-return，跳过 session → doc allowed scope empty /
+    selected_collection_ids not allowed。有 hermes_session_key 时以 session/JWT 为基线，
+    仅把模型传入的合法 collection/table/doc 作增量并入，不得短路或覆盖会话文件夹。
+    """
+    hermes_cols = [str(x).strip() for x in (selected_collection_ids or []) if str(x).strip()]
+    hermes_tables = [str(x).strip() for x in (selected_table_ids or []) if str(x).strip()]
+    hermes_attached = [str(x).strip() for x in (attached_doc_ids or []) if str(x).strip()]
+
+    if not hermes_session_key:
+        return (
+            hermes_cols or None,
+            hermes_tables or None,
+            hermes_attached or None,
+            bool(limit_to_attached),
+        )
 
     from backend.services.orientg_agent_presentation import kb_scope_nonempty
+
+    session_cols: list[str] = []
+    session_tables: list[str] = []
+    session_attached: list[str] = []
+    session_limit = False
 
     ctx = _resolve_hermes_session_context(hermes_session_key)
     if ctx and kb_scope_nonempty(ctx.kb_scope):
         from backend.services.kb_scope_resolve import resolve_kb_scope_for_ask
 
         resolved = resolve_kb_scope_for_ask(tenant_id, ctx.kb_scope)
-        cols = list(resolved.get("collection_ids") or [])
-        tables = list(resolved.get("table_ids") or [])
-        attached = list(resolved.get("attached_doc_ids") or [])
-        use_limit = bool(resolved.get("limit_to_attached"))
-        # folder 子树 doc 解析失败时勿 limit_to_attached+空 attached → doc allowed scope empty
-        if use_limit and not attached and cols:
-            use_limit = False
-        if cols or tables or attached:
+        session_cols = list(resolved.get("collection_ids") or [])
+        session_tables = list(resolved.get("table_ids") or [])
+        session_attached = list(resolved.get("attached_doc_ids") or [])
+        session_limit = bool(resolved.get("limit_to_attached"))
+        if session_limit and not session_attached and session_cols:
+            session_limit = False
+
+    if not (session_cols or session_tables or session_attached):
+        effective_token = resolve_user_token("", hermes_session_key)
+        session_cols = _token_acl_collection_ids(effective_token)
+        session_tables = []
+        session_attached = []
+        session_limit = False
+        if session_cols:
             logger.info(
-                "mcp_kb_scope_session session=%s collections=%d attached=%d limit=%s",
+                "mcp_kb_scope_fallback token_acl session=%s collections=%d",
                 hermes_session_key[:24],
-                len(cols),
-                len(attached),
-                use_limit,
-            )
-            return (
-                cols or None,
-                tables or None,
-                attached or None,
-                use_limit,
+                len(session_cols),
             )
 
-    # Session 无有效 kb_scope / 解析为空：继承 JWT ACL（与网关预检索一致）
-    effective_token = resolve_user_token("", hermes_session_key)
-    cols = _token_acl_collection_ids(effective_token)
-    if cols:
+    if session_cols or session_tables or session_attached:
+        allowed = set(_token_acl_collection_ids(resolve_user_token("", hermes_session_key)))
+        extra_cols = [c for c in hermes_cols if c in allowed] if allowed else []
+        extra_tables = [t for t in hermes_tables if t in set(session_tables)] if session_tables else []
+        out_cols = list(dict.fromkeys([*session_cols, *extra_cols]))
+        out_tables = list(dict.fromkeys([*session_tables, *extra_tables]))
+        out_attached = list(dict.fromkeys([*session_attached, *hermes_attached]))
+        use_limit = bool(session_limit)
+        if use_limit and not out_attached and out_cols:
+            use_limit = False
+        if extra_cols:
+            use_limit = False
         logger.info(
-            "mcp_kb_scope_fallback token_acl session=%s collections=%d",
+            "mcp_kb_scope_session session=%s collections=%d attached=%d limit=%s hermes_extra_cols=%d",
             hermes_session_key[:24],
-            len(cols),
+            len(out_cols),
+            len(out_attached),
+            use_limit,
+            len(extra_cols),
         )
-        return cols, None, None, False
+        return (
+            out_cols or None,
+            out_tables or None,
+            out_attached or None,
+            use_limit,
+        )
 
-    return selected_collection_ids, selected_table_ids, attached_doc_ids, limit_to_attached
+    return (
+        hermes_cols or None,
+        hermes_tables or None,
+        hermes_attached or None,
+        bool(limit_to_attached) if hermes_attached else False,
+    )
 
 
 def _check_mcp_write_gate(
@@ -379,11 +419,15 @@ def orientg_kb_ask(
 
     res = personnel_structure_ask_results(_ask, effective_query)
     if res.get("denied"):
+        from backend.services.kb_ask_mcp_reply import orientg_kb_ask_denied_hermes_reply
+
+        reason = str(res.get("deny_reason") or "denied").strip() or "denied"
         return {
             "ok": False,
             "denied": True,
-            "reason": res.get("deny_reason") or "denied",
+            "reason": reason,
             "citations": [],
+            "reply": orientg_kb_ask_denied_hermes_reply(reason),
         }
     from backend.config import settings
     from backend.services.kb_ask_mcp_reply import build_kb_ask_mcp_reply

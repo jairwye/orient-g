@@ -36,7 +36,7 @@ def test_parse_sse_tool_call_delta():
 def test_hermes_sse_parser_tool_progress_running():
     payload = json.dumps(
         {
-            "tool": "mcp_orientg_orientg_kb_ask",
+            "tool": "mcp__orientg__orientg_kb_ask",
             "emoji": "📚",
             "label": "orientg_kb_ask: 华清营收",
             "toolCallId": "call_abc",
@@ -50,7 +50,7 @@ def test_hermes_sse_parser_tool_progress_running():
     events.extend(parser.feed(f"data: {payload}"))
     assert len(events) == 1
     assert events[0]["kind"] == "tool_progress"
-    assert events[0]["tool"] == "mcp_orientg_orientg_kb_ask"
+    assert events[0]["tool"] == "mcp__orientg__orientg_kb_ask"
     assert events[0]["toolCallId"] == "call_abc"
     assert events[0]["status"] == "running"
     assert events[0]["emoji"] == "📚"

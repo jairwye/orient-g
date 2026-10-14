@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""人员结构浏览器 CDP runner（6 条，独立报告）。
+"""人员结构浏览器 CDP runner（8 条，独立报告）。
 
 用法:
   py -3.10 backend/scripts/finance_matrix_personnel_cdp_runner.py

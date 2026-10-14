@@ -142,7 +142,7 @@ mcp_servers:
     connect_timeout: 60
 ```
 
-- Hermes 注册的工具名形如：`mcp_orientg_orientg_kb_ask`。
+- Hermes 注册的工具名形如：`mcp__orientg__orientg_kb_ask`。
 - **`cwd` 为项目根**时，`backend/config.py` 会读该项目 **`.env`** 里的 `DATABASE_URL`，无需在 Hermes 里再写数据库连接。
 
 ### 2.4 `%USERPROFILE%\.hermes\.env`

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 from backend.services.agent_kb_router import AgentRoute
@@ -67,8 +68,13 @@ def test_needs_supplemental_when_hermes_zero_kb_ask(monkeypatch):
     )
 
 
-def test_tier2_supplemental_when_hermes_estimates_and_pack_has_breakdown():
+def test_tier2_supplemental_when_hermes_estimates_and_pack_has_breakdown(monkeypatch):
+    from backend.config import settings
     from backend.services.evidence_reply_align import pack_has_tabular_breakdown
+
+    # legacy 补检索路径；native 全局主答见 test_hermes_authorship
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", False)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", False)
 
     pack = {
         **PREFETCH_BREAKDOWN["evidence_pack"],
@@ -643,6 +649,131 @@ def test_personnel_compare_insufficient_flags_browser_misattribution():
     assert _personnel_compare_reply_insufficient(BROWSER_FAIL_HERMES, user_query=PERSONNEL_QUERY)
 
 
+def test_personnel_compare_sufficient_with_chinese_entity_names(monkeypatch):
+    """中文实问成稿用「YYCQ/可比公司A」不得被判 insufficient（别名归一后仍须认）。"""
+    from backend.services.agent_kb_supplemental import _personnel_compare_reply_insufficient
+    from backend.services.kb_compare_entities import clear_compare_entity_cache
+
+    monkeypatch.setenv("KB_COMPARE_ENTITY_PRIMARY_ALIASES", "YYCQ")
+    monkeypatch.setenv("KB_COMPARE_ENTITY_PEER_ALIASES", "可比公司A")
+    monkeypatch.setenv("KB_COMPARE_ENTITY_EXTRA_MARKERS", "YYCQ,可比公司A")
+    clear_compare_entity_cache()
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    good = (
+        "## YYCQ vs 可比公司A · 2025 人员结构\n\n"
+        "### 人员结构对照\n\n"
+        "| 职能归属 | 可比公司A | YYCQ |\n"
+        "| --- | --- | --- |\n"
+        "| 研发 | 1378 人 | 70 人 |\n"
+        "| 销售 | 946 人 | 证据未覆盖 |\n"
+        "| 运营 | 242 人 | 61 人 |\n\n"
+        "### 对比分析\n"
+        "可比公司A研发规模显著大于YYCQ；口径不同不可直接比总人数。\n"
+    )
+    assert not _personnel_compare_reply_insufficient(good, user_query=q)
+
+
+def test_pick_personnel_rejects_core_metric_synth_for_structured():
+    """Hermes 中断后本地 synth「核心指标对比+推算」不得压过结构化人员对照。"""
+    from backend.services.agent_kb_supplemental import pick_personnel_compare_final_reply
+
+    synth = (
+        "### 核心指标对比表\n"
+        "| 指标 | 可比公司A | YYCQ |\n"
+        "| 员工总数 | 3138 | 153 |\n"
+        "根据推算，YYCQ合计 153（61+33.15+70+45.85），研发占比约45.75%。\n"
+    )
+    prefetch = {"ok": True, "citations": [{"doc_id": "d1"}], "evidence_pack": {"task_type": "compare"}}
+    with patch(
+        "backend.services.kb_ask_mcp_reply.personnel_compare_reply_from_prefetch",
+        return_value=GOOD_EXCERPT,
+    ):
+        final, adopted, reason = pick_personnel_compare_final_reply(
+            hermes_reply="",
+            synth_reply=synth,
+            excerpt_reply=None,
+            user_query=PERSONNEL_QUERY,
+            agent_route=AgentRoute.hermes_full,
+            prefetch_result=prefetch,
+        )
+    assert adopted is True
+    assert reason == "personnel_structured_report"
+    assert "人员结构对照" in final
+    assert "核心指标对比" not in final
+    assert "推算" not in final
+    assert "153" not in final
+
+
+def test_tier2_error_recovery_personnel_skips_llm_synth_when_structured_ok(monkeypatch):
+    """stall/error recovery：native 深度无 Hermes 稿时禁止 OG 节选/本地推算顶替。"""
+    from backend.config import settings
+    from backend.services.agent_kb_supplemental import (
+        HERMES_INCOMPLETE_REPLY,
+        iter_tier2_hermes_error_recovery_events,
+    )
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", True)
+    prefetch = {
+        "ok": True,
+        "citations": [{"doc_id": "d1", "excerpt": "研发人员 1,378"}],
+        "evidence_pack": {"task_type": "compare", "coverage_score": 0.9},
+        "reply": "",
+    }
+    synth_calls: list[str] = []
+
+    def _fake_synth(**kwargs):
+        synth_calls.append("called")
+        return {
+            "reply": "### 核心指标对比\n根据推算合计153人。\n",
+            "citations": [],
+            "llm_model": "qwen3.6-35b-apex",
+            "synthesis": "local_llm",
+        }
+
+    with (
+        patch(
+            "backend.services.agent_kb_supplemental.run_supplemental_kb_asks",
+            return_value=(prefetch, []),
+        ),
+        patch(
+            "backend.services.kb_ask_mcp_reply.personnel_compare_reply_from_prefetch",
+            return_value=GOOD_EXCERPT,
+        ),
+        patch(
+            "backend.services.agent_kb_prefetch.synthesize_kb_reply",
+            side_effect=_fake_synth,
+        ),
+    ):
+        evts = list(
+            iter_tier2_hermes_error_recovery_events(
+                user_token="tok",
+                tenant_id="tenant1",
+                user_query=PERSONNEL_QUERY,
+                prefetch_result=prefetch,
+                prefetch_tool_calls=[],
+                kb_scope={"selected_folder_ids": ["f1"]},
+                attached_doc_ids=None,
+                fixtures={"tenant_id": "tenant1"},
+                agent_route=AgentRoute.hermes_full,
+                enabled_skills=None,
+                model=None,
+                error_code="hermes_stall",
+            )
+        )
+    done = [e for e in evts if e.get("type") == "done"][-1]
+    assert done.get("reply") == HERMES_INCOMPLETE_REPLY
+    assert done.get("reply_source") in (
+        "hermes",
+        "hermes_incomplete",
+        "orientg_mcp_coerce",
+    )
+    assert "推算" not in (done.get("reply") or "")
+    assert "核心指标对比" not in (done.get("reply") or "")
+    assert synth_calls == []
+    assert GOOD_EXCERPT not in (done.get("reply") or "")
+
+
 def test_needs_supplemental_on_browser_misattributed_hermes(monkeypatch):
     from backend.config import settings
 
@@ -834,6 +965,56 @@ def test_apply_personnel_structured_final_gate_skips_already_structured():
     )
     assert applied is False
     assert out == STRUCTURED_REPLY
+
+
+def test_structured_gate_does_not_keep_139_misattr_core_hermes(monkeypatch):
+    """有 1378/70 锚点也不得因 hermes_has_core 放行 139/22.6 倍误归因稿。"""
+    from backend.config import settings
+    from backend.services.agent_kb_supplemental import apply_personnel_structured_final_gate
+    from backend.services.kb_ask_mcp_reply import personnel_compare_reply_misattributed
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", True)
+    bad = (
+        "### 人员结构对照\n"
+        "| 职能归属 | 可比公司A | YYCQ |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| 销售 | 946 | 10 |\n"
+        "| 运营 | 242 | 61 |\n"
+        "| 合计 | 3,138 | 139 |\n"
+        "### 对比分析\n"
+        "可比公司A3,138人，YYCQ139人，约为22.6倍。\n"
+    )
+    assert personnel_compare_reply_misattributed(bad, user_query=PERSONNEL_QUERY)
+    out, applied = apply_personnel_structured_final_gate(
+        bad,
+        prefetch_result={
+            "ok": True,
+            "citations": [{"doc_id": "d1"}],
+            "evidence_excerpts": [
+                {
+                    "entity": "可比公司A",
+                    "excerpt": (
+                        "研发人员数量 1,378\n销售人员 946\n运营人员 242\n"
+                        "在职员工的数量合计 3,138"
+                    ),
+                },
+                {
+                    "entity": "YYCQ",
+                    "excerpt": "研发 70.00 运营 61.00 管理 33.15 支持 45.85",
+                },
+            ],
+            "evidence_pack": {"task_type": "personnel_compare", "coverage_score": 0.9},
+        },
+        user_query=PERSONNEL_QUERY,
+        tenant_id="tenant1",
+        fixtures={"tenant_id": "tenant1"},
+    )
+    assert "22.6" not in out
+    assert not re.search(r"YYCQ[^\n]{0,40}139", out)
+    assert "139" not in out or "分项" in out
+    # 纠偏后不得仍是误归因；A3 优先 coerce（applied=False）而非门禁整页
+    assert not personnel_compare_reply_misattributed(out, user_query=PERSONNEL_QUERY)
 
 
 REVENUE_QUERY = "可比公司E2025年与2024年营业收入对比及变动说明"

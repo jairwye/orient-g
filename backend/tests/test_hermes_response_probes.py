@@ -32,6 +32,11 @@ BAD_EVT = """
 是否需要我先上传相关年报？
 """
 
+PERMISSION_DENIED_EVT = """
+知识库当前权限受限，无法检索YYCQ与可比公司A的人员结构数据。
+我将尝试通过 web 搜索补充公开信息。
+"""
+
 
 def test_classify_kb_empty_hallucination():
     c = classify_hermes_response(BAD_EVT, user_query=PERSONNEL_Q)
@@ -40,11 +45,55 @@ def test_classify_kb_empty_hallucination():
     assert c["acceptable_personnel_final"] is False
 
 
+def test_classify_kb_permission_denied_hallucination():
+    """手测回归：「知识库当前权限受限，无法检索」须判为 KB 空转/拒答话术。"""
+    c = classify_hermes_response(PERMISSION_DENIED_EVT, user_query=PERSONNEL_Q)
+    assert "permission_denied" in c["tags"] or "kb_empty_hallucination" in c["tags"]
+    assert c["acceptable_personnel_final"] is False
+    score = hermes_personnel_compare_quality_score(PERMISSION_DENIED_EVT, user_query=PERSONNEL_Q)
+    assert score < 30
+
+
 def test_classify_good_personnel_draft():
     c = classify_hermes_response(GOOD_DRAFT, user_query=PERSONNEL_Q)
     assert "personnel_structure_table" in c["tags"]
     assert "kb_empty_hallucination" not in c["tags"]
     assert c["acceptable_personnel_final"] is True
+
+
+def test_classify_let_me_first_process_draft_not_final():
+    """手测假绿：Let me first retrieve… + 核证补缺计划 ≠ 可验收终稿。"""
+    from backend.services.hermes_response_analysis import (
+        hermes_reply_has_substantive_draft,
+        hermes_reply_is_user_facing_final,
+    )
+
+    draft = (
+        "Let me first retrieve personnel data via orientg_kb_ask.\n"
+        "evidence_sufficient=false\n核证补缺计划：verification_queries 若干。\n"
+        "next_action=verify_gap_then_write_final\n"
+    )
+    c = classify_hermes_response(draft, user_query=PERSONNEL_Q)
+    assert "english_planning" in c["tags"] or "process_draft" in c["tags"]
+    assert c["acceptable_personnel_final"] is False
+    assert not hermes_reply_is_user_facing_final(draft, user_query=PERSONNEL_Q)
+    # 纯英文 planning 无数字 → 不算实质过程稿（仍允许真·零 MCP 重试）
+    assert not hermes_reply_has_substantive_draft(draft, user_query=PERSONNEL_Q)
+
+
+def test_substantive_process_draft_with_evidence_numbers():
+    """含证据数字的核证过程稿：非 user-facing，但是实质稿（禁假重试）。"""
+    from backend.services.hermes_response_analysis import (
+        hermes_reply_has_substantive_draft,
+        hermes_reply_is_user_facing_final,
+    )
+
+    draft = (
+        "首轮取证完成。可比公司A研发人员1378人，YYCQ70人。"
+        "正在做核证补缺计划后撰写终稿。"
+    )
+    assert not hermes_reply_is_user_facing_final(draft, user_query=PERSONNEL_Q)
+    assert hermes_reply_has_substantive_draft(draft, user_query=PERSONNEL_Q)
 
 
 def test_quality_score_prefers_draft_over_hallucination_evt():
@@ -151,6 +200,31 @@ def test_native_payload_includes_entity_hints():
     assert payload.get("entity_hints")
     assert payload.get("kb_status", {}).get("empty") is False
     assert "YYCQ" in str(payload.get("entity_hints"))
+
+
+def test_entity_hints_map_user_aliases(monkeypatch):
+    from backend.services import kb_compare_entities as ce
+    from backend.services.kb_ask_mcp_agent_native import build_agent_payload
+
+    monkeypatch.setenv("KB_COMPARE_ENTITY_PRIMARY_ALIASES", "YYCQ")
+    monkeypatch.setenv("KB_COMPARE_ENTITY_PEER_ALIASES", "可比公司A")
+    monkeypatch.setenv("KB_COMPARE_ENTITY_EXTRA_MARKERS", "YYCQ,可比公司A")
+    ce.clear_compare_entity_cache()
+    try:
+        payload = build_agent_payload(
+            query="对比分析YYCQ和可比公司A25年的人员结构",
+            excerpts=[
+                {"entity": "可比公司A", "doc_id": "ud_a", "excerpt": "研发 1378 946 242"},
+                {"entity": "YYCQ", "doc_id": "ud_b", "excerpt": "研发 70 运营 61"},
+            ],
+            citations=[{"doc_id": "ud_a"}, {"doc_id": "ud_b"}],
+        )
+        blob = str(payload.get("entity_hints"))
+        assert "即用户所称可比公司A" in blob or "可比公司A" in blob
+        assert "即用户所称YYCQ" in blob or "YYCQ" in blob
+        assert "禁止把" in blob or "展示" in blob
+    finally:
+        ce.clear_compare_entity_cache()
 
 
 def test_native_sufficient_accepts_structured_short_draft():

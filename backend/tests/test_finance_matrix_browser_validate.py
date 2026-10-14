@@ -10,6 +10,36 @@ sys.path.insert(0, str(ROOT / "backend" / "scripts"))
 from finance_matrix_browser_validate import validate_row  # noqa: E402
 
 
+def test_validate_row_uq_available_for_non_note_breakdown_fallback():
+    """非 note 行在 narrative 回退分支须能读到 uq（曾 UnboundLocalError）。"""
+    head = (
+        "构成分项如下：\n"
+        "| 项目 | 金额 |\n| --- | --- |\n"
+        "| A | 1,234,567.89 |\n| B | 2,345,678.90 |\n"
+        "| C | 3,456,789.01 |\n| D | 4,567,890.12 |\n"
+    )
+    row = validate_row(
+        {
+            "category": "is",
+            "subject": "利润表-研发",
+            "mode": "fast",
+            "query": "说明可比E研发支出构成分项明细及变动原因",
+            "tier_line": "执行过程(Tier 0（本地证据综合） · 标准 · Tier 0)",
+            "citations": 4,
+            "notes": "unit",
+            "extract": {
+                "hasMoney": True,
+                "honestMissing": False,
+                "head": head,
+                "len": len(head),
+                "streamFail": False,
+            },
+        }
+    )
+    assert "ok" in row
+    assert row["checks"].get("narrative_change_ok") is not None
+
+
 def test_narrative_ok_when_partial_reason_in_parenthetical():
     head = (
         "结论：研发费用减少。\n说明：\n"
@@ -296,7 +326,8 @@ GOOD_PERSONNEL_EXCERPT = (
     "| 运营 | 242 人 | 61 人 |\n"
     "| 管理 | 36 人 | 33.15 人 |\n"
     "| 支持 | 312 人 | 45.85 人 |\n"
-    "| 销售 | 946 人 | 证据未覆盖 |\n\n"
+    "| 销售 | 946 人 | 证据未覆盖 |\n"
+    "| **分项合计** | — | **210 人**（excel 四项加总） |\n\n"
     "### 对比分析\n\n"
     "- **结构差异**：YYCQ为 excel 职能四分项；可比公司A为年报员工专节。\n"
     "- **口径差异**：两侧披露口径不同，不可直接混比总人数。\n"
@@ -319,6 +350,10 @@ def _personnel_row(head: str, *, honest: bool = False) -> dict:
         "orientg_kb_ask_calls": 3,
         "hermes_kb_ask_calls": 2,
         "gateway_kb_ask_calls": 1,
+        "hermes_mcp_retry_count": 0,
+        "reply_source": "hermes",
+        "structured_gate_applied": False,
+        "kb_supplemental": False,
         "extract": {
             "hasMoney": False,
             "honestMissing": honest,
@@ -349,8 +384,11 @@ def test_personnel_compare_excerpt_passes_validate():
         hermes_only_kb_ask_calls=2,
         hermes_mcp_retry_count=0,
         user_query=PERSONNEL_QUERY,
+        reply_source="hermes",
+        structured_gate_applied=False,
+        kb_supplemental=False,
     )
-    assert ok is True
+    assert ok is True, checks
     assert checks.get("sanqi_roles_in_table_ok") is True
     row = validate_row(_personnel_row(GOOD_PERSONNEL_EXCERPT))
     assert row["ok"] is True
@@ -555,7 +593,8 @@ def test_personnel_structured_footer_cite_not_inline_violation():
         "| 研发 | 1378 人 | 70 人 |\n"
         "| 运营 | 242 人 | 61 人 |\n"
         "| 销售 | 946 人 | 证据未覆盖 |\n"
-        "| 管理 | 36 人 | 33.15 人 |\n\n"
+        "| 管理 | 36 人 | 33.15 人 |\n"
+        "| **分项合计** | — | **210 人** |\n\n"
         "### 对比分析\n\n"
         "口径差异：不可直接混比。\n\n"
         "引用说明\n"

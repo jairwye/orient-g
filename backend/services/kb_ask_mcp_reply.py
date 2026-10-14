@@ -167,6 +167,46 @@ def _folder_label_entity_hint(label: str) -> str:
     return ""
 
 
+def _entity_from_personnel_chunk_content(text: str, entities: list[str]) -> str:
+    """正文无公司名、无 folder 时：按人员专节特征归属（禁把 1378 挂到 YYCQ）。"""
+    from backend.services.kb_compare_entities import PEER_ENTITY, PRIMARY_ENTITY, is_peer_text, is_primary_text
+
+    t = (text or "").strip()
+    if not t or not entities:
+        return ""
+    peer_hit = False
+    primary_hit = False
+    if re.search(r"1\.1信息-人员", t) and re.search(r"70\.00|\|\s*70\b|研发\s*70|运营\s*61", t):
+        primary_hit = True
+    if re.search(r"研发人员情况|研发人员数量", t) and re.search(r"1[,，]?378|1[,，]?066", t):
+        peer_hit = True
+    if re.search(r"销售人员|运营人员|专业构成及教育程度|在职员工的数量合计", t) and re.search(
+        r"946|242|3[,，]?138", t
+    ):
+        peer_hit = True
+    # 同时命中时以专节优先级：年报大厂锚点优先 peer，excel 四分项优先 primary
+    if peer_hit and primary_hit:
+        if re.search(r"1\.1信息-人员", t) and not re.search(r"1[,，]?378|946|3[,，]?138", t):
+            peer_hit = False
+        else:
+            primary_hit = False
+    want = ""
+    if peer_hit:
+        want = PEER_ENTITY
+    elif primary_hit:
+        want = PRIMARY_ENTITY
+    if not want:
+        return ""
+    for ent in entities:
+        if ent == want or _entity_matches_text(ent, want) or _entity_matches_text(want, ent):
+            return ent
+        if want == PEER_ENTITY and is_peer_text(ent):
+            return ent
+        if want == PRIMARY_ENTITY and is_primary_text(ent):
+            return ent
+    return ""
+
+
 def _entity_from_folder_label(
     doc_id: str,
     entities: list[str],
@@ -423,7 +463,13 @@ def build_personnel_compare_excerpts(
                             txt = str(ch.get("text") or "")
         if not txt:
             continue
+        if is_foreign_small_headcount_chunk(txt):
+            continue
         folder_ent = _entity_from_folder_label(did, entities, doc_folder_labels)
+        content_ent = ""
+        if not folder_ent:
+            content_ent = _entity_from_personnel_chunk_content(txt, entities)
+        bound_ent = folder_ent or content_ent
         for ent in entities:
             sc = _personnel_chunk_score(
                 txt,
@@ -433,10 +479,12 @@ def build_personnel_compare_excerpts(
             )
             if sc < 0:
                 continue
-            if folder_ent and ent != folder_ent:
+            if bound_ent and ent != bound_ent:
                 continue
-            if not folder_ent and not _entity_matches_citation(ent, txt, did, doc_folder_labels):
+            if not bound_ent and not _entity_matches_citation(ent, txt, did, doc_folder_labels):
                 continue
+            if content_ent and ent == content_ent:
+                sc += 120.0
             prev = scored_by_ent.get(ent)
             if prev is None or sc > prev[0]:
                 scored_by_ent[ent] = (sc, c, txt)
@@ -514,7 +562,17 @@ def personnel_excerpt_reply_is_low_quality(reply: str) -> bool:
 
 def personnel_compare_reply_misattributed(reply: str, *, user_query: str) -> bool:
     """人员横比：Hermes 误称可比公司A无数据、或把可比公司A研发规模挂到YYCQ。"""
-    from backend.services.kb_retrieval_plan import query_wants_personnel_structure
+    from backend.services.kb_retrieval_plan import (
+        extract_query_entity_phrases,
+        query_wants_personnel_structure,
+    )
+    from backend.services.kb_compare_entities import (
+        PEER_ENTITY,
+        PRIMARY_ENTITY,
+        is_peer_text,
+        is_primary_text,
+        primary_aliases,
+    )
 
     if not query_wants_personnel_structure(user_query):
         return False
@@ -530,14 +588,40 @@ def personnel_compare_reply_misattributed(reply: str, *, user_query: str) -> boo
         return True
     if re.search(r"95\s*人\s*vs\s*1[,，]?378", h, re.I):
         return True
-    # YYCQ侧被挂上 1378：同句内「YYCQ…1378」且中间无「可比公司A」才算误植
-    for m in re.finditer(r"YYCQ[^\n]{0,200}1[,，]?378", h, re.I):
-        if "可比公司A" not in m.group(0):
+    # 本公司侧被挂上 1378：同句内「本公司侧…1378」且中间无「可比公司A」才算误植
+    primary_1378 = "|".join(
+        re.escape(x) for x in ("YYCQ", PRIMARY_ENTITY, *primary_aliases()[:8]) if x
+    ) or "YYCQ"
+    for m in re.finditer(rf"(?:{primary_1378})[^\n]{{0,200}}1[,，]?378", h, re.I):
+        if "可比公司A" not in m.group(0) and PEER_ENTITY not in m.group(0):
             return True
-    for m in re.finditer(r"1[,，]?378[^\n]{0,120}YYCQ", h, re.I):
+    for m in re.finditer(rf"1[,，]?378[^\n]{{0,120}}(?:{primary_1378})", h, re.I):
         span = m.group(0)
-        if "可比公司A" not in span and not re.search(r"\|\s*1[,，]?378[^\n|]{0,20}\|\s*\d", span):
+        if (
+            "可比公司A" not in span
+            and PEER_ENTITY not in span
+            and not re.search(r"\|\s*1[,，]?378[^\n|]{0,20}\|\s*\d", span)
+        ):
             return True
+    # 实体对调：本公司侧挂 PeerA 大厂规模(3138/946)，可比公司A 挂华清级 139/95
+    if re.search(
+        rf"(?:{primary_1378})[^\n]{{0,120}}(?:3[,，]?138|946)",
+        h,
+        re.I,
+    ) and re.search(
+        r"可比公司A[^\n]{0,120}(?:139|95\s*人)",
+        h,
+        re.I,
+    ):
+        return True
+    if re.search(r"22\.6\s*倍|约为YYCQ的\d+|139人的22", h):
+        return True
+    # 对照表：可比公司A列写 139/95 且 YYCQ 列写 3138/946
+    if re.search(
+        r"\|\s*(?:销售|研发)[^\n|]*\|\s*(?:139|95|10)\s*[人|][^\n|]*\|\s*(?:3[,，]?138|946|1[,，]?066)",
+        h,
+    ):
+        return True
     if re.search(
         r"YYCQ[^\n]{0,120}疑似归属其他主体|"
         r"1[,，]?378[^\n]{0,80}不可能|误植为.*可比公司A|可比公司A等.*数据误植",
@@ -545,24 +629,67 @@ def personnel_compare_reply_misattributed(reply: str, *, user_query: str) -> boo
         re.I,
     ):
         return True
-    # Hermes 把可比公司E/小厂在职员工（139/95）误挂到YYCQ，与 excel 分项 70 矛盾
-    if re.search(r"YYCQ[^\n]{0,500}", h, re.I) and re.search(
-        r"期末(?:员工总数|139)|员工总数139|139\s*人|技术人员95|研发[/／]技术人员占比极高",
-        h,
-        re.I,
-    ):
-        if re.search(r"1\.1信息-人员|研发70|70\.00|\|\s*70", h, re.I):
-            return True
+
+    primary_labels: list[str] = []
+    for lab in (PRIMARY_ENTITY, *primary_aliases(), *extract_query_entity_phrases(user_query)):
+        s = (lab or "").strip()
+        if not s:
+            continue
+        # 无 env 别名时，问句第二主体（如「…互娱」）不得计入本公司侧
+        if is_peer_text(s) or s == PEER_ENTITY:
+            continue
+        if re.search(r"可比公司A|PeerA", s, re.I) and not is_primary_text(s):
+            continue
+        if s not in primary_labels:
+            primary_labels.append(s)
+
+    has_excel_yycq = bool(re.search(r"1\.1信息-人员|研发70|70\.00|\|\s*70\b", h, re.I))
+    foreign_scale = bool(
+        re.search(
+            r"期末(?:在职)?员工总数|期末员工总计|员工总数139|技术人员95|研发[/／]技术人员占比极高|"
+            r"员工仅\s*139|员工总数[^\n|]{0,24}139\s*人|在职员工[^\n]{0,24}139|"
+            r"员工总计[^\n|]{0,24}139|约\s*139(?:\s*[-~～至到]\s*\d+)?\s*人",
+            h,
+            re.I,
+        )
+    )
+    # Hermes 把可比公司E/小厂在职员工（139/95）误挂到本公司侧，与 excel 分项 70 矛盾
+    if foreign_scale and (has_excel_yycq or re.search(r"70人|95人", h)):
+        if any(re.search(re.escape(lab), h, re.I) for lab in primary_labels):
+            # 允许「勿与分项混比 / 误挂」类澄清句，其余一律误归因
+            from backend.services.kb_compare_entities import primary_match_re
+
+            if not re.search(
+                rf"勿与分项混比|误挂|不是(?:{primary_match_re()})|勿采信.{{0,12}}139",
+                h,
+                re.I,
+            ):
+                return True
+    from backend.services.kb_compare_entities import peer_match_re, primary_match_re
+
+    _prim = primary_match_re()
     if re.search(r"证据中代号[「\"']?可比公司E", h) and re.search(
-        r"YYCQ[^\n]{0,200}(?:139|95)\s*人",
+        rf"(?:{_prim})[^\n]{{0,200}}(?:139|95)\s*人",
         h,
         re.I,
     ):
         return True
-    if re.search(r"核心指标对照", h) and not re.search(r"人员结构对照", h):
+    # 本公司侧表内写 95/139，或结论「约139」挂本公司
+    if re.search(
+        rf"(?:{_prim})[^\n]{{0,80}}约\s*139|"
+        rf"(?:{_prim}).{{0,160}}期末员工总计\s*139|"
+        r"研发人员\t95|"
+        r"\|\s*研发[^\n|]*\|\s*[^\n|]*\|\s*95\s*人",
+        h,
+        re.I | re.S,
+    ):
+        return True
+    if re.search(r"核心指标对照|核心指标对比", h) and not re.search(r"人员结构对照", h):
         from backend.services.personnel_compare_report import personnel_excerpt_dump_only
 
-        if personnel_excerpt_dump_only(h) or not re.search(r"可比公司A", h):
+        if personnel_excerpt_dump_only(h) or not re.search(peer_match_re(), h, re.I):
+            return True
+        if re.search(r"\|(?:员工总数|在职员工总数)\|[^|\n]*\|[^|\n]*139", h):
             return True
     if re.search(r"excel[^|\n]{0,48}研发[^|\n]{0,24}\|\s*1\s*\|", h, re.I):
         return True
@@ -571,12 +698,43 @@ def personnel_compare_reply_misattributed(reply: str, *, user_query: str) -> boo
     return False
 
 
+def is_foreign_small_headcount_chunk(text: str) -> bool:
+    """华清/可比公司E 等「在职 139 / 技术 95」切块，不得作为本公司人员主证据。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.search(r"1\.1信息-人员", t) and re.search(r"70\.00|\|\s*70\b|研发\s*70", t):
+        return False
+    if re.search(r"销售人员|运营人员|专业构成及教育程度", t) and re.search(
+        r"946|242|3[,，]?138", t
+    ):
+        return False
+    if re.search(r"研发人员情况|研发人员数量", t) and re.search(r"1[,，]?378|1[,，]?066", t):
+        return False
+    return bool(
+        re.search(
+            r"期末在职员工总数[^\n]{0,40}139|在职员工总数[^\n]{0,24}139|"
+            r"技术人员[：:\s]*95|员工仅\s*139|"
+            r"(?<![0-9])139\s*人(?![0-9]).{0,40}(?:较期初|减少\s*154)",
+            t,
+            re.I | re.S,
+        )
+    )
+
+
 def personnel_compare_excerpt_is_valid(excerpt: str, *, user_query: str) -> bool:
     from backend.services.kb_retrieval_plan import query_wants_personnel_structure
 
     if not query_wants_personnel_structure(user_query):
         return False
     from backend.services.personnel_compare_report import personnel_excerpt_dump_only
+    from backend.services.kb_compare_entities import (
+        present_entity_label,
+        primary_aliases,
+        peer_aliases,
+        is_primary_text,
+        is_peer_text,
+    )
 
     h = (excerpt or "").strip()
     if not h or personnel_excerpt_reply_is_low_quality(h):
@@ -584,9 +742,17 @@ def personnel_compare_excerpt_is_valid(excerpt: str, *, user_query: str) -> bool
     entities = _personnel_entities(user_query)
     if len(entities) >= 2:
         for ent in entities[:2]:
-            if ent not in h and not re.search(re.escape(ent[:2]), h):
+            labs = [ent, present_entity_label(ent, user_query)]
+            if is_primary_text(ent) or ent == "YYCQ":
+                labs.extend(primary_aliases()[:8])
+            if is_peer_text(ent) or "可比公司A" in ent:
+                labs.extend(peer_aliases()[:8])
+            if not any(lab and (lab in h or (len(lab) >= 2 and lab[:2] in h)) for lab in labs):
                 return False
-    elif not re.search(r"可比公司A", h) or not re.search(r"YYCQ", h, re.I):
+    elif not (
+        (any(a and a in h for a in peer_aliases()[:8]))
+        and (any(a and a in h for a in primary_aliases()[:8]))
+    ):
         return False
     from backend.services.personnel_compare_report import _STRUCTURE_TABLE_TITLE
 
@@ -699,6 +865,30 @@ def execute_kb_subquery_ask(
     return personnel_structure_ask_results(_ask, sub_q, max_subqueries=cap)
 
 
+def orientg_kb_ask_denied_hermes_reply(reason: str) -> str:
+    """MCP denied 时给 Hermes 的可读文案：禁止诱导「权限受限」，指向 orientg_kb_ask。"""
+    r = (reason or "denied").strip()
+    scope_empty = "scope empty" in r.lower() or r in (
+        "doc allowed scope empty",
+        "table allowed scope empty",
+    )
+    if scope_empty:
+        return (
+            f"orientg_kb_ask 调用未完成（{r}）。"
+            "这通常表示本轮未带上用户会话的文档/文件夹范围，**不是**用户 ACL 被拒。"
+            "请勿向用户叙述「无法检索/无权限」或据此给出空结论；勿改走 web/memory。"
+            "请仅用参数 query（中文）+ hermes_session_key 重试 mcp__orientg__orientg_kb_ask"
+            "（不要自造 selected_collection_ids）；"
+            "若仍失败，请明确请用户在界面选择知识库文件夹后再问。"
+        )
+    return (
+        f"orientg_kb_ask 调用未完成（{r}）。"
+        "请勿向用户声称知识库不可检索或 ACL 拒答；勿改走 web/memory。"
+        "请改用 MCP 工具 mcp__orientg__orientg_kb_ask（orientg_kb_ask），"
+        "参数 query（中文）+ hermes_session_key，根据返回证据节选成稿。"
+    )
+
+
 def build_kb_ask_mcp_reply(
     res: dict[str, Any],
     *,
@@ -739,6 +929,13 @@ def build_kb_ask_mcp_reply(
             excerpt_cap=max(800, int(excerpt_cap)),
             max_chunks_per_doc=2,
         )
+        if query_wants_personnel_structure(query):
+            # 人员横比：禁止把华清/可比公司E「在职139」混进无分主体回退节选
+            excerpts = [
+                ex
+                for ex in excerpts
+                if isinstance(ex, dict) and not is_foreign_small_headcount_chunk(str(ex.get("excerpt") or ""))
+            ]
     if not excerpts:
         tail = (
             "\n\n（检索命中引用元数据，但未能加载 chunk 正文；"
@@ -926,7 +1123,33 @@ def personnel_compare_reply_from_prefetch(
     if not report or personnel_excerpt_reply_is_low_quality(report):
         return None
     merged = report
-    if not re.search(r"可比公司A", merged) or not re.search(r"YYCQ", merged, re.I):
+    from backend.services.kb_compare_entities import (
+        PEER_ENTITY,
+        PRIMARY_ENTITY,
+        present_entity_label,
+        primary_aliases,
+        peer_aliases,
+    )
+
+    primary_ok = any(
+        re.search(re.escape(lab), merged, re.I)
+        for lab in (
+            PRIMARY_ENTITY,
+            present_entity_label(PRIMARY_ENTITY, user_query),
+            *primary_aliases()[:8],
+        )
+        if lab
+    )
+    peer_ok = any(
+        re.search(re.escape(lab), merged, re.I)
+        for lab in (
+            PEER_ENTITY,
+            present_entity_label(PEER_ENTITY, user_query),
+            *peer_aliases()[:8],
+        )
+        if lab
+    )
+    if not primary_ok or not peer_ok:
         return None
     if not re.search(r"人员|人数|研发人员|1\.1信息-人员|\d{2,4}", merged):
         return None

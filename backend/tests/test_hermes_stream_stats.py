@@ -61,7 +61,7 @@ def test_hermes_tool_progress_counts_hermes_native():
         s,
         {
             "type": "tool_progress",
-            "tool": "mcp_orientg_orientg_kb_ask",
+            "tool": "mcp__orientg__orientg_kb_ask",
             "status": "completed",
             "message": "kb query",
         },

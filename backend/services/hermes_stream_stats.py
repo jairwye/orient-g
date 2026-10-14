@@ -100,9 +100,16 @@ def bump_stream_event_stats(
         stats["tool_progress_events"] = int(stats.get("tool_progress_events") or 0) + 1
         if str(mapped.get("status") or "") != "completed":
             return
-        tool = str(mapped.get("tool") or "")
+        tool = str(mapped.get("tool") or mapped.get("name") or "")
         msg = str(mapped.get("message") or "")
-        is_kb = "orientg_kb_ask" in tool or "orientg_kb_ask" in msg or "kb_ask" in tool.lower()
+        # 兼容 mcp__orientg__orientg_kb_ask / mcp_orientg_orientg_kb_ask / orientg_kb_ask
+        tool_l = tool.lower()
+        is_kb = (
+            "orientg_kb_ask" in tool
+            or "orientg_kb_ask" in msg
+            or "kb_ask" in tool_l
+            or "orientg_kb" in tool_l
+        )
         if not is_kb:
             return
         if is_gateway_tool_event(mapped):
@@ -113,6 +120,10 @@ def bump_stream_event_stats(
     elif t == "tool_call" and mapped.get("name"):
         stats["tool_call_events"] = int(stats.get("tool_call_events") or 0) + 1
         name = str(mapped["name"])
-        if "orientg_kb" in name and not is_gateway_tool_event(mapped):
+        name_l = name.lower()
+        if (
+            ("orientg_kb" in name_l or "kb_ask" in name_l)
+            and not is_gateway_tool_event(mapped)
+        ):
             stats["hermes_orientg_kb_ask_calls"] = int(stats.get("hermes_orientg_kb_ask_calls") or 0) + 1
             _sync_total_kb_ask(stats)

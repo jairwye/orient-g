@@ -102,11 +102,17 @@ _INLINE_CITE_IN_ANSWER = re.compile(
 _PROCESS_IN_ANSWER = re.compile(
     r"用户要求|步骤：|让我(?:先|通过|验证)|我将尝试|预检索证据|"
     r"根据(?:已获取|检索结果|Evidence Pack| skill)|很明确了|直接成稿如下|"
-    r"Evidence Pack中缺少|让我再(?:次)?尝试",
+    r"Evidence Pack中缺少|让我再(?:次)?尝试|"
+    r"首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|"
+    r"evidence_sufficient|next_action\s*=|"
+    r"核证补缺|verification_queries|"
+    r"网关标记证据不充分|需要第二轮不同\s*query|"
+    r"MCP\s*优先重试|未调用\s*orientg_kb_ask",
     re.I,
 )
 _PROCESS_ORCH_EN = re.compile(
-    r"Let me (?:search|check|verify|try)|I need to find|The skill confirms|Looking at the Evidence Pack",
+    r"Let me (?:first\b|search|check|verify|try|retrieve)|"
+    r"I need to (?:find|retrieve)|The skill confirms|Looking at the Evidence Pack",
     re.I,
 )
 
@@ -319,9 +325,18 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
             re.search(r"orientg_kb_ask|\bud_[a-f0-9]{16,32}\b", body_no_suggest, re.I)
         )
     quality_text = _answer_body_for_quality(answer_text)
+    # 手测同路径：过程稿须在「用户可见原文」上判定，禁止先 strip 再假装无过程稿
     process_leak = bool(extract.get("processInAnswer"))
+    process_leak = process_leak or bool(_PROCESS_IN_ANSWER.search(answer_text))
+    process_leak = process_leak or bool(_PROCESS_ORCH_EN.search(answer_text))
     process_leak = process_leak or bool(_PROCESS_IN_ANSWER.search(quality_text))
     process_leak = process_leak or bool(_PROCESS_ORCH_EN.search(quality_text))
+    try:
+        from finance_matrix_personnel_validate import personnel_hand_path_dual_draft
+
+        process_leak = process_leak or personnel_hand_path_dual_draft(answer_text)
+    except Exception:
+        pass
     amount_ok = has_money or honest or (category == "bs" and honest)
     min_len_ok = text_len >= 120 or honest
 
@@ -366,7 +381,8 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
 
     from backend.services.kb_retrieval_plan import query_wants_change_reasons
 
-    wants_narrative = query_wants_change_reasons(str(row.get("query") or ""))
+    uq = str(row.get("query") or "")
+    wants_narrative = query_wants_change_reasons(uq)
     narrative_ok = True
     if wants_narrative and has_money and not honest:
         narrative_ok = bool(
@@ -395,18 +411,17 @@ def validate_row(row: dict[str, Any], *, kb_probe: dict[str, Any] | None = None)
 
     personnel_ok = True
     personnel_checks: dict[str, Any] = {}
-    uq = str(row.get("query") or "")
     from finance_matrix_personnel_validate import augment_validate_row_personnel
 
     if uq and re.search(r"人员|员工|在职|人效|headcount", uq, re.I):
         personnel_ok, personnel_checks = augment_validate_row_personnel(
             row, answer_text, honest=honest, kb_probe=kb_probe
         )
+        # 仅验收通过（或表结构/规格通过）时放宽金额/长度；不得仅凭 personnel_subject 标签放宽
         if not honest and (
             personnel_ok
             or personnel_checks.get("sanqi_roles_in_table_ok")
             or personnel_checks.get("personnel_spec_ok")
-            or personnel_checks.get("personnel_subject")
         ):
             amount_ok = True
             min_len_ok = text_len >= 30

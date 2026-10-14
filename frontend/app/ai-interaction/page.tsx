@@ -54,6 +54,7 @@ import {
   chatMessagesSnapshotEqual,
   hydrateChatMessage,
   mergeAssistantOnAgentDone,
+  salvageHermesDraftOnStreamFail,
   traceFromLegacyStreamStatus,
   upsertAgentToolTrace,
 } from "./agentTraceUtils";
@@ -1864,9 +1865,11 @@ export default function AiInteractionPage() {
         const copy = [...prev];
         const last = copy[copy.length - 1];
         if (last?.role === "assistant") {
+          const salvaged = salvageHermesDraftOnStreamFail(last.content, last.agentTrace);
           copy[copy.length - 1] = {
             ...last,
             content:
+              salvaged ||
               (last.content || "").trim() ||
               "流式连接失败或已中断。请点击「停止」后重试；若 Hermes 仍在消耗 token，可重启 Hermes Gateway。",
           };

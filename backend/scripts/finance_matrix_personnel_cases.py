@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, TypedDict
@@ -15,7 +16,18 @@ if str(_SCRIPTS) not in sys.path:
 
 from finance_matrix_cases import MODE_LABEL, TIER_EXPECT  # noqa: E402
 
-PERSONNEL_COMPARE_QUERY = "对比分析YYCQ和可比公司A25年的人员结构"
+
+def _env_alias_first(key: str, default: str) -> str:
+    raw = (os.environ.get(key) or "").strip()
+    if not raw:
+        return default
+    return raw.split(",")[0].strip() or default
+
+
+# 公开仓默认用占位代号；本地手测经 env 注入展示别名（勿把主体全称写进仓库）
+_PRIMARY = _env_alias_first("KB_COMPARE_ENTITY_PRIMARY_ALIASES", "YYCQ")
+_PEER = _env_alias_first("KB_COMPARE_ENTITY_PEER_ALIASES", "可比公司A")
+PERSONNEL_COMPARE_QUERY = f"对比分析{_PRIMARY}和{_PEER}25年的人员结构"
 
 
 class PersonnelCaseSpec(TypedDict, total=False):
@@ -96,7 +108,8 @@ PERSONNEL_CASE_SPECS: dict[str, PersonnelCaseSpec] = {
         "group": "A",
         "angle": "Tier0 本地结构化终稿；不依赖 Hermes 成稿",
         "tier_expect": "Tier 0",
-        "must_contain": ["人员结构对照", "946", "242", "1378", "70"],
+        "must_contain": ["人员结构对照", "946", "242", "1378", "70", _PRIMARY, _PEER, "分项合计"],
+        # 公开仓表头即 YYCQ/可比公司A；本地 env 别名展示名由 present_entity_label 覆盖，勿在此拒 canonical 表头
         "must_not_contain": ["139人的22.6倍", "Let me search", "分主体证据摘要"],
         "require_sanqi_roles": True,
         "require_core_table": True,
@@ -106,7 +119,7 @@ PERSONNEL_CASE_SPECS: dict[str, PersonnelCaseSpec] = {
         "group": "A",
         "angle": "Tier1 Hermes lite + Orient-G structured gate",
         "tier_expect": "Tier 1",
-        "must_contain": ["人员结构对照", "946", "242", "1378", "70"],
+        "must_contain": ["人员结构对照", "946", "242", "1378", "70", _PRIMARY, _PEER, "分项合计"],
         "must_not_contain": ["139人的22.6倍", "Let me search", "分主体证据摘要"],
         "require_sanqi_roles": True,
         "require_core_table": True,
@@ -120,15 +133,34 @@ PERSONNEL_CASE_SPECS: dict[str, PersonnelCaseSpec] = {
             "禁推算/推断；择优保住对照表；禁「成稿骨架」终稿"
         ),
         "tier_expect": "Tier 2",
-        "must_contain": ["人员结构对照", "946", "242", "1378", "70"],
+        "must_contain": [
+            "人员结构对照",
+            "946",
+            "242",
+            "1378",
+            "70",
+            _PRIMARY,
+            _PEER,
+            "分项合计",
+        ],
         "must_not_contain": [
             "139人的22.6倍",
             "Let me search",
+            "Let me first",
+            "核证补缺",
+            "verification_queries",
+            "evidence_sufficient=false",
             "分主体证据摘要",
             "推算",
             "请勿采信",
             "成稿骨架",
             "请原样采用下列数字",
+            "员工仅139",
+            "首轮取证",
+            "现在可以撰写终稿",
+            "第二轮核证",
+            "Orient-G门禁",
+            "MCP 优先重试",
         ],
         "require_sanqi_roles": True,
         "require_core_table": True,

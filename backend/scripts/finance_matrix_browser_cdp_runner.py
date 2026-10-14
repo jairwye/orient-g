@@ -56,7 +56,12 @@ _SESSION_TOKEN = ""
 
 
 def _finance_test_password() -> str:
-    return os.environ.get("ORIENTG_FINANCE_TEST_PASSWORD", "FinanceTest!2026")
+    pw = (os.environ.get("ORIENTG_FINANCE_TEST_PASSWORD") or "").strip()
+    if not pw:
+        raise SystemExit(
+            "Set ORIENTG_FINANCE_TEST_PASSWORD (no default credential in repo)."
+        )
+    return pw
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SCRIPTS))
@@ -567,7 +572,24 @@ def _poll_until_done(
         else:
             stable = 0
             last_len = cur_len
+        # 非人员：有 citations 且静默多轮，即使短正文也收束（避免 poll 永远 streamDone=false）
+        _personnel_q = bool(re.search(r"人员结构|人员横比|员工结构|人效", query, re.I))
         if (
+            not last.get("streamDone")
+            and not last.get("loading")
+            and not last.get("hermesStillRunning")
+            and not last.get("thinking")
+            and not _personnel_q
+            and int(last.get("citations") or 0) > 0
+            and cur_len >= 24
+            and cur_len == prev_stale_len
+        ):
+            stale_streak += 1
+            if stale_streak >= 8:
+                last["stale_partial"] = True
+                last["streamDone"] = True
+                return page, last
+        elif (
             not last.get("streamDone")
             and not last.get("loading")
             and not last.get("hermesStillRunning")
@@ -579,23 +601,39 @@ def _poll_until_done(
             stale_streak += 1
             head = str(ext.get("head") or "")
             stale_limit = 40 if mode == "deep" else 12
-            personnel_deep = mode == "deep" and re.search(r"对比|vs|人员结构", query, re.I)
+            # 仅人员问句才走人员 stale 延长；禁止「对比分析」费用题误入（曾卡死非人员 deep）
+            personnel_deep = mode == "deep" and _personnel_q
+            # 通用：对照表标题 + 分项数字（勿硬编码 1378/946/242/70）
             personnel_ready = bool(
                 re.search(r"人员结构对照", head)
-                and re.search(r"1378|1[,，]?378", head)
-                and re.search(r"946", head)
-                and re.search(r"242", head)
+                and re.search(r"(研发|运营|销售|管理).{0,24}\d{2,}", head)
+                and len(re.findall(r"\d{2,}", head)) >= 3
             )
             bad_personnel_draft = bool(
                 re.search(r"22\.6倍|14\.5倍|139人的22|139人.*22\.6|核心指标对比", head)
+                or re.search(r"约\s*\d{2,6}\s*人|\|\s*\*{0,2}约\s*\d{2,6}", head)
                 or (
-                    re.search(r"对比|人员结构", query, re.I)
+                    personnel_deep
                     and not re.search(r"人员结构对照", head)
                     and re.search(r"思考中|让我获取|让我整理", head)
+                )
+                or (
+                    re.search(r"人员结构对照", head)
+                    and re.search(
+                        r"(?:YYCQ|本公司)[^\n|]{0,40}(?:员工总计|员工合计|在职|员工总数)[^\n|]{0,24}(?:139|3,?138)|"
+                        r"\|\s*3,?138\s*\|\s*139\s*\|",
+                        head,
+                    )
                 )
             )
             if stale_streak >= stale_limit:
                 if personnel_deep and (not personnel_ready or bad_personnel_draft):
+                    stale_streak = max(0, stale_streak - 4)
+                elif (
+                    mode == "standard"
+                    and re.search(r"人员结构|人员横比", query, re.I)
+                ):
+                    # A2：人员横比标准档等后端 lite 收束+门闸，禁止 stale 抢过程稿
                     stale_streak = max(0, stale_streak - 4)
                 else:
                     last["stale_partial"] = True
@@ -605,6 +643,7 @@ def _poll_until_done(
             stale_streak = 0
         prev_stale_len = cur_len
         ext = last.get("extract") or {}
+        # 深度人员：通用对照表结构齐即可收束（禁止硬编码人数刷绿）
         if (
             not last.get("streamDone")
             and not last.get("loading")
@@ -612,11 +651,43 @@ def _poll_until_done(
             and not last.get("thinking")
             and mode == "deep"
             and cur_len >= 160
+            and re.search(r"人员结构|人员横比|员工结构", query, re.I)
             and re.search(r"人员结构对照", str(ext.get("head") or ""))
-            and re.search(r"1378|1[,，]?378", str(ext.get("head") or ""))
-            and re.search(r"70\s*人|70\.00", str(ext.get("head") or ""))
-            and re.search(r"946", str(ext.get("head") or ""))
-            and re.search(r"242", str(ext.get("head") or ""))
+            and re.search(r"(研发|运营|销售|管理).{0,24}\d{2,}", str(ext.get("head") or ""))
+            and len(re.findall(r"\d{2,}", str(ext.get("head") or ""))) >= 3
+        ):
+            last["streamDone"] = True
+            last["personnel_structured_salvage"] = True
+            return page, last
+        # 标准档：仅当过程稿已无错归属且锚点齐，且已稳定多轮，才允许 CDP salvage
+        # （避免抢在后端 misattribution/structured gate 之前用 139/22.6 错稿刷绿）
+        head_std = str(ext.get("head") or "")
+        std_personnel_ready = bool(
+            re.search(r"人员结构对照", head_std)
+            and re.search(r"1378|1[,，]?378", head_std)
+            and re.search(r"(?<!\d)70(?!\d)|70\.00", head_std)
+            and re.search(r"946", head_std)
+            and re.search(r"242", head_std)
+            and re.search(r"YYCQ|本公司", head_std)
+            and re.search(r"可比公司A|PeerA", head_std)
+            and not re.search(r"约\s*\d{2,6}\s*人|\|\s*\*{0,2}约\s*\d{2,6}", head_std)
+            and not re.search(r"22\.6倍|14\.5倍|139人的22", head_std)
+            and not re.search(
+                r"(?:YYCQ|本公司)[^\n|]{0,40}(?:员工总计|员工合计|在职)[^\n|]{0,24}139|"
+                r"\|\s*3,?138\s*\|\s*139\s*\|",
+                head_std,
+            )
+        )
+        if (
+            not last.get("streamDone")
+            and mode == "standard"
+            and not last.get("loading")
+            and not last.get("hermesStillRunning")
+            and not last.get("thinking")
+            and cur_len >= 400
+            and std_personnel_ready
+            and stable >= max(stable_need, 3)
+            and re.search(r"完成：Tier\s*1|Tier 1", str(last.get("tier_line") or ""))
         ):
             last["streamDone"] = True
             last["personnel_structured_salvage"] = True
@@ -634,9 +705,12 @@ def _poll_until_done(
                 last["streamDone"] = True
                 last["content_salvage"] = True
                 return page, last
+        # 单主体专节可 content salvage；人员横比标准档须等后端 lite 收束+门闸（勿抢过程稿）
+        personnel_compare_q = bool(re.search(r"对比|vs|人员结构", query, re.I))
         if (
             not last.get("streamDone")
             and mode in ("standard", "fast")
+            and not (mode == "standard" and personnel_compare_q)
             and not last.get("loading")
             and not last.get("hermesStillRunning")
             and cur_len >= 80
@@ -807,6 +881,10 @@ def _run_case_once(page: CdpPage, case: tuple[str, str, str, str], *, cdp_base: 
         notes += "; content_salvage"
     if poll.get("personnel_structured_salvage"):
         notes += "; personnel_structured_salvage"
+    if poll.get("personnel_content_salvage"):
+        notes += "; personnel_content_salvage"
+    if poll.get("stale_partial"):
+        notes += "; stale_partial"
     append = _append_row(merged, notes=notes, console_depth=depth_err, case=case)
     ok = bool(append.get("ok"))
     return page, {
@@ -829,15 +907,26 @@ def _retriable(result: dict[str, Any]) -> bool:
         extract = poll.get("extract") or {}
         if int(extract.get("len") or 0) < 200:
             return True
-    if result.get("stage") == "validate":
-        extract = poll.get("extract") or {}
+    extract = poll.get("extract") or {}
+    tier_line = str(poll.get("tier_line") or "")
+    head = str(extract.get("head") or "")
+    citations = int(poll.get("citations") or 0)
+    notes = str(poll.get("notes") or result.get("append", {}).get("notes") or "")
+    # 过程稿/未出 Tier 完成线/错归属：即便 streamDone 也须重测，勿把 CDP 抢收当终局
+    if result.get("stage") == "validate" and not result.get("ok"):
+        if re.search(r"^思考中|^同步中|加载中…?\s*$", head) or re.search(
+            r"约\s*\d{2,6}\s*人|22\.6倍|unsupported_speculation|hermes_misattribution",
+            head + str((result.get("append") or {}).get("checks") or {}),
+        ):
+            return True
+        if citations == 0 and not re.search(r"完成：Tier\s*[012]|Tier [012]", tier_line):
+            return True
+        if "personnel_content_salvage" in notes or "stale_partial" in notes:
+            if not re.search(r"完成：Tier\s*1", tier_line):
+                return True
         if poll.get("streamDone") and int(extract.get("len") or 0) >= 200:
             return False
     if not result.get("ok"):
-        extract = poll.get("extract") or {}
-        tier_line = str(poll.get("tier_line") or "")
-        head = str(extract.get("head") or "")
-        citations = int(poll.get("citations") or 0)
         if re.search(r"^思考中|^同步中", head):
             return True
         if citations == 0 and re.search(r"共 \d+ 步", tier_line) and not re.search(

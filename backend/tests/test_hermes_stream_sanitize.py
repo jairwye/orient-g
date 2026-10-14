@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from backend.services.hermes_stream_sanitize import (
     classify_hermes_stream_chunk,
     enforce_breakdown_compare_reply,
@@ -477,5 +479,229 @@ def test_reply_has_unsupported_speculation_detects_tuisuan():
     assert reply_has_unsupported_speculation("根据推算，销售约1200人。")
     assert reply_has_unsupported_speculation("可推断其销售规模更大。")
     assert reply_has_unsupported_speculation("可比公司A销售人员约1200人。")
+
+
+def test_finalize_personnel_strips_approx_headcount_cell_without_ren():
+    """对照表「约210」无「人」亦须剥离/改写，不得上屏。"""
+    from backend.services.hermes_stream_sanitize import (
+        finalize_agent_reply,
+        reply_has_unsupported_speculation,
+    )
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "### 人员结构对照\n"
+        "| 职能归属 | 可比公司A | YYCQ |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| 合计 | 3,138 | 约210 |\n\n"
+        "### 对比分析\n结构差异。\n"
+    )
+    assert reply_has_unsupported_speculation(raw)
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert "人员结构对照" in out
+    assert "约210" not in out
+    assert "70" in out
     assert reply_has_unsupported_speculation("销售人员~210人（推测）。")
     assert reply_has_unsupported_speculation("运营约～180人。")
+
+
+def test_finalize_personnel_strips_bold_approx_headcount_cell():
+    """A2 过程稿常见 `| **约210** |` 亦须剥离。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "## 人员结构对照\n"
+        "| 职能归属 | 可比公司A | YYCQ |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| **员工合计** | **3,138** | **约210** |\n\n"
+        "YYCQ约210人，可比公司A3,138人。\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=False)
+    assert "约210" not in out
+    assert "分项合计" in out or "210" in out
+    assert "人员结构对照" in out
+
+
+def test_finalize_personnel_cdp_a3_hand_fail_sample():
+    """2026-09-10 CDP A3：过程稿混入 + 叠名 + 员工总数混比 + 139 尾段。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "我需要先通过 Orient-G知识库获取两家公司的2025年人员结构数据。\n"
+        "首轮取证已完成，但 `evidence_sufficient=false`。根据网关要求，人员横比须至少2次MCP调用。"
+        "现在进行第二轮不同query的核证，补充可比公司A的完整职能结构数据。\n"
+        "两次MCP调用已完成，`next_action=write_final_answer_now`。现在根据证据撰写终稿。"
+        "#YYCQ vs可比公司A2025年人员结构对比分析\n"
+        "人员结构对照\n"
+        "职能归属\t可比公司A\tYYCQ\n"
+        "研发人员\t1,378人（占比43.91%）\t70人\n"
+        "销售人员\t946人\t证据未覆盖\n"
+        "运营人员\t242人\t61人\n"
+        "管理人员\t36人（行政）\t33人\n"
+        "其他\t教研115人、其他319人\t支持46人\n"
+        "员工总数\t3,138人\t140 人\n"
+        "对比分析\n"
+        "规模差异显著：可比公司A2025年末在职员工合计3,138人，YYCQ140 人"
+        "（研发70+管理33+运营61+支持46），前者约为后者的22倍量级。\n"
+        "可比公司A可比公司A（另一主体）\n"
+        "期末研发人员95人（期初231人），研发占比68.3%\n"
+        "员工总数139人（期初293人），\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert "evidence_sufficient" not in out
+    assert "next_action" not in out
+    assert "我需要先通过" not in out
+    assert "可比公司A可比公司A" not in out
+    assert "YYCQ（YYCQ）" not in out
+    assert "人员结构对照" in out
+    assert "可比公司A" in out and "YYCQ" in out
+    assert "分项合计" in out
+    assert not re.search(r"员工总数[^\n]{0,40}140", out)
+    assert "22倍" not in out and "22 倍" not in out
+    assert "139" not in out
+    assert "95人" not in out or "另一主体" not in out
+
+
+def test_finalize_personnel_strips_139_misattr_table_and_22_6x():
+    """CDP 复现：对照表合计挂 139 + 22.6 倍须展示层剥离。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "第二轮查询被拒绝。`next_action=write_final_answer_now`。现在撰写终稿：\n"
+        "人员结构对照\n"
+        "职能归属\t可比公司A（人）\tYYCQ（人）\n"
+        "研发人员\t1,378\t70\n"
+        "销售人员\t946\t10\n"
+        "运营人员\t242\t61\n"
+        "合计\t3,138\t139\n"
+        "对比分析\n"
+        "可比公司A员工总数3,138人，YYCQ139人，可比公司A约为YYCQ的22.6倍\n"
+        "口径说明：两侧口径不同。\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert "第二轮查询" not in out
+    assert "next_action" not in out
+    assert "人员结构对照" in out
+    assert "22.6" not in out
+    assert not re.search(r"YYCQ[^\n]{0,24}139", out)
+    assert "分项合计" in out
+    assert "946" in out and "70" in out
+
+
+def test_finalize_personnel_strips_approx_210_tuisuan_cell():
+    """表内「约210（推算）」须改分项合计，禁推算上屏。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "## 人员结构对照\n"
+        "|职能归属 |可比公司A |YYCQ |\n"
+        "|研发人员 |1,378 |70 |\n"
+        "|销售人员 |946 |证据未覆盖 |\n"
+        "|运营人员 |242 |61 |\n"
+        "|员工总数 |3,138 |约210（推算） |\n"
+        "##对比分析\n"
+        "YYCQ研发70人，规模差距约20倍。根据分项推算210人。\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert "约210" not in out
+    assert "推算" not in out
+    assert "分项合计" in out
+    assert "20倍" not in out
+
+
+def test_finalize_strips_english_and_unglues_numbered_sections():
+    """手测粘连样本：英文 Let me first、表/标题粘连、1.2.3. 与段落混杂。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "Let me first retrieve the personnel structure for both companies via orientg_kb_ask."
+        "##人员结构对照| 职能 | 可比公司A | YYCQ |\n"
+        "| --- | --- | --- |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| 销售 | 946 | 证据未覆盖 |\n"
+        "###对比分析1.规模对比三七远大于YYCQ。"
+        "2.结构差异研发占比不同。"
+        "3.口径说明年报与excel不同。"
+        "1.2.3.以上为三项分析。"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert not re.search(r"Let me first", out, re.I)
+    assert "orientg_kb_ask" not in out
+    assert "人员结构对照" in out
+    assert "| 研发 |" in out or "|研发|" in out
+    # 表与后续标题须有换行，不得整段挤一行
+    assert "\n" in out
+    assert re.search(r"对比分析", out)
+    assert re.search(r"(?:^|\n)#*\s*1[\.、]\s*规模", out, re.M) or re.search(
+        r"\n1[\.、]\s*规模", out
+    )
+    assert re.search(r"(?:^|\n)#*\s*2[\.、]\s*结构", out, re.M) or re.search(
+        r"\n2[\.、]\s*结构", out
+    )
+    # 残留「1.2.3.以上…」不得与分析段粘连可读性崩坏
+    assert not re.search(r"不同。1\.2\.3\.", out)
+    assert "1.2.3." not in out or re.search(r"\n1\.2\.3\.", out)
+
+
+def test_finalize_personnel_normalizes_tsv_table_mixed_pipe_subtotal():
+    """手测：TSV 对照表末行夹杂管道「分项合计」→ 并入同一 Markdown 表，无空行拆表。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "人员结构对照\n"
+        "职能归属\t可比公司A\tYYCQ\n"
+        "研发\t1378 人（占员工 43.91%）\t70 人\n"
+        "运营\t242 人\t61 人\n"
+        "管理\t36 人\t33.15 人\n"
+        "支持\t115 人\t45.85 人\n"
+        "销售\t946 人\t证据未覆盖\n"
+        "员工总数（年报）\t3138 人\t—\n"
+        "| 分项合计 | — | 210 人（excel 四项加总） |\n"
+        "*口径：可比公司A为年报节选；YYCQ为 excel 职能分项。*\n"
+        "对比分析\n两侧口径不同，不可直接比员工总数。\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert "人员结构对照" in out
+    assert "员工总数（年报）" in out
+    assert "分项合计" in out
+    assert "210" in out
+    # 本公司侧年报总数「—」为口径（无年报总数），不得把 139 填回
+    assert re.search(r"\|\s*员工总数（年报）\s*\|\s*3138[^\n|]*\|\s*—\s*\|", out)
+    assert re.search(r"\|\s*分项合计\s*\|\s*—\s*\|\s*[^\n|]*210", out)
+    # 员工总数与分项合计之间不得被空行拆成两张表
+    assert not re.search(
+        r"员工总数（年报）[^\n]*\n\s*\n\s*\|\s*分项合计",
+        out,
+    )
+    assert "139" not in out
+
+
+def test_finalize_personnel_pipe_headcount_keeps_pipe_rows():
+    """管道表员工总数拆行时须保持管道格式，不得半截 TSV。"""
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    q = "对比分析YYCQ和可比公司A25年的人员结构"
+    raw = (
+        "## 人员结构对照\n"
+        "| 职能归属 | 可比公司A | YYCQ |\n"
+        "| --- | --- | --- |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| 销售 | 946 | 证据未覆盖 |\n"
+        "| 运营 | 242 | 61 |\n"
+        "| 管理 | 36 | 33 |\n"
+        "| 支持 | 115 | 46 |\n"
+        "| 员工总数 | 3,138 | 210 |\n"
+        "对比分析：口径不同。\n"
+    )
+    out = finalize_agent_reply(raw, user_query=q, tier2_native=True)
+    assert re.search(r"\|\s*\*?\*?员工总数（年报）\*?\*?\s*\|", out)
+    assert re.search(r"\|\s*\*?\*?分项合计\*?\*?\s*\|", out)
+    # 拆行后不得出现「员工总数（年报）|3138|—」无前导管道的半截行
+    assert not re.search(r"(?m)^员工总数（年报）\|", out)
+    assert not re.search(r"(?m)^分项合计\|", out)

@@ -12,7 +12,11 @@ _RD_COUNT_RE = re.compile(
 )
 _RD_SHARE_RE = re.compile(r"研发人员(?:数量)?占比[^0-9]{0,16}(\d+(?:\.\d+)?)\s*%", re.I)
 _EXCEL_RD_RE = re.compile(r"研发[^\n|]{0,20}\|\s*(\d+(?:\.\d{2})?)", re.I)
-_HEADCOUNT_RE = re.compile(r"在职员工[^0-9]{0,20}(\d+)\s*人", re.I)
+_HEADCOUNT_RE = re.compile(
+    r"(?:在职员工的数量合计|期末在职员工总数|在职员工总数|员工总数)"
+    r"[^0-9]{0,24}(\d{1,3}(?:,\d{3})*|\d+)\s*人?",
+    re.I,
+)
 
 _NOISE_PAT = re.compile(
     r"连带责任保证|营业收入合计|货币资金|筹资活动|投资活动",
@@ -83,6 +87,17 @@ def _parse_excel_personnel_breakdown(text: str) -> dict[str, float]:
         m = re.match(r"^(运营|管理|研发|支持)\s*\|\s*(\d+(?:\.\d{2})?)\s*$", line.strip())
         if m:
             out[m.group(1)] = float(m.group(2))
+    # 无表行时：正文「研发 70.00 运营 61.00」或分行
+    for m in re.finditer(
+        r"(?<![一-龥A-Za-z0-9])(运营|管理|研发|支持)\s*[：:：]?\s*(\d+(?:\.\d{2})?)",
+        t,
+    ):
+        cat = m.group(1)
+        if cat in out:
+            continue
+        v = float(m.group(2))
+        if v >= 2:
+            out[cat] = v
     return out
 
 
@@ -211,9 +226,15 @@ def _extract_entity_metrics(excerpt: str, *, entity: str) -> dict[str, str]:
             v = float(m.group(1))
             if v >= 2:
                 out["rd_count"] = str(int(v)) if v == int(v) else m.group(1)
+    if "rd_count" not in out and "1.1信息-人员" in t:
+        m = re.search(r"(?<![一-龥A-Za-z0-9])研发\s*[：:：]?\s*(\d+(?:\.\d{2})?)", t)
+        if m:
+            v = float(m.group(1))
+            if v >= 2:
+                out["rd_count"] = str(int(v)) if v == int(v) else m.group(1)
     m = _HEADCOUNT_RE.search(t)
     if m:
-        out["headcount"] = m.group(1)
+        out["headcount"] = m.group(1).replace(",", "")
     return out
 
 
@@ -263,10 +284,18 @@ def personnel_compare_sanqi_table_incomplete(text: str) -> bool:
     return False
 
 
-_ORIENTG_TEMPLATE_MARKERS = (
+def _orientg_template_title_re() -> str:
+    from backend.services.kb_compare_entities import peer_match_re, primary_match_re
+
+    return (
+        rf"(?:{primary_match_re()})\s+vs\s+(?:{peer_match_re()})"
+        r"\s*·\s*2025\s*人员结构对比"
+    )
+
+
+_ORIENTG_TEMPLATE_MARKERS_STATIC = (
     r"\*\*结论\*\*：以下按\*\*职能归属/人员分项\*\*对比",
     r"以上数据均来自当前知识库\s*citations\s*节选",
-    r"YYCQ vs 可比公司A\s*·\s*2025\s*人员结构对比",
 )
 
 
@@ -275,11 +304,12 @@ def looks_like_orientg_personnel_template(text: str) -> bool:
     h = (text or "").strip()
     if not h:
         return False
-    hits = sum(1 for pat in _ORIENTG_TEMPLATE_MARKERS if re.search(pat, h))
+    markers = (*_ORIENTG_TEMPLATE_MARKERS_STATIC, _orientg_template_title_re())
+    hits = sum(1 for pat in markers if re.search(pat, h, re.I))
     # 标题 + 至少一条结语/结论套话，避免误伤 Hermes 自拟标题
     if hits >= 2:
         return True
-    if re.search(_ORIENTG_TEMPLATE_MARKERS[0], h) and re.search(_ORIENTG_TEMPLATE_MARKERS[1], h):
+    if re.search(markers[0], h) and re.search(markers[1], h):
         return True
     return False
 
@@ -370,9 +400,11 @@ def _sanqi_cell(
     return "证据未覆盖（节选无该分项）"
 
 
-def _yycq_cell(role: str, breakdown: dict[str, float]) -> str:
+def _yycq_cell(role: str, breakdown: dict[str, float], *, metrics: dict[str, str] | None = None) -> str:
     if role in breakdown:
         return f"{_fmt_count(breakdown[role])} 人"
+    if role == "研发" and metrics and metrics.get("rd_count"):
+        return f"{_fmt_count(metrics.get('rd_count'))} 人"
     return "证据未覆盖"
 
 
@@ -385,11 +417,21 @@ def format_personnel_compare_structured_report(
     if len(excerpts) < 2:
         return None
 
+    from backend.services.kb_compare_entities import (
+        PEER_ENTITY,
+        PRIMARY_ENTITY,
+        present_entity_label,
+        structure_table_title,
+    )
+
     by_ent: dict[str, str] = {}
     for ex in excerpts:
         ent = str(ex.get("entity") or "").strip()
         if ent:
             by_ent[ent] = str(ex.get("excerpt") or "")
+
+    peer_lab = present_entity_label(PEER_ENTITY, user_query)
+    primary_lab = present_entity_label(PRIMARY_ENTITY, user_query)
 
     sanqi_text = next((t for e, t in by_ent.items() if "可比公司A" in e), excerpts[0].get("excerpt", ""))
     yycq_text = next((t for e, t in by_ent.items() if "YYCQ" in e), excerpts[1].get("excerpt", ""))
@@ -405,14 +447,14 @@ def format_personnel_compare_structured_report(
         row_roles = ["研发", "运营", "管理", "支持", "销售"]
 
     parts = [
-        "## YYCQ vs 可比公司A · 2025 人员结构对比",
+        f"## {structure_table_title(user_query)}",
         "",
         "**结论**：以下按**职能归属/人员分项**对比 2025 年人员结构；研发仅为其中一个维度。"
-        "两家数据来源与统计口径不同，**不可**将YYCQ excel 分项合计与可比公司A员工总数直接比规模。",
+        f"两家数据来源与统计口径不同，**不可**将{primary_lab} excel 分项合计与{peer_lab}员工总数直接比规模。",
         "",
         f"### {_STRUCTURE_TABLE_TITLE}",
         "",
-        "| 职能归属 | 可比公司A | YYCQ |",
+        f"| 职能归属 | {peer_lab} | {primary_lab} |",
         "| --- | --- | --- |",
     ]
 
@@ -421,7 +463,12 @@ def format_personnel_compare_structured_report(
             if role in ("运营", "管理", "支持") and not yycq_bd:
                 continue
         parts.append(
-            f"| {role} | {_sanqi_cell(role, metrics=sanqi_m, roles=sanqi_roles)} | {_yycq_cell(role, yycq_bd)} |"
+            f"| {role} | {_sanqi_cell(role, metrics=sanqi_m, roles=sanqi_roles)} | {_yycq_cell(role, yycq_bd, metrics=yycq_m)} |"
+        )
+
+    if sanqi_m.get("headcount"):
+        parts.append(
+            f"| **员工总数（年报）** | **{_fmt_count(sanqi_m['headcount'])} 人** | — |"
         )
 
     if yycq_bd:
@@ -431,14 +478,14 @@ def format_personnel_compare_structured_report(
     parts.extend(
         [
             "",
-            "*口径：可比公司A为年报节选（研发人员情况 + 员工数量/专业构成）；"
-            "YYCQ为 excel「1.1信息-人员」一级归属分项。*",
+            f"*口径：{peer_lab}为年报节选（研发人员情况 + 员工数量/专业构成）；"
+            f"{primary_lab}为 excel「1.1信息-人员」一级归属分项。*",
             "",
         ]
     )
 
     if sanqi_edu or sanqi_age:
-        parts.extend(["### 可比公司A · 研发人员学历/年龄（年报节选）", ""])
+        parts.extend([f"### {peer_lab} · 研发人员学历/年龄（年报节选）", ""])
         if sanqi_edu:
             edu_line = "、".join(f"{k} {v} 人" for k, v in sanqi_edu.items())
             parts.append(f"- **学历**：{edu_line}。")
@@ -454,17 +501,19 @@ def format_personnel_compare_structured_report(
         rd_n = yycq_bd.get("研发", 0)
         total = sum(yycq_bd.values()) or 1
         parts.append(
-            f"- **YYCQ**：excel 呈现运营/管理/研发/支持四分项；"
+            f"- **{primary_lab}**：excel 呈现运营/管理/研发/支持四分项；"
             f"最大单项为**{top[0]} {_fmt_count(top[1])} 人**；"
             f"研发 {_fmt_count(rd_n)} 人，约占分项合计 {rd_n / total * 100:.1f}%。"
         )
     else:
-        parts.append("- **YYCQ**：证据节选含 1.1信息-人员表，详见下节。")
+        parts.append(f"- **{primary_lab}**：证据节选含 1.1信息-人员表，详见下节。")
 
     if sanqi_m.get("rd_count"):
-        line = f"- **可比公司A**：年报研发人员 **{sanqi_m['rd_count']}** 人"
+        line = f"- **{peer_lab}**：年报研发人员 **{sanqi_m['rd_count']}** 人"
         if sanqi_m.get("rd_share_pct"):
             line += f"（占员工 {sanqi_m['rd_share_pct']}%）"
+        if sanqi_m.get("headcount"):
+            line += f"；年报员工总数 **{_fmt_count(sanqi_m['headcount'])}** 人"
         if sanqi_roles:
             extras = "、".join(f"{k}{v}人" for k, v in sorted(sanqi_roles.items()))
             line += f"；节选另含职能分项：{extras}"
@@ -475,8 +524,8 @@ def format_personnel_compare_structured_report(
 
     parts.extend(
         [
-            "- **结构差异**：YYCQ为内部 excel 职能四分项（偏精简团队）；"
-            "可比公司A年报另披露销售/运营/技术等专业构成，与YYCQ「一级归属」口径不完全一一对应。",
+            f"- **结构差异**：{primary_lab}为内部 excel 职能四分项（偏精简团队）；"
+            f"{peer_lab}年报另披露销售/运营/技术等专业构成，与{primary_lab}「一级归属」口径不完全一一对应。",
             "- **可比性**：仅研发维度可做「占比/规模」参照；全口径人员结构对比须两边同口径披露，缺失写「证据未覆盖」。",
             "",
             "以上数据均来自当前知识库 citations 节选，口径见各主体 section 标题。",

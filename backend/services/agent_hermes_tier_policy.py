@@ -142,7 +142,7 @@ def hermes_orientg_context_extras(
 
         extras: dict[str, Any] = {
             "orientg_tool_reminder": (
-                "深度编排：成稿前须调用 mcp_orientg_orientg_kb_ask（orientg_kb_ask）拉取证据；"
+                "深度编排：成稿前须调用 mcp__orientg__orientg_kb_ask（orientg_kb_ask）拉取证据；"
                 "禁止 terminal/shell/execute_code/curl；分项须来自 MCP 原文，禁止估算。"
             ),
         }
@@ -248,9 +248,16 @@ def hermes_answer_requirements(*, tier: PrefetchTier, user_query: str) -> str:
     tt = infer_task_type(user_query)
     personnel = query_wants_personnel_structure(user_query)
 
+    # 全局深度：MCP 到手后直接中文成稿，禁止 code/shell 解析
+    global_mcp_write = (
+        "【Orient-G 深度·主答】你是终稿作者：收到 MCP 证据节选/agent_payload 后**直接中文成稿**；"
+        "阅读返回文本即可，严禁 terminal/shell/execute_code/session_search 解析 JSON 或空转。"
+    )
+
     if personnel:
+        parts.append(global_mcp_write)
         parts.append(
-            "【Orient-G 深度·人员结构】**首轮必须先**调用 mcp_orientg_orientg_kb_ask，"
+            "【Orient-G 深度·人员结构】**首轮必须先**调用 mcp__orientg__orientg_kb_ask，"
             "禁止未调工具先写终稿或长分析。"
             "人员横比须 **至少 2 次** MCP：首轮取证后，再用**不同 query** 对缺口维度或另一主体核证，然后成稿。"
             "终稿须中文；以 MCP `agent_payload` / 参考表硬数字为准（禁止把骨架标题上屏）。"
@@ -259,13 +266,16 @@ def hermes_answer_requirements(*, tier: PrefetchTier, user_query: str) -> str:
             "禁止把 139/3138 当人员结构主表。"
             "禁止推算/推断/「约 N 人」无证据区间；禁止用「请勿采信」脚注掩盖违规句。"
             "对照表填证据数字即可，勿扩写无依据销售规模推断。"
+            "禁止 terminal/execute_code/session_search。"
         )
         return "\n".join(parts).strip()
 
     if tier == "full":
+        parts.append(global_mcp_write)
         parts.append(
             "【Orient-G 深度·分析师】终稿须一次性写全；Evidence Pack 不足时 orientg_kb_ask 后再写。"
             "禁止编造分项；无证据则明确缺项。"
+            "禁止 terminal/execute_code/session_search 代替 KB 或解析 MCP JSON。"
         )
         if tt in (TaskType.breakdown, TaskType.compare):
             parts.append(

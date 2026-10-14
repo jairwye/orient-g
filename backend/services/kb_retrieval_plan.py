@@ -203,6 +203,8 @@ from backend.services.kb_compare_entities import (
 
 def normalize_compare_entity_phrase(phrase: str) -> str:
     """横比问句实体清洗：去「对比分析」等前缀与「25年的人员结构」等后缀。"""
+    from backend.services.kb_compare_entities import canonicalize_compare_entity
+
     s = (phrase or "").strip()
     for prefix in ("对比分析", "对比", "比较", "分析"):
         if s.startswith(prefix):
@@ -212,8 +214,8 @@ def normalize_compare_entity_phrase(phrase: str) -> str:
     qj = s.replace(" ", "")
     for marker in compare_entity_markers():
         if marker.replace(" ", "") in qj or marker in s:
-            return marker
-    return s
+            return canonicalize_compare_entity(marker)
+    return canonicalize_compare_entity(s)
 
 
 def extract_query_entity_phrases(user_query: str) -> list[str]:

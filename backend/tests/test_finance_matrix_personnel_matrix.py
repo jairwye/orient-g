@@ -153,7 +153,8 @@ def test_a3_deep_accepts_hermes_authored_non_template():
         "| 运营 | 242 人 | 61 人 |\n"
         "| 管理 | 36 人 | 33 人 |\n"
         "| 支持 | 312 人 | 46 人 |\n"
-        "| 销售 | 946 人 | 证据未覆盖 |\n\n"
+        "| 销售 | 946 人 | 证据未覆盖 |\n"
+        "| **分项合计** | — | **210 人**（excel 四项加总） |\n\n"
         "### 对比分析\n\n"
         "- 结构差异明显，职能分项口径不可直接比规模。\n"
         "### 口径说明\n年报 vs excel。\n"
@@ -164,6 +165,7 @@ def test_a3_deep_accepts_hermes_authored_non_template():
     row["kb_supplemental"] = False
     row["hermes_kb_ask_calls"] = 2
     row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
     out = validate_row(row)
     assert out["ok"] is True
     assert out.get("checks", {}).get("hermes_authorship_ok") is True
@@ -236,6 +238,53 @@ def test_a3_rejects_speculation_prose():
     assert "unsupported_speculation" in (out.get("checks", {}).get("forbidden_leaks") or [])
 
 
+def test_a3_rejects_approx_headcount_without_ren_suffix():
+    """表内「约210」无「人」后缀亦不得刷绿（CDP 曾漏检）。"""
+    hermes = (
+        "## 人员结构对照\n\n"
+        "| 职能归属 | 可比公司A | YYCQ |\n"
+        "| --- | --- | --- |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| 销售 | 946 | 证据未覆盖 |\n"
+        "| 运营 | 242 | 61 |\n"
+        "| 合计 | 3,138 | 约210 |\n\n"
+        "### 对比分析\n结构差异。\n"
+    )
+    row = _row(PERSONNEL_COMPARE_QUERY, hermes, subject="A3-横比-深度")
+    row["reply_source"] = "hermes"
+    row["structured_gate_applied"] = False
+    row["kb_supplemental"] = False
+    row["hermes_kb_ask_calls"] = 2
+    row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
+    out = validate_row(row)
+    assert out["ok"] is False
+    assert "unsupported_speculation" in (out.get("checks", {}).get("forbidden_leaks") or [])
+
+
+def test_a3_rejects_kb_supplemental_authorship():
+    """禁止 OG recovery/supplemental 冒充 Hermes 主写刷绿。"""
+    hermes = (
+        "## 人员结构对照\n\n"
+        "| 职能归属 | 可比公司A | YYCQ |\n"
+        "| --- | --- | --- |\n"
+        "| 研发 | 1378 | 70 |\n"
+        "| 销售 | 946 | 证据未覆盖 |\n"
+        "| 运营 | 242 | 61 |\n\n"
+        "### 对比分析\n结构差异。\n"
+    )
+    row = _row(PERSONNEL_COMPARE_QUERY, hermes, subject="A3-横比-深度")
+    row["reply_source"] = "orientg_supplemental"
+    row["structured_gate_applied"] = False
+    row["kb_supplemental"] = True
+    row["hermes_kb_ask_calls"] = 2
+    row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
+    out = validate_row(row)
+    assert out["ok"] is False
+    assert out.get("checks", {}).get("hermes_authorship_ok") is False
+
+
 def test_a3_rejects_forced_mcp_retry():
     """宽尺子 B：强制 MCP 重试不得作为 A3 常态绿。"""
     hermes = GOOD_PERSONNEL_COMPARE_EXCERPT
@@ -246,6 +295,101 @@ def test_a3_rejects_forced_mcp_retry():
     row["hermes_kb_ask_calls"] = 2
     row["gateway_kb_ask_calls"] = 1
     row["hermes_mcp_retry_count"] = 1
+    out = validate_row(row)
+    assert out["ok"] is False
+    assert out.get("checks", {}).get("hermes_mcp_retry_ok") is False
+
+
+def test_a3_rejects_missing_reply_source():
+    """手测同路径：reply_source 缺省不得刷绿（禁门禁顶替漏检）。"""
+    row = _row(PERSONNEL_COMPARE_QUERY, GOOD_PERSONNEL_COMPARE_EXCERPT, subject="A3-横比-深度")
+    row["structured_gate_applied"] = False
+    row["kb_supplemental"] = False
+    row["hermes_kb_ask_calls"] = 2
+    row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
+    out = validate_row(row)
+    assert out["ok"] is False
+    assert out.get("checks", {}).get("hermes_authorship_ok") is False
+
+
+def test_a3_rejects_orientg_gate_reply_source():
+    """手测同路径：终稿出处 Orient-G门禁 必须硬挂。"""
+    row = _row(PERSONNEL_COMPARE_QUERY, GOOD_PERSONNEL_COMPARE_EXCERPT, subject="A3-横比-深度")
+    row["reply_source"] = "orientg_structured_gate"
+    row["structured_gate_applied"] = True
+    row["kb_supplemental"] = False
+    row["hermes_kb_ask_calls"] = 2
+    row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
+    out = validate_row(row)
+    assert out["ok"] is False
+    assert out.get("checks", {}).get("hermes_authorship_ok") is False
+
+
+def test_a3_rejects_dual_draft_process_glued_to_final():
+    """手测同路径：主气泡过程稿+终稿粘贴（首轮取证…撰写终稿）必须硬挂。"""
+    dual = (
+        "首轮取证完成。证据显示可比公司A研发人员1,378人。需要第二轮不同query核证补缺。\n"
+        "第二轮核证完成，证据一致。现在可以撰写终稿。"
+        f"{GOOD_PERSONNEL_COMPARE_EXCERPT}"
+    )
+    row = _row(PERSONNEL_COMPARE_QUERY, dual, subject="A3-横比-深度")
+    row["reply_source"] = "hermes"
+    row["structured_gate_applied"] = False
+    row["kb_supplemental"] = False
+    row["hermes_kb_ask_calls"] = 2
+    row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
+    out = validate_row(row)
+    assert out["ok"] is False
+    assert (
+        out.get("checks", {}).get("hand_path_dual_draft_ok") is False
+        or out.get("checks", {}).get("no_process_in_answer") is False
+        or "orchestration_dual_draft" in (out.get("checks", {}).get("forbidden_leaks") or [])
+    )
+
+
+def test_a3_rejects_process_draft_only_marked_hermes_complete():
+    """假绿回归：仅英文 Let me first + 核证计划、无对照表，却标 Hermes 完成 → 必须硬挂。"""
+    process_only = (
+        "Let me first retrieve the personnel structure for both companies.\n\n"
+        "evidence_sufficient=false。核证补缺计划：\n"
+        "1. verification_queries: 可比公司A研发人员；YYCQ人员结构\n"
+        "2. next_action=verify_gap_then_write_final\n"
+        "Hermes 将继续调用 orientg_kb_ask。\n"
+    )
+    row = _row(PERSONNEL_COMPARE_QUERY, process_only, subject="A3-横比-深度")
+    row["reply_source"] = "hermes"
+    row["structured_gate_applied"] = False
+    row["kb_supplemental"] = False
+    row["hermes_kb_ask_calls"] = 4
+    row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
+    out = validate_row(row)
+    assert out["ok"] is False
+    checks = out.get("checks") or {}
+    assert (
+        checks.get("hermes_authorship_ok") is False
+        or checks.get("personnel_core_table_ok") is False
+        or checks.get("process_draft_final_ok") is False
+        or checks.get("no_process_in_answer") is False
+    )
+    # 正文质量：禁止 Let me first；须有人员结构实质内容才可能绿
+    assert re.search(r"Let me first", process_only, re.I)
+    assert "人员结构对照" not in process_only
+
+
+def test_a3_rejects_missing_retry_count_when_spec_requires_zero():
+    """A3 缺 hermes_mcp_retry_count 不得默认当 0 刷绿。"""
+    row = _row(PERSONNEL_COMPARE_QUERY, GOOD_PERSONNEL_COMPARE_EXCERPT, subject="A3-横比-深度")
+    row["reply_source"] = "hermes"
+    row["structured_gate_applied"] = False
+    row["kb_supplemental"] = False
+    row["hermes_kb_ask_calls"] = 2
+    row["gateway_kb_ask_calls"] = 1
+    # 显式缺省（validate 不得推断为 0）
+    row.pop("hermes_mcp_retry_count", None)
     out = validate_row(row)
     assert out["ok"] is False
     assert out.get("checks", {}).get("hermes_mcp_retry_ok") is False
@@ -276,6 +420,7 @@ def test_a3_accepts_hermes_tab_table_with_role_suffix():
         "运营人员\t242人\t61人\n"
         "管理人员\t36人\t33.15人\n"
         "支持人员\t115人\t45.85人\n"
+        "分项合计\t—\t210人（excel 四项加总）\n"
         "对比分析：结构差异明显，口径不同不可直接比规模。\n"
         "规模旁白：可比公司A员工总数3,138人，不可与分项混比。\n"
     )
@@ -356,6 +501,17 @@ def test_folder_label_25_maps_to_yycq():
     assert _entity_from_folder_label("ud_y", ents, {"ud_y": "PeerA25"}) == "可比公司A"
 
 
+def test_doc_folder_entity_scope_addon_maps_peera():
+    """Tier0 synth 须被告知 PeerA25→可比公司A，避免「实体不明」拒答。"""
+    from backend.services.agent_kb_supplemental import doc_folder_entity_scope_addon
+
+    addon = doc_folder_entity_scope_addon({UD_37: "PeerA25", UD_YY: "25"})
+    assert "可比公司A" in addon
+    assert "YYCQ" in addon
+    assert UD_37 in addon
+    assert "禁止" in addon and "实体" in addon
+
+
 def _chunk_loader(tenant_id: str, doc_id: str, chunk_id: str | None, seq):
     if doc_id == UD_37:
         return SANQI_TXT
@@ -389,8 +545,8 @@ def test_personnel_excerpt_from_prefetch_with_folder_labels(_mock_load):
     assert out
     assert "1,378" in out or "1378" in out
     assert "1.1信息-人员" in out
-    assert "可比公司A" in out
-    assert "YYCQ" in out
+    assert ("可比公司A" in out or "可比公司A" in out)
+    assert ("YYCQ" in out or "YYCQ" in out)
 
 
 @patch("backend.services.ai_interaction_llm._load_doc_chunk_text", side_effect=_chunk_loader)
@@ -514,3 +670,242 @@ def test_fast_path_personnel_prefers_excerpt_over_honest_missing_synth(_mock_loa
     assert "1,378" in out or "1378" in out
     assert "1.1信息-人员" in out
     assert "不确定/缺少证据" not in out
+
+
+D2_QUERY = "对比YYCQ与可比公司A2025年研发人员数量"
+D1_QUERY = "对比YYCQ和可比公司A2025年销售与运营人员规模"
+D2_MISATTR_BODY = (
+    "结论：根据现有证据，无法提供可比公司A 2025年研发人员数量的具体数值，"
+    "仅能提供YYCQ2025年研发人员数量为1,378人。\n"
+    "主体\t2025年研发人员数量（人）\t2024年研发人员数量（人）\t变动比例\n"
+    "YYCQ (YYCQ)\t1,378\t1,318\t4.55%\n"
+    "可比公司A\t缺少证据\t缺少证据\t缺少证据\n"
+    "说明：\n"
+    "1. YYCQ数据：YYCQ2025年研发人员数量为1,378人。\n"
+    "2. 可比公司A数据缺失。\n"
+)
+D1_INCOMPLETE_BODY = (
+    "口径说明- YYCQ数据来自KB内excel「1.1信息-人员」。\n"
+    "可比公司A研发数据来自年报，研发人员1,378人。\n"
+    "由于KB作用域限制，可比公司A的销售/运营分项数据未能完整获取。\n"
+)
+
+
+def test_d2_browser_misattribution_detected_and_validate_fails():
+    from backend.services.kb_ask_mcp_reply import personnel_compare_reply_misattributed
+
+    assert personnel_compare_reply_misattributed(D2_MISATTR_BODY, user_query=D2_QUERY)
+    row = validate_row(
+        _row(D2_QUERY, D2_MISATTR_BODY, mode="fast", subject="D2-横比-研发", honest=True)
+    )
+    assert row["ok"] is False
+
+
+@patch("backend.services.ai_interaction_llm._load_doc_chunk_text", side_effect=_chunk_loader)
+def test_excerpts_assign_1378_to_peera_without_folder_labels(_mock_load):
+    """正文无公司名、无 folder labels 时，仍须按切块内容把 1378→可比公司A、70→YYCQ。"""
+    from backend.services.kb_ask_mcp_reply import build_personnel_compare_excerpts
+
+    excerpts = build_personnel_compare_excerpts(
+        [{"doc_id": UD_37, "chunk_id": "c1"}, {"doc_id": UD_YY, "chunk_id": "c2"}],
+        D2_QUERY,
+        tenant_id="tenant1",
+        fixtures={},
+        doc_folder_labels=None,
+    )
+    by_ent = {str(e.get("entity")): e for e in excerpts}
+    assert "可比公司A" in by_ent
+    assert "YYCQ" in by_ent
+    assert re.search(r"1[,，]?378|1378", by_ent["可比公司A"]["excerpt"])
+    assert re.search(r"70", by_ent["YYCQ"]["excerpt"])
+    assert not re.search(r"1[,，]?378|1378", by_ent["YYCQ"]["excerpt"])
+
+
+@patch("backend.services.ai_interaction_llm._load_doc_chunk_text", side_effect=_chunk_loader)
+def test_fast_path_d2_rejects_1378_on_yycq(_mock_load):
+    from backend.services.agent_kb_fast_path import _apply_personnel_fast_path_reply
+    from backend.services.kb_ask_mcp_reply import personnel_compare_reply_misattributed
+
+    prefetch = {
+        "ok": True,
+        "citations": [
+            {"doc_id": UD_37, "chunk_id": "c1"},
+            {"doc_id": UD_YY, "chunk_id": "c2"},
+        ],
+        "evidence_pack": {"task_type": "compare"},
+    }
+    out = _apply_personnel_fast_path_reply(
+        synth_reply=D2_MISATTR_BODY,
+        user_query=D2_QUERY,
+        prefetch_result=prefetch,
+        tenant_id="tenant1",
+        fixtures={"tenant_id": "tenant1"},
+        kb_scope=None,
+    )
+    assert not personnel_compare_reply_misattributed(out, user_query=D2_QUERY)
+    assert re.search(r"1[,，]?378|1378", out)
+    assert re.search(r"(?<!\d)70(?!\d)", out)
+    row = validate_row(_row(D2_QUERY, out, mode="fast", subject="D2-横比-研发"))
+    assert row["ok"] is True
+
+
+@patch("backend.services.ai_interaction_llm._load_doc_chunk_text", side_effect=_chunk_loader)
+def test_native_structured_gate_fixes_d2_misattribution(_mock_load, monkeypatch):
+    """native：不得因「结论/口径」短分析放行 1378→YYCQ 错稿。"""
+    from backend.config import settings
+    from backend.services.agent_kb_supplemental import apply_personnel_structured_final_gate
+    from backend.services.kb_ask_mcp_reply import personnel_compare_reply_misattributed
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", True)
+    prefetch = {
+        "ok": True,
+        "citations": [
+            {"doc_id": UD_37, "chunk_id": "c1"},
+            {"doc_id": UD_YY, "chunk_id": "c2"},
+        ],
+        "evidence_pack": {"task_type": "compare"},
+    }
+    out, _applied = apply_personnel_structured_final_gate(
+        D2_MISATTR_BODY,
+        prefetch_result=prefetch,
+        user_query=D2_QUERY,
+        tenant_id="tenant1",
+        fixtures={"tenant_id": "tenant1"},
+    )
+    assert not personnel_compare_reply_misattributed(out, user_query=D2_QUERY)
+    assert re.search(r"1[,，]?378|1378", out)
+    assert re.search(r"(?<!\d)70(?!\d)", out)
+
+
+@patch("backend.services.ai_interaction_llm._load_doc_chunk_text", side_effect=_chunk_loader)
+def test_native_structured_gate_fixes_d1_missing_sanqi_roles(_mock_load, monkeypatch):
+    """D1 问销售/运营：native 下不得放行仅有 1378、缺 946/242 的短口径稿。"""
+    from backend.config import settings
+    from backend.services.agent_kb_supplemental import apply_personnel_structured_final_gate
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", True)
+    prefetch = {
+        "ok": True,
+        "citations": [
+            {"doc_id": UD_37, "chunk_id": "c1"},
+            {"doc_id": UD_YY, "chunk_id": "c2"},
+        ],
+        "evidence_pack": {"task_type": "compare"},
+    }
+    out, _applied = apply_personnel_structured_final_gate(
+        D1_INCOMPLETE_BODY,
+        prefetch_result=prefetch,
+        user_query=D1_QUERY,
+        tenant_id="tenant1",
+        fixtures={"tenant_id": "tenant1"},
+    )
+    assert re.search(r"946", out) and re.search(r"242", out)
+    row = validate_row(_row(D1_QUERY, out, mode="standard", subject="D1-横比-职能"))
+    assert row["ok"] is True
+
+
+D1_SWAP_BODY = (
+    "YYCQ2025年人员数据：总员工：3,138人；销售人员：946人；运营人员：242人\n"
+    "可比公司A2025年人员数据：总员工：139人；销售人员：10人；研发人员：95人\n"
+    "##人员结构对照\n|职能归属 |可比公司A | YYCQ |\n"
+    "|销售人员 |10 |946 |\n|运营人员 |证据未覆盖 |242 |\n"
+    "人员规模差异显著：YYCQ总员工3,138人，可比公司A仅139人，前者约22.6倍。"
+)
+
+
+def test_d1_entity_swap_misattribution_detected():
+    from backend.services.kb_ask_mcp_reply import personnel_compare_reply_misattributed
+
+    assert personnel_compare_reply_misattributed(D1_SWAP_BODY, user_query=D1_QUERY)
+    row = validate_row(_row(D1_QUERY, D1_SWAP_BODY, mode="standard", subject="D1-横比-职能"))
+    assert row["ok"] is False
+
+
+@patch("backend.services.ai_interaction_llm._load_doc_chunk_text", side_effect=_chunk_loader)
+def test_native_structured_gate_fixes_d1_entity_swap(_mock_load, monkeypatch):
+    """D1：Hermes 把 PeerA 3138/946 挂 YYCQ、139 挂可比公司A 时须纠偏。"""
+    from backend.config import settings
+    from backend.services.agent_kb_supplemental import apply_personnel_structured_final_gate
+    from backend.services.kb_ask_mcp_reply import personnel_compare_reply_misattributed
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", True)
+    prefetch = {
+        "ok": True,
+        "citations": [
+            {"doc_id": UD_37, "chunk_id": "c1"},
+            {"doc_id": UD_YY, "chunk_id": "c2"},
+        ],
+        "evidence_pack": {"task_type": "compare"},
+    }
+    out, applied = apply_personnel_structured_final_gate(
+        D1_SWAP_BODY,
+        prefetch_result=prefetch,
+        user_query=D1_QUERY,
+        tenant_id="tenant1",
+        fixtures={"tenant_id": "tenant1"},
+    )
+    assert applied is True
+    assert not personnel_compare_reply_misattributed(out, user_query=D1_QUERY)
+    assert re.search(r"946", out) and re.search(r"242", out)
+    assert "22.6" not in out
+    row = validate_row(_row(D1_QUERY, out, mode="standard", subject="D1-横比-职能"))
+    assert row["ok"] is True
+
+
+def test_a3_rejects_stacked_names_and_excel_sum_as_headcount():
+    """手测/CDP：叠名表头、把分项加总当员工总数并推 22 倍 → 拒收。"""
+    bad = (
+        "### 人员结构对照\n"
+        "职能归属\t可比公司A\tYYCQ\n"
+        "研发人员\t1,378人\t70人\n"
+        "销售人员\t946人\t证据未覆盖\n"
+        "运营人员\t242人\t61人\n"
+        "员工总数\t3,138人\t140 人\n"
+        "对比分析\n"
+        "可比公司A3,138人，YYCQ140人，前者约为后者的22倍量级。\n"
+        "分项合计\t—\t210人\n"
+    )
+    row = _row(PERSONNEL_COMPARE_QUERY, bad, subject="A3-横比-深度")
+    row["reply_source"] = "hermes"
+    row["structured_gate_applied"] = False
+    row["kb_supplemental"] = False
+    row["hermes_kb_ask_calls"] = 2
+    row["gateway_kb_ask_calls"] = 1
+    row["hermes_mcp_retry_count"] = 0
+    out = validate_row(row)
+    assert out["ok"] is False
+    leaks = out.get("checks", {}).get("forbidden_leaks") or []
+    assert leaks, out.get("checks")
+
+
+def test_b1_conflict_note_139_vs_3138_is_not_excel_sum_leak():
+    """B1：主答用年报 3,138，并诚实注明冲突片段中的 139/95 → 不得误杀 excel_sum_as_headcount。"""
+    from finance_matrix_personnel_validate import personnel_compare_has_forbidden_leaks
+
+    good = (
+        "可比公司A2025年末在职员工数量为3,138人。\n"
+        "按专业构成：销售人员946人、研发人员1,066人、运营/其他职能部门人员561人、"
+        "管理人员312人、财务人员102人、行政人员115人、其他人员36人。\n"
+        "教育程度：本科2,178人、硕士及以上321人、大专及以下639人。\n"
+        "指标\t2025年年末数量（人）\n"
+        "在职员工数量合计\t3,138\n"
+        "销售人员\t946\n"
+        "说明：\n"
+        "1. 来自证据中的「期末在职员工数量合计」及专业构成明细。\n"
+        "2. 运营/其他职能部门人员合计为242+319=561人。\n"
+        "3. 其他证据片段披露的员工总数（139人或95人）与披露的3,138人存在显著差异，"
+        "且未提供明确的合并口径说明；本答以年报主体口径3,138为准。\n"
+    )
+    leaks = personnel_compare_has_forbidden_leaks(good)
+    assert "excel_sum_as_headcount" not in leaks, leaks
+    row = _row(
+        "可比公司A2025年员工数量、专业构成及教育程度",
+        good,
+        mode="fast",
+        subject="B1-可比公司A-员工专节",
+    )
+    out = validate_row(row)
+    assert out["ok"] is True, out.get("checks")

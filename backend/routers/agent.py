@@ -537,7 +537,9 @@ def agent_chat(request: Request, body: AgentChatBody):
     if coerce_applied:
         reply = coerced
     if is_personnel_thin_salvage_final(reply):
-        reply = PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY
+        from backend.services.agent_kb_supplemental import HERMES_INCOMPLETE_REPLY
+
+        reply = HERMES_INCOMPLETE_REPLY
         coerce_applied = True
     if needs_hermes_supplemental(
         agent_route=agent_route,
@@ -592,6 +594,13 @@ def agent_chat(request: Request, body: AgentChatBody):
     )
     if gate_applied:
         reply = gated
+    from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+    reply = finalize_agent_reply(
+        reply,
+        user_query=uq,
+        tier2_native=(agent_route == AgentRoute.hermes_full),
+    )
     struct_gated, struct_applied = apply_personnel_structured_final_gate(
         reply,
         prefetch_result=prefetch_result,
@@ -609,8 +618,6 @@ def agent_chat(request: Request, body: AgentChatBody):
     )
     if cmp_applied:
         reply = cmp_gated
-
-    from backend.services.hermes_stream_sanitize import finalize_agent_reply
 
     reply = finalize_agent_reply(
         reply,
@@ -806,7 +813,12 @@ def _agent_chat_stream_events(
                     model=body.model,
                     skill_addon_extra=_skill_addon_for_route(uq, agent_route) or None,
                 )
-                from backend.services.agent_kb_supplemental import pick_hermes_error_fallback_reply
+                from backend.services.agent_kb_supplemental import (
+                    apply_personnel_misattribution_gate,
+                    apply_personnel_structured_final_gate,
+                    pick_hermes_error_fallback_reply,
+                    resolve_hermes_reply_source,
+                )
 
                 reply, synthesis_mode = pick_hermes_error_fallback_reply(
                     draft_acc=hermes_draft_acc,
@@ -814,13 +826,71 @@ def _agent_chat_stream_events(
                     prefetch_result=prefetch_result,
                     user_query=uq,
                 )
+                # 全局：Hermes salvage 优先主答；仅严重误归因才门禁纠偏，禁止常规整页顶替
+                gate_applied = False
+                struct_applied = False
+                keep_hermes_final = synthesis_mode == "hermes_salvaged"
+                if reply and not keep_hermes_final:
+                    gated, gate_applied = apply_personnel_misattribution_gate(
+                        reply,
+                        prefetch_result=prefetch_result,
+                        user_query=uq,
+                        tenant_id=tenant_id,
+                        fixtures=fixtures,
+                        kb_scope=kb_scope_payload,
+                    )
+                    if gate_applied:
+                        reply = gated
+                        synthesis_mode = "orientg_misattribution_gate"
+                    struct_gated, struct_applied = apply_personnel_structured_final_gate(
+                        reply,
+                        prefetch_result=prefetch_result,
+                        user_query=uq,
+                        tenant_id=tenant_id,
+                        fixtures=fixtures,
+                        kb_scope=kb_scope_payload,
+                    )
+                    if struct_applied:
+                        reply = struct_gated
+                        synthesis_mode = "orientg_structured_gate"
                 if reply and synthesis_mode == "hermes_salvaged":
                     yield f"data: {json.dumps({'type': 'status', 'message': '（Hermes 已中断，终稿沿用已生成的 Hermes 过程稿）', 'step': 'hermes_salvage_note'}, ensure_ascii=False)}\n\n"
+                elif reply and synthesis_mode in (
+                    "orientg_misattribution_gate",
+                    "orientg_structured_gate",
+                ):
+                    yield f"data: {json.dumps({'type': 'status', 'message': '（Hermes 中断后已按文件夹归属纠偏终稿）', 'step': 'hermes_fallback_personnel_gate'}, ensure_ascii=False)}\n\n"
                 elif reply:
                     yield f"data: {json.dumps({'type': 'status', 'message': '（Hermes 流式超时或失败，已由本地 LLM 基于预检索证据作答）', 'step': 'hermes_fallback_note'}, ensure_ascii=False)}\n\n"
                 if reply:
                     yield f"data: {json.dumps({'type': 'delta', 'content': reply}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'ok': True, 'reply': reply, 'tenant_id': tenant_id, 'kb_prefetch': True, 'hermes_fallback': synthesis_mode == 'local_fallback', 'hermes_salvaged': synthesis_mode == 'hermes_salvaged', 'synthesis': synthesis_mode if synthesis_mode == 'hermes_salvaged' else synth.get('synthesis'), 'citations': synth.get('citations') or [], 'tool_calls': prefetch_tool_calls, **_route_response_meta(agent_route, prefetch_result)}, ensure_ascii=False)}\n\n"
+                reply_meta = resolve_hermes_reply_source(
+                    reply=reply,
+                    structured_gate_applied=struct_applied,
+                    misattribution_gate_applied=gate_applied,
+                    hermes_salvaged=synthesis_mode == "hermes_salvaged",
+                    keep_hermes_final=keep_hermes_final,
+                    user_query=uq,
+                )
+                done_payload = {
+                    "type": "done",
+                    "ok": True,
+                    "reply": reply,
+                    "tenant_id": tenant_id,
+                    "kb_prefetch": True,
+                    "hermes_fallback": synthesis_mode == "local_fallback",
+                    "hermes_salvaged": synthesis_mode == "hermes_salvaged",
+                    "synthesis": synthesis_mode if synthesis_mode in (
+                        "hermes_salvaged",
+                        "orientg_misattribution_gate",
+                        "orientg_structured_gate",
+                    ) else synth.get("synthesis"),
+                    "citations": synth.get("citations") or [],
+                    "tool_calls": prefetch_tool_calls,
+                    **_route_response_meta(agent_route, prefetch_result),
+                    **reply_meta,
+                }
+                yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
             if defer_hermes_draft and evt.get("type") == "delta" and evt.get("content"):
@@ -845,18 +915,19 @@ def _agent_chat_stream_events(
                 yield f"data: {json.dumps({'type': 'thinking', 'content': str(evt['content']), 'step': 'hermes_reasoning'}, ensure_ascii=False)}\n\n"
                 continue
             if evt.get("type") == "done":
-                if hermes_draft_acc:
-                    final_draft = hermes_draft_acc.flush()
-                    if final_draft:
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': final_draft, 'step': 'hermes_draft'}, ensure_ascii=False)}\n\n"
                 uq = last_user_query(messages)
                 from backend.services.hermes_stream_sanitize import resolve_hermes_effective_reply
 
+                # 必须先 resolve（读 draft_acc.full_body），再 flush；否则过程稿择优失效且可能漏清洗
                 hermes_raw_reply = resolve_hermes_effective_reply(
                     evt_reply=str(evt.get("reply") or ""),
                     draft_acc=hermes_draft_acc,
                     user_query=uq,
                 )
+                if hermes_draft_acc:
+                    final_draft = hermes_draft_acc.flush()
+                    if final_draft:
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': final_draft, 'step': 'hermes_draft'}, ensure_ascii=False)}\n\n"
                 # 质量择优可能选出更短的过程稿；必须以 resolve 结果覆盖 evt.reply
                 if hermes_raw_reply:
                     evt = {**evt, "reply": hermes_raw_reply}
@@ -869,7 +940,7 @@ def _agent_chat_stream_events(
                     hermes_orientg_kb_ask_count,
                     iter_supplemental_revision_events,
                     needs_hermes_supplemental,
-                    resolve_personnel_reply_source,
+                    resolve_hermes_reply_source,
                 )
 
                 hermes_kb_ask_n = hermes_orientg_kb_ask_count(hermes_payload=evt)
@@ -963,6 +1034,18 @@ def _agent_chat_stream_events(
                 )
                 if gate_applied:
                     evt = {**evt, "reply": gated}
+                from backend.services.hermes_stream_sanitize import finalize_agent_reply
+
+                # 先展示层清洗，再 structured gate：避免未清洗错稿触发 Orient-G 门禁整页顶替
+                if evt.get("reply"):
+                    evt = {
+                        **evt,
+                        "reply": finalize_agent_reply(
+                            str(evt.get("reply") or ""),
+                            user_query=uq,
+                            tier2_native=(agent_route == AgentRoute.hermes_full),
+                        ),
+                    }
                 struct_gated, struct_applied = apply_personnel_structured_final_gate(
                     str(evt.get("reply") or ""),
                     prefetch_result=prefetch_result,
@@ -971,6 +1054,27 @@ def _agent_chat_stream_events(
                     fixtures=fixtures,
                     kb_scope=kb_scope_payload,
                 )
+                # 全局深度：Hermes 已有实质终稿时禁止 Orient-G 门禁整页顶替（验收：reply_source=hermes）
+                keep_hermes_final = False
+                if struct_applied and agent_route == AgentRoute.hermes_full:
+                    from backend.services.hermes_response_analysis import (
+                        hermes_reply_is_user_facing_final,
+                    )
+
+                    hermes_body = str(evt.get("reply") or "")
+                    # 全局 user-facing 标准（禁止硬编码 946/1378/70 人员特判）
+                    general_keep = hermes_reply_is_user_facing_final(
+                        hermes_body, user_query=uq
+                    ) and not re.search(
+                        r"以上数据均来自当前知识库 citations 节选",
+                        hermes_body,
+                    )
+                    if general_keep and (
+                        settings.hermes_native_mcp_reply
+                        and settings.hermes_native_skip_supplemental
+                    ):
+                        struct_applied = False
+                        keep_hermes_final = True
                 if struct_applied:
                     evt = {**evt, "reply": struct_gated}
                 cmp_gated, cmp_applied = apply_compare_subject_denial_gate(
@@ -981,8 +1085,7 @@ def _agent_chat_stream_events(
                 if cmp_applied:
                     evt = {**evt, "reply": cmp_gated}
 
-                from backend.services.hermes_stream_sanitize import finalize_agent_reply
-
+                # 门禁/对照后再 finalize 一次（模板指纹剥离与实体展示）
                 if evt.get("reply"):
                     evt = {
                         **evt,
@@ -993,43 +1096,70 @@ def _agent_chat_stream_events(
                         ),
                     }
 
-                # 收束硬择优：thin salvage 终稿不得盖掉 draft_acc 中更长合规对照稿；
-                # 无更好过程稿时一律不得以 thin salvage 上屏（§0.1 C）。
+                # 收束硬择优：thin salvage / 过程稿不得盖掉 draft_acc 中合格 user-facing 终稿；
+                # 全局标准恢复，禁止硬编码人员数字特判。
                 from backend.services.agent_kb_supplemental import (
-                    PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY,
+                    HERMES_INCOMPLETE_REPLY,
+                    prefer_user_facing_hermes_final,
+                )
+                from backend.services.hermes_response_analysis import (
+                    hermes_reply_is_user_facing_final,
                 )
                 from backend.services.kb_ask_mcp_agent_native import (
                     is_personnel_thin_salvage_final,
                 )
 
                 final_body = str(evt.get("reply") or "").strip()
+                draft_keep = ""
+                if hermes_draft_acc:
+                    draft_keep = (hermes_draft_acc.full_body() or "").strip()
+                if not draft_keep and streamed_reply_before_postprocess:
+                    draft_keep = (streamed_reply_before_postprocess or "").strip()
+
                 if is_personnel_thin_salvage_final(final_body):
-                    draft_keep = ""
-                    if hermes_draft_acc:
-                        draft_keep = (hermes_draft_acc.full_body() or "").strip()
-                    if (
-                        draft_keep
-                        and not is_personnel_thin_salvage_final(draft_keep)
-                        and "人员结构对照" in draft_keep
-                        and len(draft_keep) > len(final_body) + 80
-                        and (
-                            re.search(r"1[,，]?378", draft_keep)
-                            or re.search(r"(?<!\d)70(?!\d)", draft_keep)
-                        )
+                    recovered = prefer_user_facing_hermes_final(
+                        final_body,
+                        alt_draft=draft_keep,
+                        user_query=uq,
+                    )
+                    if recovered and hermes_reply_is_user_facing_final(
+                        recovered, user_query=uq
                     ):
-                        final_body = finalize_agent_reply(
-                            draft_keep,
-                            user_query=uq,
-                            tier2_native=(agent_route == AgentRoute.hermes_full),
-                        )
+                        final_body = recovered
                         evt = {**evt, "reply": final_body}
                         coerce_applied = False
+                        keep_hermes_final = True
                     else:
-                        final_body = PERSONNEL_EVIDENCE_INSUFFICIENT_REPLY
+                        final_body = HERMES_INCOMPLETE_REPLY
                         evt = {**evt, "reply": final_body}
                         coerce_applied = True
+                        keep_hermes_final = False
 
                 final_body = str(evt.get("reply") or "").strip()
+                # 全局质量门：过程稿不得作为 Hermes 成功终稿上屏；
+                # 若 draft/过程流已有合格成稿则恢复，禁止人员套话无故顶替。
+                if final_body and not hermes_reply_is_user_facing_final(
+                    final_body, user_query=uq
+                ):
+                    recovered = prefer_user_facing_hermes_final(
+                        final_body,
+                        alt_draft=draft_keep,
+                        user_query=uq,
+                    )
+                    if recovered and hermes_reply_is_user_facing_final(
+                        recovered, user_query=uq
+                    ):
+                        final_body = recovered
+                        keep_hermes_final = True
+                        coerce_applied = False
+                    elif agent_route == AgentRoute.hermes_full:
+                        # 仅深度 Hermes 主答路径强制未成稿；lite/standard 保留补检索短稿
+                        final_body = HERMES_INCOMPLETE_REPLY
+                        keep_hermes_final = False
+                        coerce_applied = True
+                    evt = {**evt, "reply": final_body}
+                # 显式写回 done.reply，避免上游 evt.reply 残留未清洗过程稿
+                evt = {**evt, "reply": final_body}
                 # 相对「流式过程稿」是否变化：coerce 后 hermes_raw_reply 已被改写，
                 # 须与 streamed_reply_before_postprocess 比，否则浏览器 DOM 停在过程稿。
                 reply_changed = bool(
@@ -1037,6 +1167,7 @@ def _agent_chat_stream_events(
                     and streamed_reply_before_postprocess
                     and final_body != streamed_reply_before_postprocess
                 )
+
                 if final_body and (
                     not supplemental_final_reply
                     or final_body.strip() != supplemental_final_reply
@@ -1048,18 +1179,21 @@ def _agent_chat_stream_events(
                     or cmp_applied
                     or coerce_applied
                     or reply_changed
+                    or keep_hermes_final
                 ):
                     yield f"data: {json.dumps({'type': 'replace_reply', 'content': final_body}, ensure_ascii=False)}\n\n"
 
                 from backend.services.hermes_stream_stats import enrich_done_stream_stats
 
-                reply_meta = resolve_personnel_reply_source(
+                reply_meta = resolve_hermes_reply_source(
                     structured_gate_applied=struct_applied,
                     misattribution_gate_applied=gate_applied,
                     supplemental_ran=supplemental_ran or bool(evt.get("kb_supplemental")),
                     supplemental_adopted=supplemental_adopted,
                     coerce_applied=coerce_applied,
+                    keep_hermes_final=keep_hermes_final,
                     reply=final_body,
+                    user_query=uq,
                 )
                 evt = {
                     **evt,

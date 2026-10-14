@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import uuid
@@ -15,12 +16,21 @@ BASE = (settings.orientg_internal_base_url or "http://127.0.0.1:8000").rstrip("/
 HERMES = (settings.hermes_base_url or "http://127.0.0.1:8642").rstrip("/")
 HERMES_TOKEN = (settings.hermes_internal_token or "").strip()
 FINANCE_USER = "finance_test"
-FINANCE_PASS = "FinanceTest!2026"
 VERIFY_CHAT_ID = "s_mcp_bridge_verify"
 VERIFY_SESSION_KEY = f"orientg-{FINANCE_USER}--{VERIFY_CHAT_ID}"
 
 
+def _finance_test_password() -> str:
+    pw = (os.environ.get("ORIENTG_FINANCE_TEST_PASSWORD") or "").strip()
+    if not pw:
+        raise SystemExit(
+            "Set ORIENTG_FINANCE_TEST_PASSWORD (no default credential in repo)."
+        )
+    return pw
+
+
 def main() -> int:
+    FINANCE_PASS = _finance_test_password()
     results: list[tuple[str, bool, str]] = []
 
     # 1) backend health

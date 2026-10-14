@@ -84,15 +84,21 @@ def test_build_messages_includes_kb_ask_tool_hint_for_full_tier():
     )
     payload = json.loads(msgs[0]["content"].split("\n", 1)[1])
     hint = payload.get("orientg_kb_ask_tool") or {}
-    assert hint.get("hermes_tool_name") == "mcp_orientg_orientg_kb_ask"
+    assert hint.get("hermes_tool_name") == "mcp__orientg__orientg_kb_ask"
     assert hint.get("example", {}).get("hermes_session_key") == "sk-test-1"
     assert "人员结构" in str(hint.get("example", {}).get("query") or "")
 
 
 def test_kb_ask_tool_invocation_hint_names_mcp_tool():
     hint = kb_ask_tool_invocation_hint(session_key="sk1", user_query="查人员")
-    assert hint["hermes_tool_name"] == "mcp_orientg_orientg_kb_ask"
+    assert hint["hermes_tool_name"] == "mcp__orientg__orientg_kb_ask"
     assert hint["example"]["hermes_session_key"] == "sk1"
+    # Hermes ≥0.21.6：旧单下划线名会 not a known tool → 权限受限幻觉
+    assert "mcp_orientg_orientg_kb_ask" not in hint["hermes_tool_name"]
+    assert "mcp__orientg__orientg_kb_ask" in str(hint.get("instruction") or "")
+    assert "勿用" in str(hint.get("instruction") or "") or "旧名" in str(hint.get("instruction") or "")
+    assert "selected_collection_ids" in (hint.get("forbidden_args") or [])
+    assert "勿传" in str(hint.get("instruction") or "") or "仅" in str(hint.get("instruction") or "")
 
 
 def test_native_hint_requires_multi_round_personnel(monkeypatch):
@@ -195,7 +201,7 @@ def test_primer_snippet_appended_to_runs_instructions(mock_scope, mock_ask):
     )
     body["instructions"] = f"{body.get('instructions') or ''}\n\n{snippet}".strip()
     assert body["toolsets"] == ["orientg"]
-    assert "mcp_orientg_orientg_kb_ask" in body["instructions"]
+    assert "mcp__orientg__orientg_kb_ask" in body["instructions"]
     assert "研发 70 人" not in body["instructions"]
 
 
@@ -281,7 +287,8 @@ def test_stream_runs_emits_gateway_primer_before_hermes_done(
     assert mock_create_run.called
     body = mock_create_run.call_args.kwargs["body"]
     assert body.get("toolsets") == ["orientg"]
-    assert "YYCQ" not in str(body.get("instructions") or "") or "mcp_orientg" in str(body.get("instructions") or "")
+    instr = str(body.get("instructions") or "")
+    assert "YYCQ" not in instr or "mcp__orientg__orientg_kb_ask" in instr or "orientg_kb_ask" in instr
     assert done is not None
     stats = done.get("hermes_stream_stats") or {}
     assert int(stats.get("gateway_orientg_kb_ask_calls") or 0) >= 1
@@ -346,8 +353,8 @@ def test_stream_runs_skips_primer_when_native_personnel(
             'data: {"event":"run.completed","output":"## 人员对比\\n完成","run_id":"run_native_1"}',
         ],
         "run_retry_1": [
-            'data: {"event":"tool.started","tool":"mcp_orientg_orientg_kb_ask","preview":"kb","run_id":"run_retry_1"}',
-            'data: {"event":"tool.completed","tool":"mcp_orientg_orientg_kb_ask","preview":"ok","run_id":"run_retry_1"}',
+            'data: {"event":"tool.started","tool":"mcp__orientg__orientg_kb_ask","preview":"kb","run_id":"run_retry_1"}',
+            'data: {"event":"tool.completed","tool":"mcp__orientg__orientg_kb_ask","preview":"ok","run_id":"run_retry_1"}',
             'data: {"event":"run.completed","output":"### 人员结构对照\\n表","run_id":"run_retry_1"}',
         ],
     }

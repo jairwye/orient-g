@@ -81,6 +81,44 @@ def test_mcp_kb_scope_empty_lists_falls_to_token_acl():
     assert res.get("reason") != "doc allowed scope empty"
 
 
+def test_mcp_kb_ask_ignores_hermes_hallucinated_collections_keeps_session_folder():
+    """回归：Hermes 误传 selected_collection_ids 不得短路 session folder scope → doc allowed scope empty。"""
+    tok = _jwt()
+    sk = _register_session(
+        tok,
+        "s_scope_shortcircuit",
+        username="finance_test",
+        orientg_chat_session_id="s_scope_shortcircuit",
+        kb_scope={"selected_folder_ids": [FOLDER_JINGPIN_CAIBAO_25]},
+        orientg_route="hermes_full",
+    )
+    bridge.reset_for_tests()
+    session_ctx.reset_for_tests()
+
+    # 模型常把 folder_id 或臆造 id 塞进 selected_collection_ids，旧逻辑会 early-return 跳过 session
+    res = tools.orientg_kb_ask(
+        "",
+        PERSONNEL_QUERY,
+        selected_collection_ids=[FOLDER_JINGPIN_CAIBAO_25, "c_hallucinated_not_allowed"],
+        hermes_session_key=sk,
+    )
+    assert res.get("denied") is not True, res.get("reason")
+    assert res.get("reason") != "doc allowed scope empty"
+    assert res.get("reason") != "selected_collection_ids not allowed"
+    assert len(res.get("citations") or []) >= 1
+
+
+def test_mcp_kb_ask_denied_scope_empty_reply_not_permission_narrative():
+    """scope empty 时 MCP 须带引导 reply，且不得诱导「权限受限」。"""
+    from backend.services.kb_ask_mcp_reply import orientg_kb_ask_denied_hermes_reply
+
+    text = orientg_kb_ask_denied_hermes_reply("doc allowed scope empty")
+    assert "权限受限" not in text
+    assert "ACL 拒答" not in text or "勿" in text
+    assert "文件夹" in text or "hermes_session_key" in text
+    assert "orientg_kb_ask" in text
+
+
 def test_mcp_kb_ask_personnel_after_register_session_persists_to_db():
     tok = _jwt()
     sk = _register_session(

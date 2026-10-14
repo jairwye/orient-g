@@ -407,7 +407,11 @@ export function doneTraceMessage(meta: AgentMeta): string {
               ? " · 终稿出处：Orient-G补检索"
               : meta.reply_source === "orientg_mcp_coerce"
                 ? " · 终稿出处：MCP纠偏/证据不足"
-                : "";
+                : meta.reply_source === "hermes_incomplete"
+                  ? " · 终稿出处：Hermes未成稿"
+                  : meta.reply_source === "hermes_process_draft"
+                    ? " · 终稿出处：过程稿(未验收)"
+                    : "";
     return `完成：Tier 2（Hermes 深度编排）${packSuffix}${sup}${src}${obs ? ` · ${obs}` : ""}`;
   }
   if (meta.agent_route === "hermes_lite" || meta.agent_tier === 1) {
@@ -453,6 +457,46 @@ export function traceStepLabel(step?: string): string {
   if (step === "hermes_draft") return "Hermes 过程稿";
   if (step === "hermes_reasoning") return "Hermes 推理流";
   return "";
+}
+
+const DEFER_FINAL_PLACEHOLDER = "Orient-G 正在综合终稿；Hermes 过程稿见下方执行过程。";
+
+/** 流失败时：主气泡仍是 defer 占位则从 Hermes 过程稿 salvage 合格终稿。 */
+export function salvageHermesDraftOnStreamFail(
+  content: string | undefined,
+  trace: AgentTraceStep[] | undefined,
+): string | null {
+  const cur = (content || "").trim();
+  const isPlaceholder =
+    !cur ||
+    cur === DEFER_FINAL_PLACEHOLDER ||
+    cur.startsWith("Orient-G 正在综合终稿");
+  if (!isPlaceholder) return null;
+  const drafts = (trace || [])
+    .filter((t) => t.kind === "thinking" && (t.step === "hermes_draft" || !t.step))
+    .map((t) => (t.message || "").trim())
+    .filter(Boolean);
+  if (!drafts.length) return null;
+  const best = drafts.reduce((a, b) => (b.length >= a.length ? b : a));
+  // 排除编排过程稿（与后端 hermes_reply_is_user_facing_final 对齐）
+  if (
+    /首轮取证|next_action|verification_queries|核证补缺|Let me\b|evidence_sufficient|成稿骨架|硬数字参考表/i.test(
+      best,
+    )
+  ) {
+    return null;
+  }
+  // 粗门禁：中文实质稿 + 表格/对照/分析；避免把短规划句抬成终稿
+  const zh = (best.match(/[\u4e00-\u9fff]/g) || []).length;
+  if (zh < 20 || best.length < 48) return null;
+  if (
+    /人员结构对照/.test(best) ||
+    (/\|/.test(best) && /\d/.test(best) && zh >= 30) ||
+    (/分析/.test(best) && zh >= 40 && /\d/.test(best))
+  ) {
+    return best;
+  }
+  return null;
 }
 
 /** @deprecated use traceStepLabel */

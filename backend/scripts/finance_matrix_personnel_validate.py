@@ -4,7 +4,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-PERSONNEL_COMPARE_QUERY = "对比分析YYCQ和可比公司A25年的人员结构"
+try:
+    from finance_matrix_personnel_cases import PERSONNEL_COMPARE_QUERY
+except ImportError:  # pragma: no cover
+    PERSONNEL_COMPARE_QUERY = "对比分析YYCQ和可比公司A25年的人员结构"
 
 BROWSER_FAIL_HERMES_V1 = (
     "结论：证据中缺乏可比公司A2025年的人员结构数据，无法进行对比分析。\n"
@@ -29,9 +32,10 @@ GOOD_PERSONNEL_COMPARE_EXCERPT = (
     "| 运营 | 242 人 | 61 人 |\n"
     "| 管理 | 36 人 | 33.15 人 |\n"
     "| 支持 | 312 人 | 45.85 人 |\n"
-    "| 销售 | 946 人 | 证据未覆盖 |\n\n"
+    "| 销售 | 946 人 | 证据未覆盖 |\n"
+    "| **分项合计** | — | **210 人**（excel 四项加总） |\n\n"
     "### 对比分析\n\n"
-    "- **结构差异**：YYCQ为 excel 职能四分项。\n"
+    "- **结构差异**：YYCQ 为 excel 职能四分项。\n"
 )
 
 _PERSONNEL_NOISE = re.compile(
@@ -71,17 +75,81 @@ def personnel_case_kind(query: str) -> str:
     return "personnel_other"
 
 
-def _entities_in_text(text: str, entities: list[str]) -> dict[str, bool]:
+def _entities_in_text(text: str, entities: list[str], *, user_query: str = "") -> dict[str, bool]:
+    from backend.services.kb_compare_entities import (
+        present_entity_label,
+        primary_aliases,
+        peer_aliases,
+    )
+
     h = text or ""
     out: dict[str, bool] = {}
     for ent in entities:
-        if ent in h:
-            out[ent] = True
-        elif len(ent) >= 2 and ent[:2] in h:
-            out[ent] = True
-        else:
-            out[ent] = False
+        aliases = [ent, present_entity_label(ent, user_query)]
+        if re.search(r"YYCQ", ent, re.I) or ent == "YYCQ":
+            aliases.extend(primary_aliases())
+        if "可比公司A" in ent:
+            aliases.extend(peer_aliases())
+        hit = False
+        for a in aliases:
+            a = (a or "").strip()
+            if not a:
+                continue
+            if a in h:
+                hit = True
+                break
+            if len(a) >= 2 and a[:2] in h:
+                hit = True
+                break
+        out[ent] = hit
     return out
+
+
+def personnel_compare_canonical_headers_leaked(text: str, *, user_query: str = "") -> bool:
+    """问句已用中文公司名时，主表表头/标题仍写 YYCQ/可比公司A → 展示层 bug。"""
+    from backend.services.kb_compare_entities import (
+        PEER_ENTITY,
+        PRIMARY_ENTITY,
+        user_facing_entity_labels,
+    )
+
+    labels = user_facing_entity_labels(user_query)
+    primary = labels.get(PRIMARY_ENTITY)
+    peer = labels.get(PEER_ENTITY)
+    if not primary or not peer:
+        return False
+    if primary == PRIMARY_ENTITY and peer == PEER_ENTITY:
+        return False
+    h = text or ""
+    if re.search(
+        r"\|\s*职能归属\s*\|\s*可比公司A\s*\|\s*YYCQ\s*\|"
+        r"|\|\s*职能归属\s*\|\s*YYCQ\s*\|\s*可比公司A\s*\|",
+        h,
+        re.I,
+    ):
+        return True
+    if re.search(r"##\s*YYCQ\s+vs\s+可比公司A", h, re.I):
+        return True
+    # 表头列含内部代称且未同时出现用户用语
+    if re.search(r"\|\s*可比公司A\s*\|", h) and peer not in h:
+        return True
+    if re.search(r"\|\s*YYCQ\s*\|", h, re.I) and primary not in h:
+        return True
+    return False
+
+
+def personnel_compare_totals_ok(text: str) -> bool:
+    """分项齐全时须有分项合计；peer 员工总数有证据锚点时宜展示。"""
+    h = text or ""
+    has_excel_four = bool(
+        re.search(r"33\.15", h)
+        and re.search(r"45\.85", h)
+        and re.search(r"(?<!\d)70(?:\.00)?(?!\d)", h)
+        and re.search(r"(?<!\d)61(?:\.00)?(?!\d)", h)
+    )
+    if has_excel_four and not re.search(r"分项合计", h):
+        return False
+    return True
 
 
 def _probe_amounts_in_text(text: str, kb_probe: dict[str, Any] | None) -> bool:
@@ -121,22 +189,75 @@ def personnel_compare_has_forbidden_leaks(text: str) -> list[str]:
     leaks: list[str] = []
     if _ENGLISH_PROCESS_LEAK.search(h):
         leaks.append("english_process_leak")
-    # 22.6 倍规模套话仍拒；横比且无对照表时，旁白员工总数视为误归因
+    from backend.services.kb_compare_entities import peer_match_re, primary_match_re
+
+    _prim = primary_match_re()
+    _peer = peer_match_re()
+    # 22.6 倍规模套话仍拒；本公司侧规模=139 硬拒（含 env 别名）
     if re.search(r"139人的22\.6倍|22\.6\s*倍", h):
         leaks.append("hermes_misattribution")
+    elif re.search(
+        rf"(?:{_prim})[^\n]{{0,80}}(?:员工总数|在职员工|员工仅)[^\n]{{0,40}}139|"
+        r"(?:员工总数|在职员工总数)[^\n|]{0,24}\|\s*139\s*人|"
+        r"员工仅\s*139\s*人",
+        h,
+        re.I,
+    ):
+        leaks.append("hermes_misattribution")
     elif (
-        re.search(r"可比公司A", h)
-        and re.search(r"YYCQ", h)
+        re.search(_peer, h, re.I)
+        and re.search(_prim, h, re.I)
         and "人员结构对照" not in h
         and re.search(r"员工总数|在职员工总数|一、\s*总体规模|总体规模与", h)
     ):
         leaks.append("hermes_misattribution")
+    # 展示叠名：主体（主体）/ 主体主体
+    if re.search(
+        rf"({_peer}|{_prim})\s*[（(]\s*\1\s*[）)]"
+        rf"|({_peer}){{2}}|({_prim}){{2}}",
+        h,
+        re.I,
+    ):
+        leaks.append("stacked_entity_label")
+    # 把 excel 分项加总当员工总数并与年报总数推倍数。
+    # 允许诚实注明「冲突片段里的 139/95 vs 年报 3,138」——那不是把分项加总当总数。
+    _small_hc = r"(?:139|140|153|200|210)"
+    _conflict_note = re.search(
+        rf"(?:差异|不一致|冲突|矛盾|未提供|不应|不宜|片面|片段|其他证据).{{0,48}}{_small_hc}"
+        rf"|{_small_hc}\s*人.{{0,48}}(?:差异|不一致|冲突|矛盾|未提供|不应|不宜|为准)",
+        h,
+    )
+    if (
+        re.search(
+            rf"(?:员工总数|员工合计|在职员工总数)[^\n]{{0,48}}{_small_hc}\s*人",
+            h,
+        )
+        and re.search(r"3[,，]?138", h)
+        and not _conflict_note
+    ):
+        if re.search(r"\d{1,3}\s*倍", h) or not re.search(r"分项合计", h):
+            leaks.append("excel_sum_as_headcount")
+    elif re.search(
+        rf"(?:{_prim})[^\n]{{0,40}}{_small_hc}\s*人[^\n]{{0,80}}\d{{1,3}}\s*倍",
+        h,
+        re.I,
+    ):
+        leaks.append("excel_sum_as_headcount")
     if "分主体证据摘要" in h:
         leaks.append("excerpt_appendix")
-    # 宽尺子 C：推算/推断/约N人/请勿采信掩盖
-    if re.search(r"根据推算|(?<![可])推算|可推断|推断|推测为|合理推测", h):
+    # 手测同路径：过程稿与终稿同屏
+    if personnel_hand_path_dual_draft(h):
+        leaks.append("orchestration_dual_draft")
+    # 宽尺子 C：推算/推断/约N人（含表内「约210」/「**约210**」）/请勿采信掩盖
+    if re.search(r"根据推算|(?<![可])推算|可推断|(?<![对])推断|推测为|合理推测", h):
         leaks.append("unsupported_speculation")
     elif re.search(r"约\s*\d{2,6}\s*人", h):
+        leaks.append("unsupported_speculation")
+    elif re.search(
+        r"(?:合计|员工总数|在职|分项合计|总人数)[^\n|]{0,24}约\s*\d{2,6}"
+        r"|\*{0,2}约\s*\d{2,6}\*{0,2}(?=\s*(?:\||$))",
+        h,
+    ):
         leaks.append("unsupported_speculation")
     elif re.search(r"请勿采信|勿采信", h) and re.search(r"推断|推算|约\s*\d", h):
         leaks.append("unsupported_speculation")
@@ -162,10 +283,23 @@ def validate_personnel_case_spec(
     checks: dict[str, Any] = {"case_spec": spec.get("angle")}
     must_have = [str(x) for x in (spec.get("must_contain") or []) if str(x).strip()]
     h = text or ""
-    if must_have and all(
-        needle in h or (needle == "1378" and bool(re.search(r"1[,，]?378", h)))
-        for needle in must_have
-    ):
+
+    def _needle_hit(needle: str) -> bool:
+        if needle == "1378":
+            return bool(re.search(r"1[,，]?378", h))
+        if needle == "分项合计":
+            return bool(
+                re.search(
+                    r"分项合计|四项加总|职能分项合计|"
+                    r"(?:员工总计|分项总[计数])[^\n|]{0,24}210|"
+                    r"210\s*人[^\n]{0,24}(?:excel|四项|加总)",
+                    h,
+                    re.I,
+                )
+            )
+        return needle in h
+
+    if must_have and all(_needle_hit(needle) for needle in must_have):
         honest = False
         checks["substance_overrides_honest_flag"] = True
     if honest and not must_have:
@@ -189,6 +323,17 @@ def validate_personnel_case_spec(
             leaks.append("must_not_contain")
             checks["forbidden_leaks"] = leaks
             return False, checks
+
+    # 主气泡套话 / 未成稿：不得靠过程稿锚点刷绿
+    if re.search(
+        r"当前知识库证据不足或 Hermes 未给出合格|无法展示可靠对照表|"
+        r"Hermes 深度编排未完成可用终稿|终稿出处[：:]\s*Hermes未成稿",
+        h,
+    ):
+        checks["insufficient_final_bubble"] = True
+        checks["hermes_authorship_ok"] = False
+        checks["hermes_authorship_fail"] = "insufficient_final_bubble"
+        return False, checks
 
     # anti-gate 优先：即便内容数字齐全，gate/模板刷绿也必须 FAIL
     if spec.get("require_hermes_authorship"):
@@ -234,11 +379,15 @@ def validate_personnel_case_spec(
             return False, checks
         checks["hermes_mcp_self_ok"] = True
 
-    # 宽尺子 B：强制 MCP 重试不得作为常态（有计数时强制）
+    # 宽尺子 B：强制 MCP 重试不得作为常态；缺计数不得默认当 0 刷绿
     max_retry = spec.get("max_hermes_mcp_retry_count")
-    if max_retry is not None and hermes_mcp_retry_count is not None:
-        checks["hermes_mcp_retry_count"] = int(hermes_mcp_retry_count)
+    if max_retry is not None:
         checks["max_hermes_mcp_retry_count"] = int(max_retry)
+        if hermes_mcp_retry_count is None:
+            checks["hermes_mcp_retry_count"] = None
+            checks["hermes_mcp_retry_ok"] = False
+            return False, checks
+        checks["hermes_mcp_retry_count"] = int(hermes_mcp_retry_count)
         if int(hermes_mcp_retry_count) > int(max_retry):
             checks["hermes_mcp_retry_ok"] = False
             return False, checks
@@ -258,7 +407,7 @@ def validate_personnel_case_spec(
 
     for needle in spec.get("must_contain") or []:
         key = f"has_{needle}"
-        ok = needle in h or (needle == "1378" and bool(re.search(r"1[,，]?378", h)))
+        ok = _needle_hit(str(needle))
         checks[key] = ok
         if not ok:
             return False, checks
@@ -293,7 +442,18 @@ def validate_personnel_case_spec(
             and checks.get("sanqi_roles_in_table_ok")
             and checks.get("has_1378")
         ):
-            # Hermes 主写 + 对照表锚点齐全：容忍正文中规模叙事噪声（不为此刷 FAIL）
+            # 禁止把「本公司侧规模=139」当噪声容忍；其余规模叙事仍可择优保住对照表
+            from backend.services.kb_compare_entities import primary_match_re
+
+            if re.search(
+                rf"(?:{primary_match_re()})[^\n]{{0,80}}(?:员工总数|在职员工|员工仅)[^\n]{{0,40}}139|"
+                r"(?:员工总数|在职员工总数)[^\n|]{0,24}\|\s*139\s*人|"
+                r"员工仅\s*139\s*人",
+                h,
+                re.I,
+            ):
+                checks["misattributed_139_hard_fail"] = True
+                return False, checks
             checks["misattributed_tolerated_for_hermes_authorship"] = True
             ok = True
         if not ok:
@@ -301,6 +461,38 @@ def validate_personnel_case_spec(
 
     checks["personnel_spec_ok"] = True
     return True, checks
+
+
+def personnel_hand_path_dual_draft(text: str) -> bool:
+    """主气泡过程稿+终稿粘贴（手测失败路径）：取证独白与对照表同屏。"""
+    h = text or ""
+    if "人员结构对照" not in h and not re.search(r"职能归属", h):
+        return False
+    return bool(
+        re.search(
+            r"首轮取证|第二轮核证|现在可以撰写终稿|现在撰写终稿|"
+            r"evidence_sufficient|next_action\s*=|"
+            r"网关标记证据不充分|需要第二轮不同\s*query|"
+            r"MCP\s*优先重试|未调用\s*orientg_kb_ask",
+            h,
+            re.I,
+        )
+    )
+
+
+def personnel_process_draft_as_final(text: str) -> bool:
+    """纯过程稿当终稿：英文 Let me first / 核证计划且无人员对照实质内容。"""
+    from backend.services.hermes_response_analysis import hermes_reply_is_user_facing_final
+
+    h = (text or "").strip()
+    if not h:
+        return True
+    if re.search(r"Let me first\b|核证补缺|verification_queries", h, re.I):
+        if "人员结构对照" not in h:
+            return True
+    return not hermes_reply_is_user_facing_final(
+        h, user_query=PERSONNEL_COMPARE_QUERY
+    ) and not re.search(r"人员结构对照", h)
 
 
 def personnel_hermes_authorship_ok(
@@ -314,6 +506,18 @@ def personnel_hermes_authorship_ok(
     from backend.services.personnel_compare_report import looks_like_orientg_personnel_template
 
     checks: dict[str, Any] = {}
+    if personnel_process_draft_as_final(text):
+        checks["process_draft_final_ok"] = False
+        checks["hermes_authorship_ok"] = False
+        checks["hermes_authorship_fail"] = "process_draft_as_final"
+        return False, checks
+    checks["process_draft_final_ok"] = True
+    if personnel_hand_path_dual_draft(text):
+        checks["hand_path_dual_draft_ok"] = False
+        checks["hermes_authorship_ok"] = False
+        checks["hermes_authorship_fail"] = "orchestration_dual_draft"
+        return False, checks
+    checks["hand_path_dual_draft_ok"] = True
     template = looks_like_orientg_personnel_template(text)
     checks["orientg_template_fingerprint"] = template
     if template:
@@ -326,12 +530,17 @@ def personnel_hermes_authorship_ok(
         checks["hermes_authorship_fail"] = "structured_gate_applied"
         return False, checks
     src = (reply_source or "").strip()
-    if src:
-        checks["reply_source"] = src
-        if src != "hermes":
-            checks["hermes_authorship_ok"] = False
-            checks["hermes_authorship_fail"] = f"reply_source={src}"
-            return False, checks
+    # 手测同路径：缺 reply_source 不得刷绿（避免门禁顶替漏检）
+    if not src:
+        checks["reply_source"] = None
+        checks["hermes_authorship_ok"] = False
+        checks["hermes_authorship_fail"] = "reply_source_missing"
+        return False, checks
+    checks["reply_source"] = src
+    if src != "hermes":
+        checks["hermes_authorship_ok"] = False
+        checks["hermes_authorship_fail"] = f"reply_source={src}"
+        return False, checks
     if kb_supplemental is True:
         checks["kb_supplemental"] = True
         checks["hermes_authorship_ok"] = False
@@ -395,9 +604,17 @@ def personnel_compare_answer_ok(
 
     entities = extract_query_entity_phrases(uq)
     checks["entities"] = entities
-    ent_hits = _entities_in_text(text, entities)
+    ent_hits = _entities_in_text(text, entities, user_query=uq)
     checks["entity_present"] = ent_hits
     if len(entities) >= 2 and not all(ent_hits.values()):
+        return False, checks
+
+    if personnel_compare_canonical_headers_leaked(text or "", user_query=uq):
+        checks["canonical_headers_leaked"] = True
+        return False, checks
+
+    if not personnel_compare_totals_ok(text or ""):
+        checks["personnel_totals_ok"] = False
         return False, checks
 
     if not re.search(r"研发人员|1\.1信息-人员|人员结构|在职员工", text or "", re.I):
@@ -422,8 +639,10 @@ def personnel_compare_answer_ok(
         checks["personnel_core_table_ok"] = core_ok
         if not core_ok:
             return False, checks
-        # YYCQ excel 分项：对照表研发人数不得为 1 等明显误解析（应为 70 量级）
-        if re.search(r"YYCQ", text or "") and re.search(
+        # 本公司侧 excel 分项：对照表研发人数不得为 1 等明显误解析（应为 70 量级）
+        from backend.services.kb_compare_entities import primary_match_re
+
+        if re.search(primary_match_re(), text or "", re.I) and re.search(
             r"\|\s*研发\s*\|[^|\n]*\|\s*1\s*人\s*\|", text or "", re.I
         ):
             checks["yycq_rd_parse_ok"] = False
@@ -562,11 +781,24 @@ def augment_validate_row_personnel(
         structured_gate_applied = True
     kb_supplemental = row.get("kb_supplemental")
     if kb_supplemental is None and re.search(
-        r"Orient-G 自动补检索修订|kb_supplemental\s*[:=]\s*true",
-        str(row.get("tier_line") or "") + str(row.get("notes") or ""),
+        r"Orient-G 自动补检索修订|自动执行定向\s*orientg_kb_ask|"
+        r"Hermes 未调用 MCP 补检索|kb_supplemental\s*[:=]\s*true",
+        str(row.get("tier_line") or "")
+        + str(row.get("notes") or "")
+        + str(row.get("extract_head") or "")
+        + str(row.get("head") or ""),
         re.I,
     ):
         kb_supplemental = True
+
+    extract = row.get("extract") or {}
+    if extract.get("insufficientFinal") or re.search(
+        r"当前知识库证据不足或 Hermes 未给出合格|无法展示可靠对照表|"
+        r"Hermes 深度编排未完成可用终稿",
+        answer_text or "",
+    ):
+        checks["insufficient_final_bubble"] = True
+        return False, checks
 
     spec = personnel_case_spec_for_row(row)
     if spec:

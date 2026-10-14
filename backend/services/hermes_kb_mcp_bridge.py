@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+# Hermes ≥0.21.6：MCP 工具名为 mcp__<server>__<tool>；旧单下划线名会报 not a known tool。
+HERMES_MCP_KB_ASK_TOOL = "mcp__orientg__orientg_kb_ask"
+HERMES_MCP_KB_ASK_TOOL_LEGACY = "mcp_orientg_orientg_kb_ask"
+
 
 def should_prime_kb_ask_before_hermes_run(
     *,
@@ -37,32 +41,43 @@ def kb_ask_tool_invocation_hint(
     q = (user_query or "").strip()
     sk = (session_key or "").strip()
     native = settings.hermes_native_mcp_reply if native_mode is None else bool(native_mode)
+    tool = HERMES_MCP_KB_ASK_TOOL
     if native:
         instruction = (
-            "调用 mcp_orientg_orientg_kb_ask（query 用中文、含 hermes_session_key）。"
-            "返回含 agent_payload（orientg_kb_ask_v2）与证据节选。"
+            f"调用 {tool}（**仅** query 用中文 + hermes_session_key；"
+            "勿传 selected_collection_ids/selected_table_ids/attached_doc_ids，"
+            "文档范围由会话自动继承；"
+            f"须与 tool_search 返回的精确名一致，勿用旧名 {HERMES_MCP_KB_ASK_TOOL_LEGACY}）。"
+            "返回含 agent_payload（orientg_kb_ask_v2）与证据节选；**阅读返回文本即可**，"
+            "严禁 execute_code/shell/session_search 解析 JSON。"
             "人员深度横比：**至少 2 次** MCP（首轮取证 + 一轮不同 query 核证/补缺）；"
             "若 next_action=verify_gap_then_write_final：先按 verification_queries 核实，再成稿；"
             "若 next_action=write_final_answer_now：立即用中文写终稿，必须含 "
             "`### 人员结构对照` 表（填入 evidence[].metrics 硬数字如 1378/946/242/70）+ "
             "`### 对比分析` + `### 口径说明`。"
             "禁止英文 planning、禁止总体规模/差距倍数（如 22.6 倍）、禁止核心指标对照旧模板。"
-            "禁止重复完全相同的 query；禁止 terminal/curl/execute_code。"
+            "禁止重复完全相同的 query；禁止 terminal/curl/execute_code/memory/web-tools；"
+            "勿声称「知识库权限受限」。"
         )
     else:
         instruction = (
-            "调用 MCP 工具 mcp_orientg_orientg_kb_ask（参数 query + hermes_session_key）；"
-            "禁止 terminal/shell/read_file/execute_code 模拟 KB 访问。"
+            f"调用 MCP 工具 {tool}（**仅**参数 query + hermes_session_key；"
+            "勿传 selected_collection_ids 等，范围由会话继承；"
+            f"精确名 mcp__orientg__orientg_kb_ask，勿用 {HERMES_MCP_KB_ASK_TOOL_LEGACY}）；"
+            "禁止 terminal/shell/read_file/execute_code/session_search/memory/web-tools 模拟 KB 访问。"
             "MCP 的 reply 含「证据节选」正文（docling section / excel chunk）；收到后**直接成稿**，"
+            "读文本即可，严禁用代码解析 JSON。"
             "勿因「缺数据」反复空转检索（Hermes tool_loop_guardrails 默认仅 warn，"
             "Orient-G 网关会在多次 kb_ask 后强制收束）。"
             "深度模式：Runs 第一轮推理后须进入 tool round，1–2 次 MCP 足够。"
         )
     return {
         "name": "orientg_kb_ask",
-        "hermes_tool_name": "mcp_orientg_orientg_kb_ask",
+        "hermes_tool_name": tool,
+        "hermes_tool_name_legacy": HERMES_MCP_KB_ASK_TOOL_LEGACY,
         "required_args": ["query", "hermes_session_key"],
-        "forbidden_alternatives": ["terminal", "execute_code", "curl", "python -c"],
+        "forbidden_args": ["selected_collection_ids", "selected_table_ids", "attached_doc_ids"],
+        "forbidden_alternatives": ["terminal", "execute_code", "curl", "python -c", "memory", "web-tools"],
         "example": {"query": q, "hermes_session_key": sk},
         "instruction": instruction,
         "first_tool_round_required": True,
@@ -97,7 +112,7 @@ def format_kb_ask_primer_for_instructions(
             f"primer query: {query.strip()}\n"
             f"引用 doc:\n{cites}\n"
             f"{preview_block}"
-            "成稿前 **必须** 调用 mcp_orientg_orientg_kb_ask（**首轮即调**，"
+            "成稿前 **必须** 调用 mcp__orientg__orientg_kb_ask（**首轮即调**，"
             "禁止未调工具先写终稿）；人员深度横比须 **≥2 次**（取证 + 不同 query 核证）。\n"
             "以 MCP 返回的 **agent_payload + 证据节选** 为准中文成稿。\n"
             "网关线索摘要**不得**直接作为终稿；禁止推算/推断/约N人。\n"
@@ -110,7 +125,7 @@ def format_kb_ask_primer_for_instructions(
         f"primer query: {query.strip()}\n"
         f"网关摘要长度: {reply_len} 字（**不得**直接作为终稿或引用依据）\n"
         f"引用 doc（须用 MCP 重新检索核实）:\n{cites}\n"
-        "成稿前 **必须** 至少调用一次 mcp_orientg_orientg_kb_ask（参数 query + hermes_session_key）。\n"
+        "成稿前 **必须** 至少调用一次 mcp__orientg__orientg_kb_ask（参数 query + hermes_session_key）。\n"
         "禁止 terminal / execute_code / curl。\n"
     )
 
@@ -137,7 +152,7 @@ def build_mcp_retry_runs_body(
     instructions = (
         "## Orient-G MCP 硬性要求（重试 run）\n"
         f"hermes_session_key: {sk}\n"
-        "在输出分析报告之前，**必须先**调用 mcp_orientg_orientg_kb_ask 至少 1 次。\n"
+        "在输出分析报告之前，**必须先**调用 mcp__orientg__orientg_kb_ask 至少 1 次。\n"
         f"建议 query:\n{suggest}\n"
         "MCP reply 含证据节选正文；1–2 次检索足够，禁止反复空转。\n"
         "未调用 MCP 禁止成稿；禁止 terminal / read_file / execute_code。\n"
@@ -171,15 +186,50 @@ def build_mcp_verify_continue_runs_body(
     instructions = (
         "## Orient-G MCP 核证续跑（人员深度横比 · 非空转重试）\n"
         f"hermes_session_key: {sk}\n"
-        "上一轮已取证，但仍须 **再调 1 次** mcp_orientg_orientg_kb_ask 做核证/补缺，"
+        "上一轮已取证，但仍须 **再调 1 次** mcp__orientg__orientg_kb_ask 做核证/补缺，"
         "query **必须与用户原横比问句不同**（选下方建议之一）。\n"
         f"建议核实 query:\n{suggest}\n"
         "核证后立即用中文写终稿：`### 人员结构对照` + `### 对比分析` + `### 口径说明`；"
-        "禁止推算/推断/约N人；禁止重复完全相同的 query；禁止 terminal。\n"
+        "禁止推算/推断/约N人；禁止重复完全相同的 query；禁止 terminal/execute_code。"
+        "读 MCP 返回文本即可，勿用代码解析 JSON。\n"
     )
     return {
         "model": model,
         "input": q or "请再调 orientg_kb_ask 核实后成稿",
+        "session_id": sk,
+        "toolsets": ["orientg"],
+        "instructions": instructions,
+    }
+
+
+def build_mcp_write_final_runs_body(
+    *,
+    user_query: str,
+    session_key: str,
+    model: str,
+) -> dict[str, Any]:
+    """
+    全局：forbidden execute_code/shell 收束后的成稿续跑。
+    已有 MCP 证据时强制 Hermes 直接中文终稿，禁止再调禁工具 / 门禁顶替。
+    """
+    q = (user_query or "").strip()
+    sk = (session_key or "").strip()
+    instructions = (
+        "## Orient-G 成稿续跑（全局 · 禁工具空转或 kb_ask 未成稿后）\n"
+        f"hermes_session_key: {sk}\n"
+        "此前 terminal/execute_code/session_search 等可能已被网关拦截，"
+        "或已多次调用 orientg_kb_ask 但仍只有过程稿。"
+        "**不要再调用**禁工具；也无需再用代码解析 JSON；"
+        "**不要再写**英文 Let me first / 核证补缺计划 / evidence_sufficient 过程独白。\n"
+        "请基于本会话已获取的 MCP（orientg_kb_ask）证据节选与 agent_payload，"
+        "**直接用中文写出完整终稿**回答用户问题（人员横比须含「人员结构对照」表与分析）。\n"
+        "读 MCP 返回文本即可填表与分析；禁止推算/编造无证据数字；"
+        "禁止英文 planning；禁止再调 terminal/execute_code/shell/session_search/memory/web。\n"
+        f"用户问题：{q}\n"
+    )
+    return {
+        "model": model,
+        "input": q or "请基于已有 MCP 证据直接中文成稿",
         "session_id": sk,
         "toolsets": ["orientg"],
         "instructions": instructions,
@@ -227,14 +277,14 @@ def orchestrate_personnel_verify_kb_ask(
     events: list[dict[str, Any]] = [
         {
             "type": "tool_progress",
-            "tool": "mcp_orientg_orientg_kb_ask",
+            "tool": "mcp__orientg__orientg_kb_ask",
             "status": "running",
             "message": f"Hermes 验证补检索 orientg_kb_ask：{preview}",
             "source": HERMES_NATIVE_ORCHESTRATION_SOURCE,
         },
         {
             "type": "tool_progress",
-            "tool": "mcp_orientg_orientg_kb_ask",
+            "tool": "mcp__orientg__orientg_kb_ask",
             "status": status,
             "message": f"Hermes 验证补检索 orientg_kb_ask 完成：{preview}",
             "source": HERMES_NATIVE_ORCHESTRATION_SOURCE,

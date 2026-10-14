@@ -91,7 +91,14 @@ def resolve(session_key: str | None) -> Optional[HermesSessionContext]:
     row = load_session(key)
     if not row:
         return None
+    from backend.config import settings
+
     scope_raw = row.get("kb_scope") or {}
+    # DB 无列/旧行缺字段时不得把 native_mcp_reply 静默压成 False（多 worker 假阴性）
+    if "native_mcp_reply" in row and row.get("native_mcp_reply") is not None:
+        native = bool(row.get("native_mcp_reply"))
+    else:
+        native = bool(settings.hermes_native_mcp_reply)
     return HermesSessionContext(
         allow_kb_write=bool(row.get("allow_kb_write")),
         kb_scope={
@@ -112,7 +119,7 @@ def resolve(session_key: str | None) -> Optional[HermesSessionContext]:
             ],
         },
         orientg_route=(row.get("orientg_route") or "").strip() or None,
-        native_mcp_reply=bool(row.get("native_mcp_reply")),
+        native_mcp_reply=native,
     )
 
 

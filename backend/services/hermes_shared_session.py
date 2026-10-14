@@ -18,6 +18,8 @@ from backend.database import engine, init_hermes_session_store_table
 logger = logging.getLogger(__name__)
 
 _TOKEN_SEAL_PREFIX = "v1:"
+# 无独立 DB 列时，把 native_mcp_reply 塞进 kb_scope_json 的保留键（load 时剥离）
+_SCOPE_NATIVE_MCP_KEY = "__orientg_native_mcp_reply"
 
 
 def _now() -> datetime:
@@ -93,6 +95,7 @@ def persist_session(
     allow_kb_write: bool = False,
     orientg_route: str | None = None,
     kb_budget_max: int | None = None,
+    native_mcp_reply: bool | None = None,
     ttl_seconds: int = 3600,
 ) -> None:
     init_hermes_session_store_table()
@@ -101,7 +104,12 @@ def persist_session(
     if not key or not token:
         return
     expires = _now() + timedelta(seconds=max(1, int(ttl_seconds)))
-    scope = kb_scope or {}
+    scope = dict(kb_scope or {})
+    if native_mcp_reply is None:
+        from backend.config import settings
+
+        native_mcp_reply = bool(settings.hermes_native_mcp_reply)
+    scope[_SCOPE_NATIVE_MCP_KEY] = bool(native_mcp_reply)
     sealed = seal_user_token(token)
     sql = text(
         """
@@ -168,10 +176,15 @@ def load_session(session_key: str | None) -> Optional[dict[str, Any]]:
             scope = json.loads(scope_raw) if isinstance(scope_raw, str) else dict(scope_raw or {})
         except Exception:
             scope = {}
+        if not isinstance(scope, dict):
+            scope = {}
+        else:
+            scope = dict(scope)
+        native_raw = scope.pop(_SCOPE_NATIVE_MCP_KEY, None)
         token = unseal_user_token(str(row.get("user_token") or ""))
         if not token:
             return None
-        return {
+        out: dict[str, Any] = {
             "user_token": token,
             "kb_scope": scope,
             "allow_kb_write": bool(row.get("allow_kb_write")),
@@ -179,6 +192,9 @@ def load_session(session_key: str | None) -> Optional[dict[str, Any]]:
             "kb_budget_max": row.get("kb_budget_max"),
             "kb_budget_used": int(row.get("kb_budget_used") or 0),
         }
+        if native_raw is not None:
+            out["native_mcp_reply"] = bool(native_raw)
+        return out
     except Exception:
         logger.debug("load hermes session failed for %s", key, exc_info=True)
         return None

@@ -381,7 +381,7 @@ def build_agent_payload(
         if task_type == "personnel_compare":
             contract["next_action"] = "write_final_answer_now"
             contract.pop("must_verify_before_final", None)
-    entity_hints = _entity_hints(task_type, entities)
+    entity_hints = _entity_hints(task_type, entities, query=query)
     kb_status = {
         "empty": len(evidence) == 0 and len(citations or []) == 0,
         "citation_count": len(citations or []),
@@ -390,7 +390,10 @@ def build_agent_payload(
             "知识库非空：下方 evidence 来自 folder 内年报/excel。"
             "勿声称「知识库为空」或「YYCQ非上市公司无法检索」。"
             if evidence
-            else "当前 excerpt 为空；可再调 1 次 orientg_kb_ask（中文 query）。"
+            else (
+                "当前 excerpt 为空；请再调 1 次 mcp__orientg__orientg_kb_ask（orientg_kb_ask，中文 query）。"
+                "勿向用户声称知识库不可检索或 ACL 拒答。"
+            )
         ),
     }
     out: dict[str, Any] = {
@@ -412,28 +415,52 @@ def build_agent_payload(
     return out
 
 
-def _entity_hints(task_type: str, entities: list[str]) -> list[dict[str, str]]:
+def _entity_hints(
+    task_type: str,
+    entities: list[str],
+    *,
+    query: str = "",
+) -> list[dict[str, str]]:
+    from backend.services.kb_compare_entities import (
+        PEER_ENTITY,
+        PRIMARY_ENTITY,
+        present_entity_label,
+        user_facing_entity_labels,
+    )
+
+    labels = user_facing_entity_labels(query)
+    primary_disp = present_entity_label(PRIMARY_ENTITY, query)
+    peer_disp = present_entity_label(PEER_ENTITY, query)
     hints: list[dict[str, str]] = []
     for ent in entities:
         if ent == "YYCQ":
-            hints.append(
-                {
-                    "entity": ent,
-                    "hint": "KB 内主体（excel「1.1信息-人员」），非 A 股公开检索名；勿要求用户确认上市代码。",
-                }
-            )
+            if labels.get(PRIMARY_ENTITY) and labels[PRIMARY_ENTITY] != PRIMARY_ENTITY:
+                hint = (
+                    f"KB 内检索代号 YYCQ，成稿对外只用「{primary_disp}」"
+                    f"（禁止写成「{primary_disp}（{primary_disp}）」或「YYCQ（{primary_disp}）」）；"
+                    "excel「1.1信息-人员」，非 A 股公开检索名。"
+                )
+            else:
+                hint = "KB 内主体（excel「1.1信息-人员」），非 A 股公开检索名；勿要求用户确认上市代码。"
+            hints.append({"entity": ent, "hint": hint})
         elif "可比公司A" in ent:
-            hints.append(
-                {
-                    "entity": ent,
-                    "hint": "A 股年报节选（研发人员情况、员工专业构成）；销售/运营见员工数量专节。",
-                }
-            )
+            if labels.get(PEER_ENTITY) and labels[PEER_ENTITY] != PEER_ENTITY:
+                hint = (
+                    f"KB 内检索代号可比公司A，成稿对外只用「{peer_disp}」"
+                    f"（禁止写成「{peer_disp}（{peer_disp}）」或「可比公司A（{peer_disp}）」）；"
+                    "A 股年报节选（研发人员情况、员工专业构成）。"
+                )
+            else:
+                hint = "A 股年报节选（研发人员情况、员工专业构成）；销售/运营见员工数量专节。"
+            hints.append({"entity": ent, "hint": hint})
     if task_type == "personnel_compare" and len(entities) >= 2:
         hints.append(
             {
                 "entity": "—",
-                "hint": "两家口径不同：可比公司A=年报披露；YYCQ=excel 职能分项；不可直接比员工总数。",
+                "hint": (
+                    f"两家口径不同：{peer_disp}=年报披露；{primary_disp}=excel 职能分项；"
+                    "不可直接比员工总数。展示层还原用户问句用语；检索归一代号仅供内部。"
+                ),
             }
         )
     return hints
@@ -441,6 +468,15 @@ def _entity_hints(task_type: str, entities: list[str]) -> list[dict[str, str]]:
 
 def build_personnel_draft_skeleton_from_payload(payload: dict[str, Any]) -> str:
     """从 evidence[].metrics 预填对照表骨架，供 Hermes 直接抄用数字成稿。"""
+    from backend.services.kb_compare_entities import (
+        PEER_ENTITY,
+        PRIMARY_ENTITY,
+        present_entity_label,
+    )
+
+    q = str(payload.get("query") or "")
+    peer_lab = present_entity_label(PEER_ENTITY, q)
+    primary_lab = present_entity_label(PRIMARY_ENTITY, q)
     by_ent: dict[str, dict[str, Any]] = {}
     for block in payload.get("evidence") or []:
         if not isinstance(block, dict):
@@ -470,7 +506,7 @@ def build_personnel_draft_skeleton_from_payload(payload: dict[str, Any]) -> str:
         "",
         "### 人员结构对照",
         "",
-        "| 职能归属 | 可比公司A | YYCQ |",
+        f"| 职能归属 | {peer_lab} | {primary_lab} |",
         "| --- | --- | --- |",
     ]
     for role, a, b in rows:
@@ -480,11 +516,12 @@ def build_personnel_draft_skeleton_from_payload(payload: dict[str, Any]) -> str:
             "",
             "### 对比分析",
             "",
-            "- 结构差异：两家披露口径不同（年报专业构成 vs excel 职能分项），不可直接比员工总数。",
+            f"- 结构差异：两家披露口径不同（年报专业构成 vs excel 职能分项），不可直接比员工总数。",
             "",
             "### 口径说明",
             "",
-            "可比公司A=年报节选；YYCQ=excel「1.1信息-人员」。",
+            f"{peer_lab}=年报节选；{primary_lab}=excel「1.1信息-人员」。"
+            f"展示须用用户问句公司名（{peer_lab}/{primary_lab}），禁止把内部代称当主表表头。",
             "",
         ]
     )
@@ -558,15 +595,28 @@ def build_hermes_agent_mcp_reply(
     if payload.get("evidence_sufficient"):
         if payload.get("task_type") == "personnel_compare":
             if next_action == "verify_gap_then_write_final":
+                from backend.services.kb_compare_entities import (
+                    PEER_ENTITY,
+                    PRIMARY_ENTITY,
+                    present_entity_label,
+                )
+
+                prim_lab = present_entity_label(PRIMARY_ENTITY, query)
+                peer_lab = present_entity_label(PEER_ENTITY, query)
                 vqs = payload.get("verification_queries") or []
                 vq_lines = "\n".join(f"- {q}" for q in vqs[:3]) or "- （选另一主体或缺口职能专节）"
                 parts.append(
                     "**证据已足写表，但尚未核证**：请先用下方 **不同 query** 再调 1 次 "
                     "`orientg_kb_ask` 核实缺口维度/另一主体（禁止重复本次完全相同的 query），"
                     "然后再用中文写终稿。"
-                    "终稿必含 `### 人员结构对照`（**采用下列参考表硬数字**）+ "
-                    "`### 对比分析` + `### 口径说明`。"
+                    "终稿必含 `### 人员结构对照`（**采用下列参考表硬数字**；研发人数用年报「研发人员情况」1,378，"
+                    "勿把专业构成里的研发/技术人数误当研发人员数量）+ "
+                    "`### 对比分析` + `### 口径说明`；excel 四项齐全时写清「分项合计」。"
                     "**禁止**把「成稿骨架/硬数字参考表」标题原样上屏；须扩写完整中文终稿。"
+                    "展示层须用用户问句中的公司名（见 entity_hints），禁止把 YYCQ/可比公司A 当主表表头对外输出。"
+                    f"**禁止**把「期末员工总计139 / 技术人员95」挂到{prim_lab}/本公司（那是其他主体误挂）；"
+                    "本公司侧仅采 excel「1.1信息-人员」70/61/33.15/45.85 与分项合计；"
+                    f"{peer_lab}研发人数用年报「研发人员情况」1,378，勿用专业构成中的 1,066 替代。"
                     "禁止英文 planning、禁止 22.6 倍规模对照、禁止推算/推断/约N人。"
                     "禁止声称 knowledge base 为空。"
                 )
@@ -576,11 +626,22 @@ def build_hermes_agent_mcp_reply(
                 parts.append("")
                 parts.append(build_personnel_draft_skeleton_from_payload(payload))
             else:
+                from backend.services.kb_compare_entities import (
+                    PEER_ENTITY,
+                    PRIMARY_ENTITY,
+                    present_entity_label,
+                )
+
+                prim_lab = present_entity_label(PRIMARY_ENTITY, query)
+                peer_lab = present_entity_label(PEER_ENTITY, query)
                 parts.append(
                     "**核实轮证据已齐**：请**立即用中文写终稿**，必含 `### 人员结构对照` 表格"
                     "（**采用下列参考表硬数字**，可改写对比分析措辞），"
                     "再写 `### 对比分析` 与 `### 口径说明`。"
                     "**禁止**把参考表标题原样上屏；须写出完整中文分析。"
+                    "展示层须用用户问句中的公司名（见 entity_hints），禁止把 YYCQ/可比公司A 当主表表头对外输出。"
+                    f"**禁止**把 139/95 挂到{prim_lab}；本公司侧仅 excel 70/61/33.15/45.85；"
+                    f"{peer_lab}研发用 1,378。"
                     "禁止英文 planning、禁止 22.6 倍规模对照、禁止把员工总数当人员结构。"
                     "勿再重复相同 query；禁止声称 knowledge base 为空。"
                 )

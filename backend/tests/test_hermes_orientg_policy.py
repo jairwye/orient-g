@@ -19,12 +19,29 @@ def test_is_forbidden_kb_tool():
     assert is_forbidden_kb_tool("terminal.run")
     assert is_forbidden_kb_tool("read_file")
     assert not is_forbidden_kb_tool("orientg_kb_ask")
+    assert is_forbidden_kb_tool("memory")
+    assert is_forbidden_kb_tool("web_search")
+    assert is_forbidden_kb_tool("mcp_web-tools")
+    assert is_forbidden_kb_tool("web-tools")
 
 
 def test_tool_progress_shell_patterns():
     assert tool_progress_looks_like_shell("curl http://localhost/api/agent/chat")
     assert tool_progress_looks_like_shell("import urllib.request")
     assert not tool_progress_looks_like_shell("orientg_kb_ask query=费用")
+
+
+def test_guard_blocks_memory_and_suggests_mcp_tool():
+    blocked = guard_kb_forbidden_tool_sse(
+        {"type": "tool_progress", "status": "running", "tool": "memory", "message": "recall"},
+        orientg_route="hermes_full",
+        session_key="sk_mem",
+        user_query="人员结构",
+    )
+    assert blocked is not None
+    msg = str(blocked.get("message") or "")
+    assert "mcp__orientg__orientg_kb_ask" in msg
+    assert "orientg_kb_ask" in msg
 
 
 def test_guard_blocks_terminal_and_suggests_mcp_tool():
@@ -35,7 +52,7 @@ def test_guard_blocks_terminal_and_suggests_mcp_tool():
         user_query="人员结构",
     )
     assert blocked is not None
-    assert "mcp_orientg_orientg_kb_ask" in str(blocked.get("message") or "")
+    assert "mcp__orientg__orientg_kb_ask" in str(blocked.get("message") or "")
 
 
 def test_guard_blocks_read_file_on_kb_route():

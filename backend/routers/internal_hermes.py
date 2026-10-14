@@ -87,6 +87,12 @@ def resolve_session(
 ):
     key = bridge.normalize_session_key(body.hermes_session_key)
     token = bridge.resolve(key)
+    from backend.services.hermes_shared_session import load_session
+
+    row = None if token else load_session(key)
+    if not token and row and row.get("user_token"):
+        # 多 worker / 进程内 bridge 未命中时，共享库仍有会话 JWT
+        token = str(row.get("user_token") or "").strip()
     if not token:
         raise HTTPException(
             status_code=404,
@@ -95,18 +101,26 @@ def resolve_session(
     ctx = session_ctx.resolve(key)
     kb_scope = ctx.kb_scope if ctx else {}
     if not kb_scope:
-        from backend.services.hermes_shared_session import load_session
-
-        row = load_session(key)
+        if row is None:
+            row = load_session(key)
         if row and isinstance(row.get("kb_scope"), dict):
             kb_scope = row.get("kb_scope") or {}
     return {
         "ok": True,
         "user_token": token,
         "kb_scope": kb_scope,
-        "allow_kb_write": bool(ctx.allow_kb_write) if ctx else False,
-        "orientg_route": ctx.orientg_route if ctx else None,
-        "native_mcp_reply": bool(ctx.native_mcp_reply) if ctx else bool(settings.hermes_native_mcp_reply),
+        "allow_kb_write": bool(ctx.allow_kb_write) if ctx else bool(row and row.get("allow_kb_write")),
+        "orientg_route": (ctx.orientg_route if ctx else None)
+        or ((row or {}).get("orientg_route") if row else None),
+        "native_mcp_reply": (
+            bool(ctx.native_mcp_reply)
+            if ctx
+            else (
+                bool(row["native_mcp_reply"])
+                if row and "native_mcp_reply" in row and row.get("native_mcp_reply") is not None
+                else bool(settings.hermes_native_mcp_reply)
+            )
+        ),
     }
 
 

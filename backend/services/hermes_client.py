@@ -26,11 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 def hermes_idle_stall_seconds(*, orientg_route: str | None, read_timeout: float) -> float:
-    """MCP 工具回合可能长时间无 SSE；标准档须与页面矩阵 1200s 等待相容。"""
+    """MCP 工具回合可能长时间无 SSE；深度档放宽以免误 stall → OG recovery 推算成稿。"""
     route_key = (orientg_route or "").strip().lower()
     rt = float(read_timeout)
     if route_key == "hermes_full":
-        return min(600.0, rt * 0.5)
+        # 深度人员 MCP 常有长静默；过早 stall 会触发 tier2_error_recovery 劣质 synth
+        return min(900.0, max(600.0, rt * 0.75))
     if route_key == "hermes_lite":
         return min(480.0, rt * 0.8)
     return min(120.0, rt * 0.2)
@@ -210,6 +211,8 @@ def _register_session(
     )
     from backend.services.hermes_shared_session import persist_session
 
+    from backend.config import settings as _settings
+
     persist_session(
         session_key,
         user_token,
@@ -217,6 +220,7 @@ def _register_session(
         allow_kb_write=allow_kb_write,
         orientg_route=orientg_route,
         kb_budget_max=orientg_kb_ask_budget,
+        native_mcp_reply=bool(_settings.hermes_native_mcp_reply),
         ttl_seconds=3600,
     )
     return session_key
@@ -504,6 +508,7 @@ def guard_kb_forbidden_tool_sse(
     on_block: Any | None = None,
     session_key: str | None = None,
     user_query: str = "",
+    evidence_ready: bool = False,
 ) -> dict[str, Any] | None:
     """KB 路由执行层：拦截 terminal/shell/loopback 工具步。"""
     from backend.services.hermes_orientg_policy import (
@@ -539,6 +544,7 @@ def guard_kb_forbidden_tool_sse(
         "message": kb_forbidden_tool_message(
             session_key=str(session_key or ""),
             user_query=str(user_query or ""),
+            evidence_ready=bool(evidence_ready),
         ),
     }
 
@@ -777,7 +783,10 @@ def hermes_run_event_to_sse(
         if delta:
             out.append({"type": "thinking", "content": delta})
     elif ev == "tool.started":
-        tool = str(obj.get("tool") or "tool")
+        # Gateway 偶发用 name/tool_name，缺省成 "tool" 会导致 MCP 计数假阴性
+        tool = str(
+            obj.get("tool") or obj.get("name") or obj.get("tool_name") or "tool"
+        )
         key = _hermes_run_tool_key(run_id, tool)
         seen_tool_keys.add(key)
         preview = str(obj.get("preview") or tool)
@@ -791,10 +800,13 @@ def hermes_run_event_to_sse(
             }
         )
     elif ev == "tool.completed":
-        tool = str(obj.get("tool") or "tool")
+        tool = str(
+            obj.get("tool") or obj.get("name") or obj.get("tool_name") or "tool"
+        )
         key = _hermes_run_tool_key(run_id, tool)
-        if key not in seen_tool_keys:
-            return []
+        # Gateway 偶发只推 completed、或 started/completed 工具名不一致：
+        # 仍须 emit，否则 MCP 计数假 0 → 假「未调用」重试清稿毁流。
+        seen_tool_keys.add(key)
         preview = str(obj.get("preview") or "").strip()
         out.append(
             {
@@ -1018,9 +1030,9 @@ def stream_agent_chat_runs(
         mandate = (
             "\n\n## Orient-G 深度取证（首轮须 tool）\n"
             f"{hint.get('instruction') or ''}\n"
-            "**硬性**：本 run **第一动作**必须是调用 mcp_orientg_orientg_kb_ask；"
+            "**硬性**：本 run **第一动作**必须是调用 mcp__orientg__orientg_kb_ask；"
             "禁止先写对照表/长分析再补工具；禁止把网关 Evidence Pack 摘要当终稿数字来源。"
-            "在本 run 内你必须至少再调用一次 mcp_orientg_orientg_kb_ask 核实或补检索；"
+            "在本 run 内你必须至少再调用一次 mcp__orientg__orientg_kb_ask 核实或补检索；"
             "禁止 terminal / execute_code / curl 代替 KB。"
         )
         base_instr = str(runs_body.get("instructions") or "").strip()
@@ -1153,12 +1165,15 @@ def stream_agent_chat_runs(
                     raw_parts=raw_stream_parts,
                     thinking_parts=thinking_parts,
                 )
+                from backend.services.hermes_stream_stats import hermes_native_kb_ask_count as _kb_cnt
+
                 blocked = guard_kb_forbidden_tool_sse(
                     remapped,
                     orientg_route=orientg_route,
                     on_block=loop_guard.on_forbidden_block,
                     session_key=session_key,
                     user_query=user_q,
+                    evidence_ready=_kb_cnt(stream_stats) >= 1,
                 )
                 if blocked:
                     out.append(blocked)
@@ -1208,6 +1223,22 @@ def stream_agent_chat_runs(
                         "code": "hermes_stall",
                     }
                     return
+                # 静默等待时也检查 lite 对照稿收束（勿只在有 delta 时 abort）
+                if not abort_runs:
+                    should_abort, code, msg = loop_guard.should_abort()
+                    if should_abort:
+                        abort_runs = True
+                        abort_code = code
+                        stop_reader.set()
+                        if hermes_run_id:
+                            stop_hermes_run(hermes_run_id)
+                        yield {
+                            "type": "status",
+                            "message": msg,
+                            "step": "hermes_run_abort",
+                            "code": code,
+                        }
+                        break
                 if time.monotonic() - last_beat >= heartbeat_s:
                     last_beat = time.monotonic()
                     yield {
@@ -1270,9 +1301,67 @@ def stream_agent_chat_runs(
     from backend.services.hermes_kb_mcp_bridge import (
         build_mcp_retry_runs_body,
         build_mcp_verify_continue_runs_body,
+        build_mcp_write_final_runs_body,
+    )
+    from backend.services.hermes_response_analysis import (
+        hermes_reply_has_substantive_draft,
+        hermes_reply_is_user_facing_final,
+    )
+    from backend.services.hermes_stream_sanitize import (
+        pick_best_hermes_runs_raw,
+        sanitize_hermes_accumulated_reply,
     )
     from backend.services.hermes_stream_stats import hermes_native_kb_ask_count
     from backend.services.orientg_agent_presentation import kb_scope_nonempty
+
+    def _peek_user_facing_draft() -> tuple[str, bool, bool]:
+        """当前累积稿：user-facing 终稿 / 实质过程稿（禁止假 MCP 重试毁稿）。"""
+        raw_peek = pick_best_hermes_runs_raw("".join(accumulated_parts), final_output)
+        draft = sanitize_hermes_accumulated_reply(raw_peek, user_query=user_q).strip()
+        if not draft:
+            draft = _finalize_hermes_chat_reply(
+                accumulated_parts=accumulated_parts,
+                raw_parts=raw_stream_parts,
+                thinking_parts=thinking_parts,
+                user_query=user_q,
+            ).strip()
+        user_facing = bool(
+            draft and hermes_reply_is_user_facing_final(draft, user_query=user_q)
+        )
+        # sanitize 常把「核证补缺」过程稿剥空；实质门禁须同时看 raw
+        substantive = bool(
+            (draft and hermes_reply_has_substantive_draft(draft, user_query=user_q))
+            or (
+                (raw_peek or "").strip()
+                and hermes_reply_has_substantive_draft(raw_peek, user_query=user_q)
+            )
+        )
+        return draft or (raw_peek or "").strip(), user_facing, substantive
+
+    def _restore_followup_snapshot(
+        snap_parts: list[str],
+        snap_final: str,
+        snap_raw: list[str],
+        snap_thinking: list[str],
+        *,
+        force: bool = False,
+    ) -> None:
+        nonlocal final_output
+        if not ("".join(snap_parts).strip() or (snap_final or "").strip()):
+            return
+        # force：follow-up 失败时即便已写入 junk 也恢复快照
+        if not force and (
+            "".join(accumulated_parts).strip() or (final_output or "").strip()
+        ):
+            return
+        accumulated_parts[:] = snap_parts
+        final_output = snap_final
+        if force or (not raw_stream_parts and snap_raw):
+            if snap_raw:
+                raw_stream_parts[:] = snap_raw
+        if force or (not thinking_parts and snap_thinking):
+            if snap_thinking:
+                thinking_parts[:] = snap_thinking
 
     def _drain_followup_run(
         follow_body: dict[str, Any],
@@ -1281,6 +1370,11 @@ def stream_agent_chat_runs(
         read_timeout_s: float | None = None,
     ) -> None:
         nonlocal hermes_run_id, final_output
+        # 重试前快照：follow-up 失败或清空后须能恢复合格稿
+        snap_parts = list(accumulated_parts)
+        snap_final = final_output
+        snap_raw = list(raw_stream_parts)
+        snap_thinking = list(thinking_parts)
         follow_run_id = create_hermes_run(body=follow_body, session_key=session_key)
         hermes_run_id = follow_run_id
         follow_url = f"{_runs_url()}/{follow_run_id}/events"
@@ -1289,46 +1383,62 @@ def stream_agent_chat_runs(
             accumulated_parts.clear()
             final_output = ""
         follow_timeout = httpx.Timeout(30.0, read=float(read_timeout_s or read_timeout))
-        with httpx.Client(timeout=follow_timeout) as client:
-            with client.stream("GET", follow_url, headers=follow_headers) as resp:
-                if resp.status_code < 400:
-                    for line in resp.iter_lines():
-                        if is_cancelled(run_id):
-                            break
-                        obj = _parse_hermes_run_sse_data_line(line)
-                        if not obj:
-                            continue
-                        batch = enrich_tool_progress_with_labels(
-                            hermes_run_event_to_sse(obj, seen_tool_keys=seen_tool_keys),
-                            tool_label_by_id,
-                        )
-                        for mapped in batch:
-                            if mapped.get("type") == "run_completed":
-                                final_output = str(mapped.get("output") or "")
+        try:
+            with httpx.Client(timeout=follow_timeout) as client:
+                with client.stream("GET", follow_url, headers=follow_headers) as resp:
+                    if resp.status_code < 400:
+                        for line in resp.iter_lines():
+                            if is_cancelled(run_id):
+                                break
+                            obj = _parse_hermes_run_sse_data_line(line)
+                            if not obj:
                                 continue
-                            remapped = _apply_stream_content_policy(
-                                mapped, accumulated=accumulated_parts
+                            batch = enrich_tool_progress_with_labels(
+                                hermes_run_event_to_sse(obj, seen_tool_keys=seen_tool_keys),
+                                tool_label_by_id,
                             )
-                            if remapped is None:
-                                continue
-                            blocked = guard_kb_forbidden_tool_sse(
-                                remapped,
-                                orientg_route=orientg_route,
-                                on_block=loop_guard.on_forbidden_block,
-                                session_key=session_key,
-                                user_query=user_q,
-                            )
-                            if blocked:
-                                yield blocked
-                                continue
-                            _bump_stream_stats(stream_stats, remapped, stream_tools)
-                            yield remapped
+                            for mapped in batch:
+                                if mapped.get("type") == "run_completed":
+                                    final_output = str(mapped.get("output") or "")
+                                    continue
+                                remapped = _apply_stream_content_policy(
+                                    mapped, accumulated=accumulated_parts
+                                )
+                                if remapped is None:
+                                    continue
+                                blocked = guard_kb_forbidden_tool_sse(
+                                    remapped,
+                                    orientg_route=orientg_route,
+                                    on_block=loop_guard.on_forbidden_block,
+                                    session_key=session_key,
+                                    user_query=user_q,
+                                    evidence_ready=hermes_native_kb_ask_count(stream_stats) >= 1,
+                                )
+                                if blocked:
+                                    yield blocked
+                                    continue
+                                _bump_stream_stats(stream_stats, remapped, stream_tools)
+                                yield remapped
+        except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
+            # 失败后即便已写入 junk partial，也强制恢复快照
+            _restore_followup_snapshot(
+                snap_parts, snap_final, snap_raw, snap_thinking, force=True
+            )
+            raise
+        # 成功但空响应：仍恢复快照，避免 reset 后无主答
+        _restore_followup_snapshot(snap_parts, snap_final, snap_raw, snap_thinking)
+
+    _draft_so_far, _have_user_facing_final, _have_substantive_draft = (
+        _peek_user_facing_draft()
+    )
 
     if (
         (not abort_runs or abort_code == "hermes_kb_ask_loop")
         and (orientg_route or "").strip().lower() == "hermes_full"
         and kb_scope_nonempty(kb_scope)
         and hermes_native_kb_ask_count(stream_stats) == 0
+        and not _have_user_facing_final
+        and not _have_substantive_draft
     ):
         from backend.services.kb_retrieval_plan import plan_hermes_recovery_queries
 
@@ -1347,18 +1457,44 @@ def stream_agent_chat_runs(
             suggested_queries=plan_hermes_recovery_queries(user_q, max_queries=3),
         )
         try:
-            yield from _drain_followup_run(retry_body)
+            # 保留首轮草稿：retry 失败时 force 恢复；成功空响应也回灌快照
+            yield from _drain_followup_run(retry_body, reset_accumulated=False)
         except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
             pass
+    elif (
+        (orientg_route or "").strip().lower() == "hermes_full"
+        and hermes_native_kb_ask_count(stream_stats) == 0
+        and (_have_user_facing_final or _have_substantive_draft)
+    ):
+        yield {
+            "type": "status",
+            "message": (
+                "已有合格 Hermes 终稿，跳过「未调 MCP」优先重试"
+                if _have_user_facing_final
+                else "已有实质 Hermes 过程稿，跳过「未调 MCP」优先重试（避免清稿毁流）"
+            ),
+            "step": (
+                "hermes_skip_mcp_retry_user_facing"
+                if _have_user_facing_final
+                else "hermes_skip_mcp_retry_substantive_draft"
+            ),
+        }
 
     # E：人员深横比已取证 1 次但仍缺核证轮 → Hermes 续跑自调 MCP（不计 hermes_mcp_retry）
     from backend.services.kb_retrieval_plan import query_wants_personnel_compare
 
+    _draft_so_far, _have_user_facing_final, _have_substantive_draft = (
+        _peek_user_facing_draft()
+    )
     _kb_n = hermes_native_kb_ask_count(stream_stats)
     _retry_n = int(stream_stats.get("hermes_mcp_retry_count") or 0)
     _abort_ok = (not abort_runs) or abort_code in (
         "hermes_kb_ask_loop",
         "personnel_native_kb_round1_done",
+        "personnel_lite_report_ready",
+        "hermes_run_forbidden_loop",
+        "hermes_forbidden_write_final",
+        "hermes_run_wall_timeout",
     )
     _want_verify = bool(
         _abort_ok
@@ -1369,6 +1505,10 @@ def stream_agent_chat_runs(
         and _kb_n == 1
         # 禁止与「0→强制重试」叠加凑数；仅首轮已自调 1 次时核证续跑
         and _retry_n == 0
+        # 禁工具收束优先走成稿续跑，不与核证续跑叠加
+        and abort_code != "hermes_forbidden_write_final"
+        # 已有合格用户面终稿：直接采纳，勿再续跑毁流
+        and not _have_user_facing_final
     )
     if (orientg_route or "").strip().lower() == "hermes_full":
         # 可观测：便于 CDP/诊断确认条件位（非凑数重试）
@@ -1407,14 +1547,70 @@ def stream_agent_chat_runs(
             yield from _drain_followup_run(verify_body, reset_accumulated=False)
         except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
             pass
+
+    # 全局：已有 MCP 但仍无 user-facing 终稿 → 成稿续跑
+    # （含：正常结束仅过程稿；forbidden / kb_ask_loop abort）
+    _draft_so_far, _have_user_facing_final, _have_substantive_draft = (
+        _peek_user_facing_draft()
+    )
+    _abort_allows_write_final = (not abort_runs) or abort_code in (
+        "hermes_forbidden_write_final",
+        "hermes_run_forbidden_loop",
+        "hermes_kb_ask_loop",
+        "personnel_native_kb_round1_done",
+        "hermes_run_wall_timeout",
+    )
+    # kb=0 但已有实质过程稿：仍须成稿续跑（与跳过「未调 MCP」重试对齐），
+    # 禁止落到网关「未调 MCP 补检索×N」毁流。
+    _want_write_final = bool(
+        _abort_allows_write_final
+        and (orientg_route or "").strip().lower() in ("hermes_full", "hermes_lite")
+        and kb_scope_nonempty(kb_scope)
+        and not _have_user_facing_final
+        and (
+            _kb_n >= 1
+            or (_kb_n == 0 and _have_substantive_draft)
+        )
+    )
+    if _want_write_final:
+        if abort_code == "hermes_kb_ask_loop":
+            _wf_msg = (
+                "多次 kb_ask 仍未成稿：发起 Hermes 成稿续跑（基于已有 MCP 直接中文终稿）…"
+            )
+        elif abort_runs and abort_code in (
+            "hermes_forbidden_write_final",
+            "hermes_run_forbidden_loop",
+        ):
+            _wf_msg = (
+                "禁工具空转已收束：发起 Hermes 成稿续跑（基于已有 MCP 直接中文终稿）…"
+            )
+        elif _kb_n == 0 and _have_substantive_draft:
+            _wf_msg = (
+                "已有实质过程稿但未成终稿：发起 Hermes 成稿续跑（禁止未调 MCP 补检索链）…"
+            )
+        else:
+            _wf_msg = (
+                "已取证但仍无合格终稿：发起 Hermes 成稿续跑（基于已有 MCP 直接中文终稿）…"
+            )
+        yield {
+            "type": "status",
+            "message": _wf_msg,
+            "step": "hermes_mcp_write_final_continue",
+            "code": abort_code,
+        }
+        wf_body = build_mcp_write_final_runs_body(
+            user_query=user_q,
+            session_key=session_key,
+            model=(settings.hermes_model or "hermes-agent").strip() or "hermes-agent",
+        )
+        try:
+            yield from _drain_followup_run(wf_body, reset_accumulated=False)
+        except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
+            pass
     # 禁止用网关 orchestration 把 hermes 计数凑到 ≥2（刷绿）；验收只认 Hermes 自调 MCP
 
     uq = _last_user_query_from_messages(messages)
-    from backend.services.hermes_stream_sanitize import pick_best_hermes_runs_raw
-
     raw = pick_best_hermes_runs_raw("".join(accumulated_parts), final_output)
-    from backend.services.hermes_stream_sanitize import sanitize_hermes_accumulated_reply
-
     reply = sanitize_hermes_accumulated_reply(raw, user_query=uq).strip()
     if not reply:
         reply = _finalize_hermes_chat_reply(
@@ -1423,7 +1619,11 @@ def stream_agent_chat_runs(
             thinking_parts=thinking_parts,
             user_query=uq,
         )
-    if not reply.strip():
+    if not (reply or "").strip():
+        # sanitize 常剥空「核证补缺」实质过程稿；仍须交付 raw，避免假 empty 挂流
+        if hermes_reply_has_substantive_draft(raw or "", user_query=uq):
+            reply = (raw or "").strip()
+    if not (reply or "").strip():
         yield {
             "type": "error",
             "message": "Hermes Runs 已完成，但未生成可展示的正文。",
@@ -1616,6 +1816,10 @@ def stream_agent_chat(
                         on_block=loop_guard.on_forbidden_block,
                         session_key=session_key,
                         user_query=_last_user_query_from_messages(messages),
+                        evidence_ready=int(
+                            stream_stats.get("hermes_orientg_kb_ask_calls") or 0
+                        )
+                        >= 1,
                     )
                     if blocked:
                         out.append(blocked)
