@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from backend.config import settings
+from backend.database import _normalize_database_url
 
 
 config = context.config
@@ -18,7 +19,8 @@ target_metadata = None
 
 
 def get_url() -> str:
-    return str(getattr(settings, "database_url", "") or "")
+    raw = str(getattr(settings, "database_url", "") or "")
+    return _normalize_database_url(raw) if raw else ""
 
 
 def run_migrations_offline() -> None:

@@ -24,11 +24,15 @@ def _should_manage_schema() -> bool:
 
 
 def _normalize_database_url(url: str) -> str:
-    """去掉 path 中多余斜杠，避免 localhost:5432//mgmt_web 导致连接失败。"""
+    """去掉 path 中多余斜杠；无驱动时显式锁定 psycopg2（与 requirements 一致）。"""
     try:
         p = urlparse(url)
         path = p.path.replace("//", "/").strip() or "/"
-        return urlunparse((p.scheme, p.netloc, path, p.params, p.query, p.fragment))
+        scheme = (p.scheme or "").lower()
+        # postgresql:// 在 SQLAlchemy 2.1+ 默认改走 psycopg v3；生产镜像装的是 psycopg2-binary
+        if scheme in {"postgresql", "postgres"}:
+            scheme = "postgresql+psycopg2"
+        return urlunparse((scheme, p.netloc, path, p.params, p.query, p.fragment))
     except Exception:
         return url
 

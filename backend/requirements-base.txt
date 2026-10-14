@@ -3,7 +3,8 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 python-dotenv>=1.0.0
 httpx>=0.26.0
-sqlalchemy>=2.0.0
+# SQLAlchemy 2.1+ 默认 postgresql:// → psycopg (v3)；镜像现用 psycopg2-binary，故钉在 2.0.x
+sqlalchemy>=2.0.0,<2.1
 psycopg2-binary>=2.9.9
 pgvector>=0.4.1
 pydantic>=2.5.0

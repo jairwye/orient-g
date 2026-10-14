@@ -41,7 +41,7 @@ copy .env.example .env
 
 1. 复制环境变量：`copy .env.example .env`
 2. 编辑 `.env`（字段说明见 `.env.example` 本地开发段）：
-   - `DATABASE_URL`：本机 PostgreSQL，如 `postgresql://postgres:你的密码@127.0.0.1:5432/mgmt_web`（库名 `mgmt_web` 需先创建；Windows 连不上时可把 `localhost` 改为 `127.0.0.1`，见 `docs/汇率-PostgreSQL排查.md`）
+   - `DATABASE_URL`：本机 PostgreSQL，如 `postgresql://postgres:你的密码@127.0.0.1:5432/mgmt_web`（库名 `mgmt_web` 需先创建；Windows 连不上时可把 `localhost` 改为 `127.0.0.1`，见 `docs/汇率-PostgreSQL排查.md`）。后端依赖钉在 `sqlalchemy<2.1` 且运行时会把无驱动的 `postgresql://` 归一为 `postgresql+psycopg2://`（与 `psycopg2-binary` 一致；勿在未同步依赖前改用 SQLAlchemy 2.1 默认的 psycopg v3）
    - `UPLOAD_DIR`：本地上传目录（如 `./uploads`），该目录已加入 `.gitignore`；财务后台路径、登录用户名等应用设置保存在该目录下的 `app_settings.json`，请勿删除
    - `DB_MIGRATION_MODE`：数据库结构迁移模式。`legacy`=启动自动建表（偏开发便利，**不能替代迁移脚本**）；`alembic`=由 Alembic 显式迁移管理（生产推荐，且**结构变更必须使用**）
 3. 在 PostgreSQL 中创建数据库（若尚未创建）：

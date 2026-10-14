@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- **Backend 启动缺 `psycopg`**：`sqlalchemy>=2.0` 未设上界时 pip 装到 2.1+，`postgresql://` 默认改走 psycopg v3，而镜像仅有 `psycopg2-binary`，导致容器 restart。现钉 `sqlalchemy>=2.0.0,<2.1`，并将无驱动 URL 归一为 `postgresql+psycopg2://`（含 Alembic）。**无 DB 迁移**；上线：`docker compose pull backend && docker compose up -d backend`。
 - **人员 native 出处诚实**：空 Evidence Pack 不再硬编码 1378/946/242/70；MCP coerce / thin salvage 标 `reply_source=orientg_mcp_coerce`，主气泡不得以 thin salvage 冒充 Hermes 终稿。
 - **MCP 会话桥加固**：桥密钥 `hmac.compare_digest`；生产仅 loopback/私网客户端；`hermes_session_store` JWT at-rest 密封；远程预算扣减桥不可达时 fail-closed。
 
