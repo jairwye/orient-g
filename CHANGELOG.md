@@ -6,6 +6,11 @@
 
 ### Fixed
 
+- **Agent 对话历史无限膨胀**：`hermes_message_window` 在 `_build_messages` 裁剪最近 N 轮 / 总字符（`HERMES_CHAT_HISTORY_MAX_*`），保留当前 user 与注入 system；字符预算从旧到新丢弃时保持**连续后缀**（不跳过大消息留下更旧碎片）。
+- **人员 thin salvage 误伤合格终稿**：`is_personnel_thin_salvage_final` 仅以骨架独有标记 / 短篇幅口径句判 thin，不再把含「披露口径不同」的中等成稿当 salvage。
+- **元指令剥离过宽**：行级剥离不再因行内 `evidence_sufficient=` / 合法「禁止把 YYCQ…」口径句抹掉实质过程稿或终稿约束句。
+- **MCP budget bridge 死循环文案**：`budget bridge unavailable` / budget exhausted 拒答不再诱导 Hermes 重复调用 `orientg_kb_ask`；`env.hermes.example` 补齐桥环境变量与代码路径对齐。
+- **深度档挂流收束**：`hermes_full_report_ready` 宽限；thinking 立锚加严，工具/实质 delta 刷新宽限，避免 enrichment 中途误切。
 - **Backend 启动缺 `psycopg`**：`sqlalchemy>=2.0` 未设上界时 pip 装到 2.1+，`postgresql://` 默认改走 psycopg v3，而镜像仅有 `psycopg2-binary`，导致容器 restart。现钉 `sqlalchemy>=2.0.0,<2.1`，并将无驱动 URL 归一为 `postgresql+psycopg2://`（含 Alembic）。**无 DB 迁移**；上线：`docker compose pull backend && docker compose up -d backend`。
 - **人员 native 出处诚实**：空 Evidence Pack 不再硬编码 1378/946/242/70；MCP coerce / thin salvage 标 `reply_source=orientg_mcp_coerce`，主气泡不得以 thin salvage 冒充 Hermes 终稿。
 - **MCP 会话桥加固**：桥密钥 `hmac.compare_digest`；生产仅 loopback/私网客户端；`hermes_session_store` JWT at-rest 密封；远程预算扣减桥不可达时 fail-closed。

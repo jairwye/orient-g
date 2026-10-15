@@ -909,6 +909,50 @@ def _normalize_mixed_personnel_table_rows(text: str) -> str:
     return "\n".join(out)
 
 
+# 行级：仅删「几乎整行都是编排套话」的行；勿因行内夹带 next_action/evidence_sufficient
+# 而抹掉实质过程稿（如「…evidence_sufficient=false」单行取证说明）。
+_PAYLOAD_META_INSTR_RE = re.compile(
+    r"(?m)"
+    r"(?:^[^\n]*(?:"
+    r"展示须用用户问句公司名|"
+    r"禁止把内部代称|"
+    r"禁止把\s*YYCQ\s*/\s*可比公司A\s*当主表表头|"
+    r"禁止把\s*YYCQ[^。\n]{0,48}当主表表头|"
+    r"禁止把\s*可比公司A\s*当主表表头|"
+    r"output_contract|"
+    r"must_verify_before_final|"
+    r"硬数字参考表[·・]?勿将本标题上屏|"
+    r"请原样采用下列数字|"
+    r"##\s*【?硬数字参考表|"
+    r"##\s*成稿骨架"
+    r")[^\n]*\n?)"
+    r"|(?:^[ \t]*(?:next_action|evidence_sufficient)\s*=[^\n]*\n?)"
+)
+_PAYLOAD_META_INLINE_RE = re.compile(
+    r"展示须用用户问句公司名[^。\n]*[。．]?|"
+    r"禁止把内部代称[^。\n]*[。．]?|"
+    r"禁止把\s*YYCQ\s*/\s*可比公司A\s*当主表表头对外输出[。．]?|"
+    r"禁止把\s*YYCQ[^。\n]{0,40}当主表[^。\n]*[。．]?|"
+    r"`?next_action\s*=\s*\w+`?|"
+    r"`?evidence_sufficient\s*=\s*(?:true|false)`?|"
+    r"[^\n]*请据此扩写两侧侧重差异[^\n]*|"
+    r"[^\n]*勿只复述本条提示[^\n]*|"
+    r"[^\n]*职能重心：对照上表研发/销售/运营[^\n]*|"
+    r"[^\n]*组织与口径：说明年报专节[^\n]*",
+    re.I,
+)
+
+
+def strip_payload_meta_instructions(text: str) -> str:
+    """剥离 agent_payload / output_contract 编排元指令，避免泄漏进用户终稿。"""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = _PAYLOAD_META_INSTR_RE.sub("", t)
+    t = _PAYLOAD_META_INLINE_RE.sub("", t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
 def _sanitize_personnel_compare_display(text: str, *, user_query: str = "") -> str:
     """人员横比展示层：叠名折叠、分项合计口径、禁 139 尾段/规模倍比混比。"""
     from backend.services.kb_compare_entities import (
@@ -918,7 +962,8 @@ def _sanitize_personnel_compare_display(text: str, *, user_query: str = "") -> s
         user_facing_entity_labels,
     )
 
-    t = rewrite_reply_present_entity_labels(text or "", user_query or "")
+    t = strip_payload_meta_instructions(text or "")
+    t = rewrite_reply_present_entity_labels(t, user_query or "")
     labels = user_facing_entity_labels(user_query or "")
     primary = labels.get(PRIMARY_ENTITY) or PRIMARY_ENTITY
     peer = labels.get(PEER_ENTITY) or PEER_ENTITY
@@ -1093,6 +1138,7 @@ def finalize_agent_reply(
     body = strip_hermes_orchestration_preamble(extract_user_facing_reply(reply or ""))
     if not body.strip():
         body = (reply or "").strip()
+    body = strip_payload_meta_instructions(body)
     from backend.services.kb_retrieval_plan import (
         query_wants_personnel_compare,
         query_wants_personnel_structure,
@@ -1109,18 +1155,18 @@ def finalize_agent_reply(
                 _strip_approx_headcount_phrases(body),
                 user_query=user_query or "",
             )
-            return body
+            return strip_payload_meta_instructions(body)
         # Tier 2 仍以 Hermes 为终稿来源，但须剔除无证据的「约 xx 万」分项幻觉（不整篇本地重写）
         if reply_has_unsupported_breakdown_amounts(body):
             body = enforce_breakdown_compare_reply(body, user_query=user_query)
             body = _strip_disclaimer_crutch_lines(body)
-        return body
+        return strip_payload_meta_instructions(body)
     body = enforce_breakdown_compare_reply(body, user_query=user_query)
     if query_wants_personnel_structure(user_query or ""):
         body = _strip_unsupported_speculation_prose(body)
         body = _strip_approx_headcount_phrases(body)
         body = _sanitize_personnel_compare_display(body, user_query=user_query or "")
-    return body
+    return strip_payload_meta_instructions(body)
 
 
 def _strip_derived_breakdown_sections(text: str) -> str:
@@ -1223,4 +1269,5 @@ def enforce_breakdown_compare_reply(reply: str, *, user_query: str = "") -> str:
 
 def sanitize_hermes_accumulated_reply(text: str, *, user_query: str = "") -> str:
     body = extract_user_facing_reply(text)
-    return enforce_breakdown_compare_reply(body, user_query=user_query)
+    body = enforce_breakdown_compare_reply(body, user_query=user_query)
+    return strip_payload_meta_instructions(body)

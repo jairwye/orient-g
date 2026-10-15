@@ -290,6 +290,76 @@ def test_qualified_hermes_final_skips_no_mcp_supplemental_even_kb0(monkeypatch):
     )
 
 
+def test_personnel_rich_final_kb0_skips_supplemental_despite_money_pack(monkeypatch):
+    """手测根因：人员合格终稿 + kb=0 时，预检索 pack 若混入费用金额表，
+    旧逻辑用金额 coverage 误触发「未调 MCP 补检索×8」再被门禁顶替。
+
+    native 下人员合格终稿 / sufficient 禁网关补检索；弱规划稿仍可走门禁路径。
+    """
+    from backend.config import settings
+    from backend.services.agent_kb_router import AgentRoute
+    from backend.services.agent_kb_supplemental import (
+        hermes_reply_needs_breakdown_revise,
+        needs_hermes_supplemental,
+    )
+    from backend.services.evidence_reply_align import pack_has_tabular_breakdown
+    from backend.services.hermes_response_analysis import hermes_reply_is_user_facing_final
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", True)
+
+    rich = (
+        "## 人员结构对照\n"
+        "| 职能 | 可比公司A | YYCQ |\n"
+        "| --- | --- | --- |\n"
+        "| 员工总数（年报） | 3,138 | 139 |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| 销售 | 946 | 证据未覆盖 |\n"
+        "| 运营 | 242 | 61 |\n"
+        "| 管理 | 36 | 33.15 |\n"
+        "| 支持 | 115 | 45.85 |\n"
+        "| 学历本科及以上 | 62% | 71% |\n"
+        "| 年龄30岁以下 | 41% | 38% |\n\n"
+        "### 对比分析\n"
+        "1. 规模：两边员工总数口径不同，不可直接比 excel 分项合计。\n"
+        "2. 研发双口径：年报研发与专职研发并存，YYCQ 以 excel 70 为准。\n"
+        "3. 学历结构：本科占比接近。\n"
+        "4. 年龄结构：青年占比接近。\n"
+        "5. 职能重心：可比公司A 销售/运营绝对值更大。\n\n"
+        "### 口径说明\n"
+        "可比公司A=年报；YYCQ=excel「1.1信息-人员」；缺项标证据未覆盖。\n"
+    )
+    assert hermes_reply_is_user_facing_final(rich, user_query=PERSONNEL_QUERY)
+
+    money_excerpt = (
+        "销售费用合计 13,722,360.23元；广告费 1,234,567.89元；"
+        "职工薪酬 2,345,678.90元；差旅费 345,678.12元；业务招待费 456,789.01元"
+    )
+    prefetch = {
+        "ok": True,
+        "citations": [{"doc_id": "d1"}, {"doc_id": "d2"}],
+        "evidence_pack": {
+            "task_type": "compare",
+            "gaps": ["销售人员", "学历明细"],
+            "coverage_score": 0.55,
+            "facets": [{"label": "费用分项", "excerpt": money_excerpt}],
+        },
+    }
+    assert pack_has_tabular_breakdown(prefetch["evidence_pack"])
+    # 复现旧误判：金额 coverage=0 → breakdown_revise True
+    assert hermes_reply_needs_breakdown_revise(
+        rich, prefetch_result=prefetch, user_query=PERSONNEL_QUERY
+    )
+    # 修复点：native 下 needs_* 须短路，不得开补检索×N
+    assert not needs_hermes_supplemental(
+        agent_route=AgentRoute.hermes_full,
+        prefetch_result=prefetch,
+        hermes_kb_ask_count=0,
+        hermes_reply=rich,
+        user_query=PERSONNEL_QUERY,
+    )
+
+
 def test_substantive_process_draft_kb0_skips_no_mcp_supplemental(monkeypatch):
     """手测回归：实质过程稿 + kb=0 → 禁「未调 MCP 补检索×N」毁流。
 

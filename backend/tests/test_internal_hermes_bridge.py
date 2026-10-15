@@ -220,6 +220,120 @@ def test_remote_budget_fail_closed_when_bridge_errors(monkeypatch):
     assert "unavailable" in deny.lower()
 
 
+def test_kb_ask_skips_remote_budget_when_shared_session_exists(monkeypatch):
+    """MCP 子进程：DB 已有会话预算时，即使 HTTP 桥挂了也不应 deny。"""
+    from backend.services import hermes_bridge_http as http_bridge
+    from backend.services import hermes_shared_session as shared
+
+    tok = _jwt()
+    sk = "orientg-db-budget-skip-http"
+    shared.persist_session(
+        sk,
+        tok,
+        kb_scope={"selected_folder_ids": ["f1"]},
+        kb_budget_max=None,
+        orientg_route="hermes_full",
+    )
+    bridge.reset_for_tests()
+    budget.reset_for_tests()
+
+    http_calls: list[str] = []
+
+    def boom(path, body):
+        http_calls.append(path)
+        raise RuntimeError("bridge must not be called")
+
+    monkeypatch.setattr(http_bridge, "bridge_http_enabled", lambda: True)
+    monkeypatch.setattr(http_bridge, "_post_json", boom)
+
+    captured: dict = {}
+
+    def fake_ask_knowledge(token, query, **kwargs):
+        captured["token"] = token
+        return {"denied": False, "reply": "ok", "citations": [{"doc_id": "d1"}]}
+
+    monkeypatch.setattr(tools, "ask_knowledge", fake_ask_knowledge)
+    monkeypatch.setattr(
+        "backend.services.kb_scope_resolve.resolve_kb_scope_for_ask",
+        lambda *a, **k: {
+            "collection_ids": [],
+            "table_ids": [],
+            "attached_doc_ids": ["d1"],
+            "limit_to_attached": True,
+        },
+    )
+
+    res = tools.orientg_kb_ask("", "人员", hermes_session_key=sk)
+    assert res.get("ok") is True
+    assert captured.get("token") == tok
+    assert not any("kb-ask-budget" in p for p in http_calls)
+
+
+def test_kb_ask_uses_remote_budget_when_no_local_or_db_session(monkeypatch):
+    """无内存桥、无 DB 会话时，须走 HTTP budget consume。"""
+    from backend.services import hermes_bridge_http as http_bridge
+
+    sk = "orientg-need-http-budget"
+    bridge.reset_for_tests()
+    budget.reset_for_tests()
+
+    class _Ok:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "denied": False}
+
+    calls: list[str] = []
+
+    def fake_post(path, body):
+        calls.append(path)
+        if "resolve" in path:
+            class _Sess:
+                status_code = 200
+
+                def json(self):
+                    return {
+                        "ok": True,
+                        "user_token": _jwt(),
+                        "kb_scope": {"selected_folder_ids": ["f1"]},
+                        "allow_kb_write": False,
+                    }
+
+            return _Sess()
+        return _Ok()
+
+    monkeypatch.setenv("ORIENTG_INTERNAL_BASE_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("ORIENTG_MCP_BRIDGE_SECRET", BRIDGE_SECRET)
+    monkeypatch.setattr(http_bridge, "_post_json", fake_post)
+    monkeypatch.setattr(tools, "ask_knowledge", lambda *a, **k: {
+        "denied": False,
+        "reply": "ok",
+        "citations": [{"doc_id": "d1"}],
+    })
+    monkeypatch.setattr(
+        "backend.services.kb_scope_resolve.resolve_kb_scope_for_ask",
+        lambda *a, **k: {
+            "collection_ids": [],
+            "table_ids": [],
+            "attached_doc_ids": ["d1"],
+            "limit_to_attached": True,
+        },
+    )
+
+    res = tools.orientg_kb_ask("", "人员", hermes_session_key=sk)
+    assert res.get("ok") is True
+    assert any("kb-ask-budget" in p for p in calls)
+
+
+def test_budget_bridge_unavailable_deny_reply_does_not_urge_retry():
+    from backend.services.kb_ask_mcp_reply import orientg_kb_ask_denied_hermes_reply
+
+    text = orientg_kb_ask_denied_hermes_reply("orientg_kb_ask budget bridge unavailable")
+    assert "权限" not in text or "勿" in text
+    assert "勿再重复调用" in text or "勿重试" in text or "基础设施" in text
+    assert "请改用 MCP 工具" not in text
+
+
 def test_production_bridge_rejects_non_private_client(client, monkeypatch):
     monkeypatch.setattr(settings, "app_env", "production")
     monkeypatch.setattr(settings, "orientg_mcp_bridge_secret", BRIDGE_SECRET)

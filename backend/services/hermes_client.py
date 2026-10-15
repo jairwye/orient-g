@@ -171,8 +171,15 @@ def _build_messages(
         "role": "system",
         "content": "Orient-G 网关上下文（JSON）：\n" + json.dumps(ctx, ensure_ascii=False),
     }
+    from backend.services.hermes_message_window import trim_dialog_messages
+
+    trimmed = trim_dialog_messages(
+        messages,
+        max_turns=int(getattr(settings, "hermes_chat_history_max_turns", 16) or 0) or None,
+        max_chars=int(getattr(settings, "hermes_chat_history_max_chars", 48000) or 0) or None,
+    )
     out: list[dict[str, str]] = [system]
-    for m in messages or []:
+    for m in trimmed:
         role = str(m.get("role") or "user")
         if role not in {"user", "assistant", "system"}:
             role = "user"
@@ -1258,27 +1265,9 @@ def stream_agent_chat_runs(
                 yield evt
                 if not abort_runs:
                     loop_guard.sync_stats(stream_stats)
-                    from backend.services.kb_retrieval_plan import query_wants_personnel_compare
-                    from backend.services.hermes_stream_stats import hermes_native_kb_ask_count
-
-                    if (
-                        query_wants_personnel_compare(user_q)
-                        and getattr(settings, "hermes_native_mcp_reply", False)
-                        and hermes_native_kb_ask_count(stream_stats) >= 1
-                        and (time.monotonic() - loop_guard.started) >= 360.0
-                        and loop_guard.accumulated_len >= 120
-                    ):
-                        abort_runs = True
-                        abort_code = "personnel_native_kb_round1_done"
-                        stop_reader.set()
-                        if hermes_run_id:
-                            stop_hermes_run(hermes_run_id)
-                        yield {
-                            "type": "status",
-                            "message": "人员横比：首轮 MCP 已完成，收束主 run 进入验证补检索。",
-                            "step": "personnel_mcp_round1_cut",
-                        }
-                        continue
+                    # 已移除 personnel_native_kb_round1_done 强制收束：
+                    # 360s 打断主 run 再串「核证续跑→成稿续跑」会更慢且易出薄稿/挂流。
+                    # 人员 ≥2 次 MCP 仍由 MCP 契约 + 自然收束后的 _want_verify 兜底。
                     should_abort, code, msg = loop_guard.should_abort()
                     if should_abort:
                         abort_runs = True
@@ -1383,48 +1372,100 @@ def stream_agent_chat_runs(
             accumulated_parts.clear()
             final_output = ""
         follow_timeout = httpx.Timeout(30.0, read=float(read_timeout_s or read_timeout))
-        try:
-            with httpx.Client(timeout=follow_timeout) as client:
-                with client.stream("GET", follow_url, headers=follow_headers) as resp:
-                    if resp.status_code < 400:
-                        for line in resp.iter_lines():
-                            if is_cancelled(run_id):
-                                break
-                            obj = _parse_hermes_run_sse_data_line(line)
-                            if not obj:
-                                continue
-                            batch = enrich_tool_progress_with_labels(
-                                hermes_run_event_to_sse(obj, seen_tool_keys=seen_tool_keys),
-                                tool_label_by_id,
+        fq: queue.Queue[tuple[str, Any]] = queue.Queue()
+        stop_follow = threading.Event()
+        follow_done = threading.Event()
+
+        def _follow_reader() -> None:
+            try:
+                with httpx.Client(timeout=follow_timeout) as client:
+                    with client.stream("GET", follow_url, headers=follow_headers) as resp:
+                        if resp.status_code >= 400:
+                            detail = resp.read().decode("utf-8", errors="replace")[:500]
+                            fq.put(
+                                (
+                                    "err",
+                                    HermesClientError(
+                                        f"Hermes follow-up HTTP {resp.status_code}",
+                                        detail=detail,
+                                    ),
+                                )
                             )
-                            for mapped in batch:
-                                if mapped.get("type") == "run_completed":
-                                    final_output = str(mapped.get("output") or "")
-                                    continue
-                                remapped = _apply_stream_content_policy(
-                                    mapped, accumulated=accumulated_parts
-                                )
-                                if remapped is None:
-                                    continue
-                                blocked = guard_kb_forbidden_tool_sse(
-                                    remapped,
-                                    orientg_route=orientg_route,
-                                    on_block=loop_guard.on_forbidden_block,
-                                    session_key=session_key,
-                                    user_query=user_q,
-                                    evidence_ready=hermes_native_kb_ask_count(stream_stats) >= 1,
-                                )
-                                if blocked:
-                                    yield blocked
-                                    continue
-                                _bump_stream_stats(stream_stats, remapped, stream_tools)
-                                yield remapped
-        except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
-            # 失败后即便已写入 junk partial，也强制恢复快照
-            _restore_followup_snapshot(
-                snap_parts, snap_final, snap_raw, snap_thinking, force=True
-            )
-            raise
+                            return
+                        for line in resp.iter_lines():
+                            if stop_follow.is_set() or is_cancelled(run_id):
+                                break
+                            if line:
+                                fq.put(("line", line))
+            except (HermesClientError, httpx.TimeoutException, httpx.RequestError) as e:
+                fq.put(("err", e))
+            finally:
+                follow_done.set()
+                fq.put(("end", None))
+
+        threading.Thread(target=_follow_reader, daemon=True).start()
+        follow_beat = time.monotonic()
+        follow_failed = False
+        try:
+            while True:
+                try:
+                    kind, payload = fq.get(timeout=1.0)
+                except queue.Empty:
+                    if time.monotonic() - follow_beat >= heartbeat_s:
+                        follow_beat = time.monotonic()
+                        yield {
+                            "type": "status",
+                            "message": "Hermes 续跑仍在执行（成稿/核证），请稍候…",
+                            "step": "heartbeat",
+                        }
+                    if follow_done.is_set() and fq.empty():
+                        break
+                    continue
+                if kind == "end":
+                    break
+                if kind == "err":
+                    follow_failed = True
+                    _restore_followup_snapshot(
+                        snap_parts, snap_final, snap_raw, snap_thinking, force=True
+                    )
+                    err = payload
+                    if isinstance(err, Exception):
+                        raise err
+                    raise HermesClientError(str(err))
+                obj = _parse_hermes_run_sse_data_line(payload)
+                if not obj:
+                    continue
+                follow_beat = time.monotonic()
+                batch = enrich_tool_progress_with_labels(
+                    hermes_run_event_to_sse(obj, seen_tool_keys=seen_tool_keys),
+                    tool_label_by_id,
+                )
+                for mapped in batch:
+                    if mapped.get("type") == "run_completed":
+                        final_output = str(mapped.get("output") or "")
+                        continue
+                    remapped = _apply_stream_content_policy(
+                        mapped, accumulated=accumulated_parts
+                    )
+                    if remapped is None:
+                        continue
+                    blocked = guard_kb_forbidden_tool_sse(
+                        remapped,
+                        orientg_route=orientg_route,
+                        on_block=loop_guard.on_forbidden_block,
+                        session_key=session_key,
+                        user_query=user_q,
+                        evidence_ready=hermes_native_kb_ask_count(stream_stats) >= 1,
+                    )
+                    if blocked:
+                        yield blocked
+                        continue
+                    _bump_stream_stats(stream_stats, remapped, stream_tools)
+                    yield remapped
+        finally:
+            stop_follow.set()
+        if follow_failed:
+            return
         # 成功但空响应：仍恢复快照，避免 reset 后无主答
         _restore_followup_snapshot(snap_parts, snap_final, snap_raw, snap_thinking)
 
@@ -1460,7 +1501,11 @@ def stream_agent_chat_runs(
             # 保留首轮草稿：retry 失败时 force 恢复；成功空响应也回灌快照
             yield from _drain_followup_run(retry_body, reset_accumulated=False)
         except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
-            pass
+            yield {
+                "type": "status",
+                "message": "MCP 优先重试中断，已保留此前进展",
+                "step": "hermes_followup_salvage",
+            }
     elif (
         (orientg_route or "").strip().lower() == "hermes_full"
         and hermes_native_kb_ask_count(stream_stats) == 0
@@ -1490,8 +1535,8 @@ def stream_agent_chat_runs(
     _retry_n = int(stream_stats.get("hermes_mcp_retry_count") or 0)
     _abort_ok = (not abort_runs) or abort_code in (
         "hermes_kb_ask_loop",
-        "personnel_native_kb_round1_done",
         "personnel_lite_report_ready",
+        "hermes_full_report_ready",
         "hermes_run_forbidden_loop",
         "hermes_forbidden_write_final",
         "hermes_run_wall_timeout",
@@ -1505,8 +1550,9 @@ def stream_agent_chat_runs(
         and _kb_n == 1
         # 禁止与「0→强制重试」叠加凑数；仅首轮已自调 1 次时核证续跑
         and _retry_n == 0
-        # 禁工具收束优先走成稿续跑，不与核证续跑叠加
-        and abort_code != "hermes_forbidden_write_final"
+        # 禁工具收束 / 终稿已齐收束：优先成稿或直接采纳，不与核证续跑叠加
+        and abort_code
+        not in ("hermes_forbidden_write_final", "hermes_full_report_ready")
         # 已有合格用户面终稿：直接采纳，勿再续跑毁流
         and not _have_user_facing_final
     )
@@ -1546,7 +1592,11 @@ def stream_agent_chat_runs(
             # 保留首轮过程稿供质量择优；核证轮继续累加
             yield from _drain_followup_run(verify_body, reset_accumulated=False)
         except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
-            pass
+            yield {
+                "type": "status",
+                "message": "核证续跑中断，已保留此前进展",
+                "step": "hermes_followup_salvage",
+            }
 
     # 全局：已有 MCP 但仍无 user-facing 终稿 → 成稿续跑
     # （含：正常结束仅过程稿；forbidden / kb_ask_loop abort）
@@ -1557,7 +1607,7 @@ def stream_agent_chat_runs(
         "hermes_forbidden_write_final",
         "hermes_run_forbidden_loop",
         "hermes_kb_ask_loop",
-        "personnel_native_kb_round1_done",
+        "hermes_full_report_ready",
         "hermes_run_wall_timeout",
     )
     # kb=0 但已有实质过程稿：仍须成稿续跑（与跳过「未调 MCP」重试对齐），
@@ -1606,7 +1656,11 @@ def stream_agent_chat_runs(
         try:
             yield from _drain_followup_run(wf_body, reset_accumulated=False)
         except (HermesClientError, httpx.TimeoutException, httpx.RequestError):
-            pass
+            yield {
+                "type": "status",
+                "message": "成稿续跑中断，已保留此前进展（避免流式连接失败丢稿）",
+                "step": "hermes_followup_salvage",
+            }
     # 禁止用网关 orchestration 把 hermes 计数凑到 ≥2（刷绿）；验收只认 Hermes 自调 MCP
 
     uq = _last_user_query_from_messages(messages)

@@ -501,6 +501,15 @@ def build_personnel_draft_skeleton_from_payload(payload: dict[str, Any]) -> str:
         ("销售", _cell(sanqi, "sales_headcount"), _cell(yycq, "sales_headcount")),
         ("运营", _cell(sanqi, "ops_headcount"), _cell(yycq, "ops_headcount")),
     ]
+    # 有 metrics 则扩行，避免系统性压成三行薄表（禁止硬编码具体人数作弊）
+    if sanqi.get("admin_headcount") is not None or yycq.get("admin_headcount") is not None:
+        rows.append(
+            ("管理/行政", _cell(sanqi, "admin_headcount"), _cell(yycq, "admin_headcount"))
+        )
+    if sanqi.get("support_headcount") is not None or yycq.get("support_headcount") is not None:
+        rows.append(
+            ("支持", _cell(sanqi, "support_headcount"), _cell(yycq, "support_headcount"))
+        )
     lines = [
         "## 【硬数字参考表·勿将本标题上屏】（写入终稿表格数字；禁止改写为员工总数倍数对照）",
         "",
@@ -516,12 +525,13 @@ def build_personnel_draft_skeleton_from_payload(payload: dict[str, Any]) -> str:
             "",
             "### 对比分析",
             "",
-            f"- 结构差异：两家披露口径不同（年报专业构成 vs excel 职能分项），不可直接比员工总数。",
+            f"- 结构差异：{peer_lab}与{primary_lab}披露口径不同（年报专业构成 vs excel 职能分项），不可直接比员工总数。",
+            f"- 职能重心：上表已列研发/销售/运营等分项；请据此扩写两侧侧重差异（勿只复述本条提示）。",
+            f"- 口径提醒：年报专节与 excel「1.1信息-人员」不可混加；学历/年龄等仅在证据节选确有时补充。",
             "",
             "### 口径说明",
             "",
-            f"{peer_lab}=年报节选；{primary_lab}=excel「1.1信息-人员」。"
-            f"展示须用用户问句公司名（{peer_lab}/{primary_lab}），禁止把内部代称当主表表头。",
+            f"{peer_lab}=年报节选；{primary_lab}=excel「1.1信息-人员」。",
             "",
         ]
     )
@@ -545,11 +555,23 @@ def is_personnel_thin_salvage_final(text: str) -> bool:
         return True
     if "人员结构对照" not in h:
         return False
-    if len(h) >= 360:
+    # 骨架独有标记：扩写导语 / 硬数字表头 / 旧「对照上表」套话 → 一律 thin
+    skeleton_stock = bool(
+        re.search(r"请据此扩写两侧侧重差异|勿只复述本条提示", h)
+        or re.search(r"硬数字参考表", h)
+        or re.search(r"职能重心：对照上表研发/销售/运营", h)
+    )
+    if skeleton_stock:
+        return True
+    # 通用「披露口径不同」句与 Hermes 成稿同构：须同时短篇幅才判 thin
+    stock_caliber = bool(
+        re.search(r"结构差异：.{0,24}披露口径不同（年报专业构成", h)
+        or re.search(r"两家披露口径不同（年报专业构成", h)
+    )
+    if len(h) >= 360 and not stock_caliber:
         return False
-    stock = bool(re.search(r"结构差异：两家披露口径不同（年报专业构成", h))
     thin_analysis = len(h) < 280 or h.count("\n") < 16
-    return stock and thin_analysis
+    return bool(stock_caliber and thin_analysis)
 
 
 def build_personnel_salvage_final_from_payload(payload: dict[str, Any]) -> str:

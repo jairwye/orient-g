@@ -1192,12 +1192,37 @@ def needs_hermes_supplemental(
             hermes_reply_has_substantive_draft,
             hermes_reply_is_user_facing_final,
         )
+        from backend.services.kb_retrieval_plan import query_wants_personnel_structure
+
+        native = bool(
+            settings.hermes_native_skip_supplemental and settings.hermes_native_mcp_reply
+        )
+        from backend.services.kb_ask_mcp_agent_native import (
+            hermes_native_personnel_reply_sufficient,
+        )
+
+        # native 人员横比：仅合格终稿 / sufficient 禁网关补检索。
+        # 弱规划稿仍允许后续门禁路径；勿对任意非空正文一律短路。
+        # 手测根因：prefetch pack 混入费用金额表时，breakdown_revise 用金额 coverage
+        # 误开「未调 MCP 补检索×N」，再被门禁顶替 Hermes 丰富稿。
+        if native and query_wants_personnel_structure(user_query or ""):
+            if hermes_reply_is_user_facing_final(hermes_reply, user_query=user_query):
+                return False
+            if hermes_native_personnel_reply_sufficient(
+                hermes_reply,
+                user_query=user_query,
+                hermes_kb_ask_count=hermes_kb_ask_count,
+            ):
+                return False
 
         # 与假「未调 MCP」优先重试同类：kb=0 时
         # - 实质过程稿：禁止空转补检索毁流（应成稿续跑）
-        # - 已 user-facing 终稿：仍允许无证据估算/分项缺口触发修订
+        # - native + 合格 user-facing 终稿：禁止 pack 金额缺口毁流
+        # - 非 native：仍允许无证据估算/分项缺口触发修订
         if int(hermes_kb_ask_count or 0) == 0:
             if hermes_reply_is_user_facing_final(hermes_reply, user_query=user_query):
+                if native:
+                    return False
                 return hermes_reply_needs_breakdown_revise(
                     hermes_reply,
                     prefetch_result=prefetch_result,
@@ -1206,18 +1231,7 @@ def needs_hermes_supplemental(
             if hermes_reply_has_substantive_draft(hermes_reply, user_query=user_query):
                 return False
 
-        if (
-            settings.hermes_native_skip_supplemental
-            and settings.hermes_native_mcp_reply
-            and hermes_kb_ask_count >= 1
-        ):
-            from backend.services.kb_retrieval_plan import query_wants_personnel_structure
-
-            # 人员横比：Hermes 已 MCP 后一律跳过补检索；弱稿由 misattribution/structured gate 保险丝处理。
-            if query_wants_personnel_structure(user_query or ""):
-                return False
-            from backend.services.kb_ask_mcp_agent_native import hermes_native_personnel_reply_sufficient
-
+        if native and hermes_kb_ask_count >= 1:
             if hermes_native_personnel_reply_sufficient(
                 hermes_reply,
                 user_query=user_query,

@@ -372,9 +372,17 @@ def orientg_kb_ask(
         return deny_tok
     from backend.services.kb_ask_budget import check_and_consume_ask
     from backend.services.hermes_token_bridge import resolve as bridge_resolve
+    from backend.services.hermes_shared_session import load_session as load_shared_hermes_session
 
+    # 内存桥命中 / 共享库已有会话：本地 check_and_consume_ask（含 DB）已负责预算。
+    # 仅当二者皆无时，才回调 HTTP（MCP 子进程无 DB 时的路径）。
     budget_deny = check_and_consume_ask(hermes_session_key)
-    if budget_deny is None and hermes_session_key and not bridge_resolve(hermes_session_key):
+    if (
+        budget_deny is None
+        and hermes_session_key
+        and not bridge_resolve(hermes_session_key)
+        and load_shared_hermes_session(hermes_session_key) is None
+    ):
         from backend.services.hermes_bridge_http import consume_remote_kb_ask_budget
 
         budget_deny = consume_remote_kb_ask_budget(hermes_session_key)

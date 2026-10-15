@@ -1159,9 +1159,11 @@ def test_orphan_tool_completed_prevents_false_mcp_retry(
                 )
             )
 
-    assert mock_create_run.call_count >= 1
+    # 首轮 + 核证续跑；不得假「未调 MCP」再开 hermes_mcp_retry
+    assert mock_create_run.call_count == 2
     steps = [str(e.get("step") or "") for e in events if e.get("type") == "status"]
     assert "hermes_mcp_retry" not in steps
+    assert "hermes_mcp_verify_continue" in steps
     done = next((e for e in events if e.get("type") == "done"), None)
     assert done is not None
     stats = done.get("hermes_stream_stats") or {}
@@ -1177,23 +1179,34 @@ def test_skip_mcp_retry_when_substantive_process_draft_ready(
     _mock_stop,
     mock_create_run,
 ):
-    """实质过程稿（含证据数字）即便尚非 user-facing 终稿，也不得假 MCP 重试清稿毁流。"""
+    """实质过程稿（含证据数字）即便尚非 user-facing 终稿，也不得假 MCP 重试清稿毁流。
+
+    kb=0 + 实质过程稿可走成稿续跑（非 MCP 重试）；禁止未调 MCP 优先重试毁流。
+    """
     mock_settings.hermes_configured = True
     mock_settings.hermes_model = "hermes-agent"
     mock_settings.hermes_request_timeout_s = 300
     mock_settings.hermes_stream_reasoning = False
     mock_settings.hermes_native_mcp_reply = True
-    mock_create_run.side_effect = ["run_first"]
+    mock_create_run.side_effect = ["run_first", "run_write_final"]
 
     process = (
         "首轮取证完成。证据显示可比公司A研发人员1,378人、销售946人；"
         "YYCQ研发70人、运营61人。正在做核证补缺计划："
         "verification_queries 若干后撰写终稿。"
     )
+    final = (
+        "### 人员结构对照\\n| 职能 | 可比公司A | YYCQ |\\n"
+        "| 研发 | 1378 | 70 |\\n### 对比分析\\n结构差异明显。"
+    )
     runs_sse = {
         "run_first": [
             f'data: {{"event":"message.delta","delta":"{process}","run_id":"run_first"}}',
             f'data: {{"event":"run.completed","output":"{process}","run_id":"run_first"}}',
+        ],
+        "run_write_final": [
+            f'data: {{"event":"message.delta","delta":"{final}","run_id":"run_write_final"}}',
+            f'data: {{"event":"run.completed","output":"{final}","run_id":"run_write_final"}}',
         ],
     }
 
@@ -1245,9 +1258,11 @@ def test_skip_mcp_retry_when_substantive_process_draft_ready(
                 )
             )
 
-    assert mock_create_run.call_count == 1
+    assert mock_create_run.call_count == 2
     steps = [str(e.get("step") or "") for e in events if e.get("type") == "status"]
     assert "hermes_mcp_retry" not in steps
+    assert "hermes_skip_mcp_retry_substantive_draft" in steps
+    assert "hermes_mcp_write_final_continue" in steps
     done = next((e for e in events if e.get("type") == "done"), None)
     assert done is not None
     reply = str(done.get("reply") or "")

@@ -429,7 +429,11 @@ Orient-G Agent 经 `backend/services/hermes_client.py` 调用 Hermes Gateway `PO
 
 **智能体 ↔ Hermes 会话：** 请求体传 `orientg_chat_session_id`（侧栏会话 `s_…`）+ 可选 `hermes_session_id`（首轮 done 后持久化）。backend 解析为 `orientg-{username}--{chat_id}`，**同用户续聊同会话、换用户隔离、新建智能体对话=new chat id**。
 
-**v1 已知限制（多实例）：** `hermes_token_bridge` 与 `kb_ask_budget` 为进程内内存；`uvicorn --workers N` 或多副本部署时 MCP 会话 JWT / Tier 1 补检索预算不跨 worker 共享。单机单 worker 为当前推荐；多实例需后续 Redis 会话桥（见 code review I2）。
+**会话桥（MCP 子进程）：** `hermes_bridge_http.py` + `/api/internal/hermes/session/resolve` 与 `kb-ask-budget/consume`；共享表 `hermes_session_store`。MCP env 须设 `ORIENTG_INTERNAL_BASE_URL` + `ORIENTG_MCP_BRIDGE_SECRET`（与根 `.env` / `docker/hermes/env.hermes.example` 一致）。桥不可达时 budget 文案须 fail-closed 且**禁止**诱导 Hermes 死循环重试。
+
+**对话历史窗口：** backend `_build_messages` 经 `hermes_message_window.trim_dialog_messages` 裁剪（`HERMES_CHAT_HISTORY_MAX_TURNS` 默认 16、`HERMES_CHAT_HISTORY_MAX_CHARS` 默认 48000），保留当前 user 与必要 system，避免多轮把完整 messages 线性堆进 LLM。
+
+**v1 已知限制（多实例）：** 进程内 `hermes_token_bridge` / `kb_ask_budget` 仍优先；跨进程靠 `hermes_session_store` + HTTP 桥。`uvicorn --workers N` 时务必保证 MCP 能打到登记会话的同一 backend（或共享 DB）。单机单 worker 仍为最稳部署。
 
 ---
 

@@ -55,7 +55,9 @@ def test_loop_guard_does_not_abort_long_planning_without_kb_ask():
 
 def test_loop_guard_aborts_excessive_kb_ask_without_report():
     g = HermesRunsLoopGuard(orientg_route="hermes_full")
-    g.sync_stats({"hermes_orientg_kb_ask_calls": 4})
+    g.sync_stats({"hermes_orientg_kb_ask_calls": 5})
+    assert not g.should_abort()[0]
+    g.sync_stats({"hermes_orientg_kb_ask_calls": 6})
     abort, code, _msg = g.should_abort()
     assert abort
     assert code == "hermes_kb_ask_loop"
@@ -115,8 +117,8 @@ def test_full_loop_guard_skips_permission_web_stall_when_report_anchor():
     assert code == ""
 
 
-def test_full_loop_guard_does_not_abort_on_personnel_report_ready_grace():
-    """深度档对照表就绪后仍须继续 MCP/成稿，不得套用 lite 收束。"""
+def test_full_loop_guard_does_not_abort_report_ready_without_kb():
+    """深度档：仅有对照锚点但尚未 MCP 取证时，不得因 grace 收束（仍须取证）。"""
     import time
 
     g = HermesRunsLoopGuard(orientg_route="hermes_full")
@@ -128,6 +130,44 @@ def test_full_loop_guard_does_not_abort_on_personnel_report_ready_grace():
     )
     g.report_ready_at = time.monotonic() - 200.0
     g.accumulated_len = 2000
+    g.kb_ask_calls = 0
     abort, code, _msg = g.should_abort()
     assert not abort
     assert code == ""
+
+
+def test_full_loop_guard_aborts_after_report_ready_grace_with_kb():
+    """深度档：已 MCP + 对照终稿锚点后宽限收束，避免空转挂流。"""
+    import time
+
+    g = HermesRunsLoopGuard(
+        orientg_route="hermes_full",
+        full_report_ready_grace_s=60.0,
+    )
+    g.sync_stats({"hermes_orientg_kb_ask_calls": 2})
+    g.on_stream_evt(
+        {
+            "type": "delta",
+            "content": "## 人员结构对照\n| 研发 | 1378 | 70 |\n| 销售 | 946 | — |\n",
+        }
+    )
+    g.report_ready_at = time.monotonic() - 95.0
+    g.accumulated_len = 2000
+    abort, code, _msg = g.should_abort()
+    assert abort
+    assert code == "hermes_full_report_ready"
+
+
+def test_full_loop_guard_ignores_tool_progress_skeleton_anchor():
+    """MCP tool_progress 含骨架标题不得立锚点，避免未成稿就 grace 收束。"""
+    g = HermesRunsLoopGuard(orientg_route="hermes_full", full_report_ready_grace_s=1.0)
+    g.sync_stats({"hermes_orientg_kb_ask_calls": 2})
+    g.on_stream_evt(
+        {
+            "type": "tool_progress",
+            "message": "## 【硬数字参考表】\n### 人员结构对照\n| 研发 | 1378 | 70 |\n",
+        }
+    )
+    assert not g.has_report_anchor
+    abort, code, _msg = g.should_abort()
+    assert not abort

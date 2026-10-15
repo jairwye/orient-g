@@ -308,6 +308,118 @@ def test_hermes_lite_stall_salvages_personnel_draft_without_money(mock_stream, m
 
 @patch("backend.routers.agent.stream_agent_chat")
 @patch("backend.services.agent_kb_supplemental.iter_supplemental_revision_events")
+def test_personnel_rich_final_kb0_money_pack_keeps_hermes_no_supplemental(
+    mock_sup, mock_stream, monkeypatch
+):
+    """手测：合格人员终稿 + kb=0 + prefetch 混入费用金额 → 禁补检索×N，禁门禁顶替。"""
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, "hermes_native_mcp_reply", True)
+    monkeypatch.setattr(settings, "hermes_native_skip_supplemental", True)
+
+    rich = (
+        "## 人员结构对照\n"
+        "| 职能 | 可比公司A | YYCQ |\n"
+        "| --- | --- | --- |\n"
+        "| 员工总数（年报） | 3,138 | 139 |\n"
+        "| 研发 | 1,378 | 70 |\n"
+        "| 销售 | 946 | 证据未覆盖 |\n"
+        "| 运营 | 242 | 61 |\n"
+        "| 管理 | 36 | 33.15 |\n"
+        "| 支持 | 115 | 45.85 |\n\n"
+        "### 对比分析\n"
+        "1. 规模口径不同。2. 研发双口径。3. 学历。4. 年龄。5. 职能重心。\n"
+        "### 口径说明\n可比公司A=年报；YYCQ=excel。\n"
+    )
+    mock_stream.return_value = iter(
+        [
+            {
+                "type": "status",
+                "message": "已有合格 Hermes 终稿，跳过「未调 MCP」优先重试",
+                "step": "hermes_skip_mcp_retry_user_facing",
+            },
+            {
+                "type": "status",
+                "message": "人员横比 MCP 核证门闸：kb=0 abort=False/- native=True … want=False",
+                "step": "hermes_mcp_verify_gate",
+            },
+            {"type": "delta", "content": rich},
+            {
+                "type": "done",
+                "reply": rich,
+                "hermes_stream_stats": {
+                    "hermes_orientg_kb_ask_calls": 0,
+                    "orientg_kb_ask_calls": 0,
+                    "gateway_orientg_kb_ask_calls": 1,
+                },
+            },
+        ]
+    )
+    mock_sup.side_effect = AssertionError(
+        "qualified personnel final + kb=0 must not run money-pack supplemental×N"
+    )
+    money_excerpt = (
+        "销售费用合计 13,722,360.23元；广告费 1,234,567.89元；"
+        "职工薪酬 2,345,678.90元；差旅费 345,678.12元；业务招待费 456,789.01元"
+    )
+    raw = list(
+        _agent_chat_stream_events(
+            token="tok",
+            uname="finance_test",
+            tenant_id="tenant1",
+            messages=[{"role": "user", "content": PERSONNEL_LITE_QUERY}],
+            kb_scope_payload={"selected_folder_ids": ["f1"]},
+            attached=[],
+            body=type(
+                "B",
+                (),
+                {
+                    "allow_kb_write": False,
+                    "enabled_skills": None,
+                    "model": None,
+                    "hermes_session_id": None,
+                    "orientg_chat_session_id": None,
+                },
+            )(),
+            prefetch_tool_calls=[
+                {"name": "orientg_kb_ask", "status": "ok", "prefetch": True}
+            ],
+            prefetch_result={
+                "ok": True,
+                "citations": [{"doc_id": "ud_a"}, {"doc_id": "ud_b"}],
+                "evidence_pack": {
+                    "task_type": "compare",
+                    "coverage_score": 0.55,
+                    "gaps": ["销售人员"],
+                    "facets": [{"label": "费用分项", "excerpt": money_excerpt}],
+                },
+            },
+            fixtures={"tenant_id": "tenant1", "documents": []},
+            agent_route=AgentRoute.hermes_full,
+        )
+    )
+    evts = _parse_sse(raw)
+    assert mock_sup.call_count == 0
+    assert not any(
+        "自动执行定向" in str(e.get("message") or "")
+        or "未调用 MCP 补检索" in str(e.get("message") or "")
+        for e in evts
+    )
+    done = [e for e in evts if e.get("type") == "done"][-1]
+    assert not done.get("kb_supplemental")
+    assert not done.get("structured_gate_applied")
+    reply = str(done.get("reply") or "")
+    assert "人员结构对照" in reply
+    assert "1,378" in reply or "1378" in reply
+    assert "研发双口径" in reply or "口径说明" in reply
+    # 不得被薄门禁模板顶替（仅 33.15/45.85/210 而无丰富分析）
+    assert "学历" in reply or "年龄" in reply or "职能重心" in reply or "研发双口径" in reply
+    src = str(done.get("reply_source") or done.get("synthesis") or "")
+    assert "gate" not in src.lower() or src in ("hermes", "")
+
+
+@patch("backend.routers.agent.stream_agent_chat")
+@patch("backend.services.agent_kb_supplemental.iter_supplemental_revision_events")
 def test_substantive_process_draft_kb0_skips_supplemental_chain(mock_sup, mock_stream):
     """手测毁流路径：实质过程稿 + kb=0 → 禁「未调 MCP 补检索」链，流须正常收束。"""
     process = (

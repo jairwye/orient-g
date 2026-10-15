@@ -868,7 +868,8 @@ def execute_kb_subquery_ask(
 def orientg_kb_ask_denied_hermes_reply(reason: str) -> str:
     """MCP denied 时给 Hermes 的可读文案：禁止诱导「权限受限」，指向 orientg_kb_ask。"""
     r = (reason or "denied").strip()
-    scope_empty = "scope empty" in r.lower() or r in (
+    r_l = r.lower()
+    scope_empty = "scope empty" in r_l or r in (
         "doc allowed scope empty",
         "table allowed scope empty",
     )
@@ -880,6 +881,21 @@ def orientg_kb_ask_denied_hermes_reply(reason: str) -> str:
             "请仅用参数 query（中文）+ hermes_session_key 重试 mcp__orientg__orientg_kb_ask"
             "（不要自造 selected_collection_ids）；"
             "若仍失败，请明确请用户在界面选择知识库文件夹后再问。"
+        )
+    # HTTP 会话/预算桥不可达：再调 MCP 只会重复失败 → 死循环
+    if "bridge unavailable" in r_l or "budget bridge" in r_l:
+        return (
+            f"orientg_kb_ask 调用未完成（{r}）。"
+            "这是 Orient-G MCP↔backend 会话桥基础设施故障（ORIENTG_INTERNAL_BASE_URL / "
+            "ORIENTG_MCP_BRIDGE_SECRET / hermes_session_store），**不是**用户 ACL 或知识库空结果。"
+            "请勿向用户声称无权限；勿改走 web/memory/terminal；**勿再重复调用** orientg_kb_ask。"
+            "请基于已有 Evidence Pack / 上文证据直接成稿，或简短说明「会话桥暂不可用，请稍后重试」。"
+        )
+    if "budget exhausted" in r_l:
+        return (
+            f"orientg_kb_ask 调用未完成（{r}）。"
+            "本会话补检索预算已用尽，**勿再重复调用** orientg_kb_ask。"
+            "请勿向用户声称 ACL 拒答；请基于已有证据成稿。"
         )
     return (
         f"orientg_kb_ask 调用未完成（{r}）。"

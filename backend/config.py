@@ -169,6 +169,10 @@ class Settings(BaseSettings):
     # True：带 kb_scope 的 /api/agent/chat/stream 须带 X-Agent-Run-Id（防 Hermes loopback 重放）
     agent_require_run_id: bool = False
 
+    # Hermes / Agent 发给 Gateway 的对话历史窗口（防多轮 token 线性膨胀）
+    hermes_chat_history_max_turns: int = 16  # 最近 N 轮 user(+assistant)；0=不按轮次裁
+    hermes_chat_history_max_chars: int = 48000  # dialog content 总字符上限；0=不按字符裁
+
     # Hermes MCP 子进程 → backend HTTP 会话桥（跨进程 JWT / kb_scope / 预算）
     orientg_internal_base_url: Optional[str] = None  # 例 http://127.0.0.1:8000；MCP env ORIENTG_INTERNAL_BASE_URL 优先
     orientg_mcp_bridge_secret: Optional[str] = None  # 与 MCP env ORIENTG_MCP_BRIDGE_SECRET 一致；未设则回退 AUTH_SECRET（仅开发）
