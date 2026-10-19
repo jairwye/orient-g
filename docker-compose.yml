@@ -80,7 +80,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: ${BACKEND_IMAGE:-ghcr.io/jairwye/orient-g-backend:latest}
+    image: ${BACKEND_IMAGE:-192.168.104.108:3090/u1/orient-g-backend:latest}
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-mgmt}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-mgmt_web}
@@ -116,7 +116,7 @@ services:
       start_period: 10s
 
   frontend:
-    image: ${FRONTEND_IMAGE:-ghcr.io/jairwye/orient-g-frontend:latest}
+    image: ${FRONTEND_IMAGE:-192.168.104.108:3090/u1/orient-g-frontend:latest}
     environment:
       API_URL: http://backend:8000
       API_BASE_SERVER: http://backend:8000

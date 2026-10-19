@@ -340,7 +340,7 @@ docker compose -f docker-compose.yml -f docker-compose.hermes.yml -f docker-comp
 [`docker-compose.dev-server.yml`](../docker-compose.dev-server.yml) 挂载 `./backend` 并 `--reload`。  
 仅改 Hermes 配置时：`docker compose restart hermes-agent backend`。
 
-**封版**（依赖变更、多机发布）再 `docker build` / `push` GHCR 镜像。
+**封版**（依赖变更、多机发布）再 `docker build` / `push` 内网 Registry 镜像。
 
 ---
 

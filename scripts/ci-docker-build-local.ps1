@@ -1,4 +1,4 @@
-# 本地模拟 .github/workflows/docker-publish.yml 的镜像构建（不 push 到 ghcr.io）
+# 本地模拟 .gitea/workflows/docker-publish.yaml 的镜像构建（不 push 到内网 Registry）
 # 在项目根目录执行: .\scripts\ci-docker-build-local.ps1
 #
 # 与 CI 对齐：backend 普通 build；frontend 使用 --no-cache（与 workflow 一致）。
@@ -54,4 +54,4 @@ Write-Host ""
 Write-Host "构建成功。本地镜像:" -ForegroundColor Green
 Write-Host "  orient-g-backend:local"
 Write-Host "  orient-g-frontend:local"
-Write-Host "未推送到 ghcr.io；push 到 main 后由 GitHub Actions 发布。"
+Write-Host "未推送到内网 Registry；push 到 main 后由 Gitea Actions 发布到内网 Registry。"

@@ -1,6 +1,6 @@
 # Orient-G（财务信息内网）
 
-内网/局域网财务信息展示页，提供经营数据摘要、竞品财报、汇率趋势、政策新闻等服务。仅内网部署，不暴露公网。项目及 GitHub 仓库名称：**Orient-G**。
+内网/局域网财务信息展示页，提供经营数据摘要、竞品财报、汇率趋势、政策新闻等服务。仅内网部署，不暴露公网。项目名称：**Orient-G**，代码托管于内网 Gitea（组织 u1，仓库 orient-g）。
 
 **使用对象**：相关人通过展示页查看经营数据、竞品、汇率、政策新闻等；财务人员通过独立后台页面上传经营数据 Excel，后台入口仅内网可用、不向展示端暴露。
 
@@ -223,7 +223,7 @@ cp docker/hermes/env.hermes.example .env.hermes
 |------|--------|------|
 | 1 | 克隆仓库到部署目录（须含 `Caddyfile`），`cp .env.example .env` 并改 `POSTGRES_*`、`AUTH_SECRET`、`FRONTEND_ORIGIN`、`BIND_IP`、`LLM_*`、`OLLAMA_URL=http://ollama:11434`、`DOCLING_HTTP_BASE_URL=http://docling:5001/v1` | [`.env.example`](.env.example)；README「部署时务必配置」 |
 | 2 | `DB_MIGRATION_MODE=alembic`；**备份**后 `docker compose exec backend alembic -c backend/alembic.ini upgrade head` | README「数据库结构迁移」 |
-| 3 | `docker compose pull db backend frontend caddy`（按需 `ollama`）；可选固定 `BACKEND_IMAGE`/`FRONTEND_IMAGE` 为 `ghcr.io/.../sha-xxx` | 下文「更新业务镜像」 |
+| 3 | `docker compose pull db backend frontend caddy`（按需 `ollama`）；可选固定 `BACKEND_IMAGE`/`FRONTEND_IMAGE` 为内网 Registry 的 `sha-xxx` 或 `ghcr.io/.../sha-xxx`（回滚） | 下文「更新业务镜像」 |
 | 4 | `docker compose up -d`，确认 `/api/health`、登录、知识库可用 | — |
 | 5 | **Hermes**：`cp docker/hermes/env.hermes.example .env.hermes`；设 `API_SERVER_KEY`；`OPENAI_API_BASE` 与 `.env` 中 `LLM_BASE_URL` 同网关（容器 URL）；在 `.env` 设 `HERMES_ENABLED=true`、`HERMES_BASE_URL=http://hermes-agent:8642`、`HERMES_INTERNAL_TOKEN=<同 API_SERVER_KEY>` 及 `.env.example` § Hermes **B) 生产** 段 | [docs/hermes.md §3](docs/hermes.md)；[docker-compose.hermes.yml](docker-compose.hermes.yml) |
 | 6 | **MCP**：`docker ps` 查 backend 容器名，改 [docker/hermes/mcp-orientg.snippet.json](docker/hermes/mcp-orientg.snippet.json) 后合并进 `hermes_state` 卷内 `/root/.hermes/config.yaml`；`docker exec -i <backend> python -m backend.mcp.orientg_server` 冒烟 | [docs/hermes.md §3.5–3.6](docs/hermes.md) |

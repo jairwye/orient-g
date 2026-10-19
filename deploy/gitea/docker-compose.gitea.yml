@@ -1,0 +1,48 @@
+# Gitea 栈（HTTP 内网模式）
+# 与 Orient-G 业务栈完全隔离：独立 PG、独立 volume
+# 部署到生产机：docker compose -f docker-compose.gitea.yml up -d
+
+version: "3.8"
+
+services:
+  gitea:
+    image: gitea/gitea:1.23
+    container_name: gitea
+    restart: unless-stopped
+    ports:
+      - "2222:22"   # SSH（开发者 push）
+      - "3090:3000" # HTTP Web + Registry
+    volumes:
+      - gitea-data:/data/gitea
+      - ./app.ini:/etc/gitea/app.ini:ro
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    container_name: gitea-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gitea
+      POSTGRES_PASSWORD: gitea
+      POSTGRES_DB: gitea
+    volumes:
+      - gitea-pgdata:/var/lib/postgresql/data
+
+  runner:
+    image: gitea/act_runner:latest
+    container_name: gitea-act-runner
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gitea-runner-data:/data/gitea-runner
+    environment:
+      GITEA_INSTANCE_URL: http://gitea:3000
+      GITEA_RUNNER_REGISTRATION_TOKEN: <替换为 Gitea 生成的 runner token>
+      GITEA_RUNNER_NAME: orient-g-runner
+      GITEA_RUNNER_LABELS: ubuntu-latest:docker://node:20-bookworm
+
+volumes:
+  gitea-data:
+  gitea-pgdata:
+  gitea-runner-data:

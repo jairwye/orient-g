@@ -9,7 +9,7 @@
 | API 契约 | [`specs/api/api-contract.md`](specs/api/api-contract.md) |
 | **UI/功能规制与实施计划** | [`specs/README.md`](specs/README.md) |
 | 排查手册、参考截图 | [`docs/README.md`](docs/README.md) |
-| 强制约束、版本路线图（内网） | `规则/`、`规划/`（不上传 GitHub，见各目录 `文档索引.md`） |
+| 强制约束、版本路线图（内网） | `规则/`、`规划/`（不上传远程仓库，见各目录 `文档索引.md`） |
 
 ---
 
@@ -29,7 +29,7 @@
   - `feature/<short-desc>`（新功能）
   - `fix/<short-desc>`（修复）
 - **合并方式**：优先使用 PR 合并；避免在主分支直接提交。
-- **GitHub 仓库侧的保护与权限配置（建议）**：开启 `main` 分支保护（Require PR、至少 1 人审批、required checks、conversation resolution），并统一合并策略（推荐 squash）。
+- **Gitea 仓库侧的保护与权限配置**：开启 `main` 分支保护（Require PR、至少 1 人审批、required checks、conversation resolution），并统一合并策略（推荐 squash）。
 
 ---
 
@@ -125,10 +125,10 @@
 ## 8. 常见问题（FAQ）
 
 - **为什么我看不到 `规则/`、`规划/`？**  
-  这两个目录按仓库约定不上传到 GitHub；对内见 `规则/文档索引.md`、`规划/文档索引.md`。对外协作请以 `README.md`、`specs/`、`docs/`、`CONTRIBUTING.md` 为准。
+  这两个目录按仓库约定不上传到远程仓库；对内见 `规则/文档索引.md`、`规划/文档索引.md`。对外协作请以 `README.md`、`specs/`、`docs/`、`CONTRIBUTING.md` 为准。
 
 - **`CONTRIBUTING.md` 是干什么的？**  
-  对外（含 GitHub）协作的**操作手册**：怎么装环境、怎么提 PR、怎么跑 lint/test、DB 迁移硬约束、文档写在哪。不替代 `规则/` 里的安全与架构约束，也不替代 `specs/` 里的 UI 规制。
+  对外（含远程仓库）协作的**操作手册**：怎么装环境、怎么提 PR、怎么跑 lint/test、DB 迁移硬约束、文档写在哪。不替代 `规则/` 里的安全与架构约束，也不替代 `specs/` 里的 UI 规制。
 
 - **为什么 Windows 下没问题，部署到 Linux/容器就报找不到文件？**  
   常见原因是路径大小写不一致。仓库里版本记录文件为 `changelog.md`（全小写），请按实际文件名引用。
