@@ -24,11 +24,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 单平台 amd64 构建用 driver:docker，走 runner 自带 BuildKit，不依赖 Docker Hub。
+      # 单平台 amd64 构建用 driver:docker-container，不依赖 Docker CLI。
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver: docker
+          driver: docker-container
 
       # Gitea Actions 没有内置 Docker 登录，需显式 login 到内网 registry
       - name: Log in to Gitea Registry
