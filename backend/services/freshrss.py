@@ -86,6 +86,29 @@ def _stream_id_for_label(label: str) -> str:
     return f"user/-/label/{label}"
 
 
+def _category_refs(value: Any) -> list[str]:
+    """把 categories/directStreamIds 元素归一成可比较的字符串列表。"""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        refs: list[str] = []
+        for key in ("id", "label"):
+            v = value.get(key)
+            if isinstance(v, str) and v.strip():
+                refs.append(v.strip())
+        return refs
+    return []
+
+
+def _item_has_stream_metadata(item: dict) -> bool:
+    """条目是否带有可用于 label 归属判断的 categories / directStreamIds。"""
+    for key in ("directStreamIds", "categories"):
+        arr = item.get(key)
+        if isinstance(arr, list) and arr:
+            return True
+    return False
+
+
 def _item_belongs_to_stream(item: dict, stream_id: str, label: str) -> bool:
     """条目是否属于该 stream（按 directStreamIds 或 categories 判断）。"""
     label_suffix = f"label/{label}"
@@ -93,19 +116,36 @@ def _item_belongs_to_stream(item: dict, stream_id: str, label: str) -> bool:
         arr = item.get(key)
         if not isinstance(arr, list):
             continue
-        for s in arr:
-            if not isinstance(s, str):
-                continue
-            if s == stream_id or stream_id in s:
-                return True
-            if label_suffix in s or s.endswith(label):
-                return True
+        for raw in arr:
+            for s in _category_refs(raw):
+                if s == stream_id or stream_id in s:
+                    return True
+                if label_suffix in s or s == label or s.endswith("/" + label):
+                    return True
     origin = item.get("origin")
     if isinstance(origin, dict):
         oid = origin.get("streamId")
-        if oid == stream_id or (oid and (label_suffix in oid or oid.endswith(label))):
+        if oid == stream_id or (isinstance(oid, str) and (label_suffix in oid or oid.endswith("/" + label))):
             return True
     return False
+
+
+def _select_items_for_label(items: list[dict], stream_id: str, label: str) -> list[dict]:
+    """
+    从一页 stream/contents 中选出属于该 label 的条目。
+
+    FreshRSS 部分部署的 label stream 会返回 reading-list 混排；若条目带有
+    categories/directStreamIds，则必须严格过滤，禁止在「本页无匹配」时回退整页。
+    仅当本页完全没有分类元数据时，才信任服务端 stream 已按 label 过滤。
+    """
+    if not items:
+        return []
+    filtered = [it for it in items if isinstance(it, dict) and _item_belongs_to_stream(it, stream_id, label)]
+    if filtered:
+        return filtered
+    if any(_item_has_stream_metadata(it) for it in items if isinstance(it, dict)):
+        return []
+    return [it for it in items if isinstance(it, dict)]
 
 
 def _fetch_stream_page(
@@ -140,14 +180,10 @@ def _fetch_stream_page(
         next_continuation = None
         if isinstance(data, dict) and data.get("continuation"):
             next_continuation = str(data["continuation"]).strip() or None
-        filtered = [it for it in items if _item_belongs_to_stream(it, stream_id, label)]
-        if len(filtered) != len(items):
-            logger.debug("FreshRSS %s: filtered %d -> %d items", label, len(items), len(filtered))
-        # FreshRSS/GReader implementations vary: some may omit categories/directStreamIds fields.
-        # In that case, stream/contents already reflects the label stream; don't drop everything.
-        if not filtered and items:
-            return items, next_continuation
-        return filtered, next_continuation
+        selected = _select_items_for_label(items, stream_id, label)
+        if len(selected) != len(items):
+            logger.debug("FreshRSS %s: filtered %d -> %d items", label, len(items), len(selected))
+        return selected, next_continuation
     except Exception as e:
         logger.warning("FreshRSS stream/contents %s failed: %s", label, e)
         return [], None
