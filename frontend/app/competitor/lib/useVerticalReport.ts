@@ -7,20 +7,27 @@ import type { VerticalReportSnapshot } from "./vertical_types";
 type State =
   | { status: "loading" }
   | { status: "empty" }
+  | { status: "no_vertical" }
   | { status: "error"; message: string }
   | { status: "ready"; data: VerticalReportSnapshot };
 
-export function useVerticalReport() {
+export function useVerticalReport(editionId?: string | null) {
   const [state, setState] = useState<State>({ status: "loading" });
 
   const reload = useCallback(async () => {
     setState({ status: "loading" });
     try {
-      const res = await fetch("/api/competitor/vertical-report", {
+      const q = editionId ? `?edition=${encodeURIComponent(editionId)}` : "";
+      const res = await fetch(`/api/competitor/vertical-report${q}`, {
         credentials: "include",
         headers: getAuthHeaders(),
       });
       if (res.status === 404) {
+        const err = await res.json().catch(() => ({}));
+        if (err?.detail === "no_vertical") {
+          setState({ status: "no_vertical" });
+          return;
+        }
         setState({ status: "empty" });
         return;
       }
@@ -35,7 +42,7 @@ export function useVerticalReport() {
     } catch {
       setState({ status: "error", message: "无法连接后端" });
     }
-  }, []);
+  }, [editionId]);
 
   useEffect(() => {
     reload();

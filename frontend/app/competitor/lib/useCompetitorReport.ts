@@ -10,13 +10,14 @@ type State =
   | { status: "error"; message: string }
   | { status: "ready"; data: CompetitorReportSnapshot };
 
-export function useCompetitorReport() {
+export function useCompetitorReport(editionId?: string | null) {
   const [state, setState] = useState<State>({ status: "loading" });
 
   const reload = useCallback(async () => {
     setState({ status: "loading" });
     try {
-      const res = await fetch("/api/competitor/report", {
+      const q = editionId ? `?edition=${encodeURIComponent(editionId)}` : "";
+      const res = await fetch(`/api/competitor/report${q}`, {
         credentials: "include",
         headers: getAuthHeaders(),
       });
@@ -35,7 +36,7 @@ export function useCompetitorReport() {
     } catch {
       setState({ status: "error", message: "无法连接后端" });
     }
-  }, []);
+  }, [editionId]);
 
   useEffect(() => {
     reload();

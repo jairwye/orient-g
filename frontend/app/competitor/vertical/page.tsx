@@ -2,8 +2,9 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "../../contexts/AuthContext";
-import { competitorReportHref } from "../lib/navigation";
+import { competitorEditionHref, competitorReportHref } from "../lib/navigation";
 import { VerticalPageHeader } from "../components/VerticalPageHeader";
 import { VerticalPdfViewer } from "../components/VerticalPdfViewer";
 import { VerticalInternalSection } from "../components/VerticalReportBody";
@@ -14,10 +15,37 @@ import { colorForCompany } from "../lib/competitor_chart_colors";
 import { runtimeCompanyDisplayName } from "../lib/companies";
 import { allVerticalSnapIds, type VerticalCompanyNav } from "../lib/vertical_navigation";
 import type { CompetitorReportSnapshot } from "../lib/types";
+import { useCompetitorEditions } from "../lib/useCompetitorEditions";
 import { useCompetitorReport } from "../lib/useCompetitorReport";
 import { useVerticalPdfMeta } from "../lib/useVerticalPdfMeta";
 import { useVerticalReport } from "../lib/useVerticalReport";
 import { CompetitorScrollProvider } from "../lib/scroll_context";
+
+function VerticalNoVerticalState({
+  periodLabel,
+  editionId,
+}: {
+  periodLabel?: string | null;
+  editionId?: string | null;
+}) {
+  const backHref = editionId ? competitorEditionHref(editionId) : competitorReportHref();
+  return (
+    <div className="competitor-canvas flex min-h-[60vh] flex-col p-6 md:p-8">
+      <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">纵向对比</h1>
+      <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+        <p className="max-w-md text-sm text-zinc-500">
+          {periodLabel ? `「${periodLabel}」` : "本期"}未提供纵向汇析。可返回横向竞品财报查看其他章节。
+        </p>
+        <Link
+          href={backHref}
+          className="rounded-md border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
+        >
+          返回竞品财报
+        </Link>
+      </div>
+    </div>
+  );
+}
 
 function VerticalCompareEmptyState({ financePath }: { financePath: string }) {
   return (
@@ -50,11 +78,13 @@ function VerticalPdfModeView({
   competitorSnapshot,
   activeSnapId,
   navigate,
+  editionId,
 }: {
   pdfNavCompanies: VerticalCompanyNav[];
   competitorSnapshot?: CompetitorReportSnapshot;
   activeSnapId: string;
   navigate: (snapId: string) => void;
+  editionId?: string | null;
 }) {
   const activePdfCompany = pdfNavCompanies.find((c) => c.snapId === activeSnapId);
 
@@ -69,7 +99,12 @@ function VerticalPdfModeView({
         />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="vertical-pdf-root">
           {activePdfCompany ? (
-            <VerticalPdfViewer key={activePdfCompany.id} companyId={activePdfCompany.id} fullscreen />
+            <VerticalPdfViewer
+              key={activePdfCompany.id}
+              companyId={activePdfCompany.id}
+              fullscreen
+              editionId={editionId}
+            />
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">请在上方选择公司</div>
           )}
@@ -82,11 +117,13 @@ function VerticalPdfModeView({
 function VerticalSnapshotModeView({
   competitorSnapshot,
   financePath,
+  editionId,
 }: {
   competitorSnapshot?: CompetitorReportSnapshot;
   financePath: string;
+  editionId?: string | null;
 }) {
-  const { state, reload } = useVerticalReport();
+  const { state, reload } = useVerticalReport(editionId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollReady = state.status === "ready";
   const readyData = state.status === "ready" ? state.data : null;
@@ -115,6 +152,15 @@ function VerticalSnapshotModeView({
           </div>
         </div>
       </div>
+    );
+  }
+
+  if (state.status === "no_vertical") {
+    return (
+      <VerticalNoVerticalState
+        editionId={editionId}
+        periodLabel={competitorSnapshot?.meta?.period_label}
+      />
     );
   }
 
@@ -215,11 +261,23 @@ function VerticalSnapshotModeView({
 
 function VerticalComparePageInner() {
   const { finance_path } = useAuth();
-  const { state: pdfMetaState } = useVerticalPdfMeta();
-  const { state: competitorState } = useCompetitorReport();
+  const searchParams = useSearchParams();
+  const editionFromQuery = searchParams.get("edition");
+  const { state: editionsState } = useCompetitorEditions();
+  const editions = editionsState.status === "ready" ? editionsState.editions : [];
+  const currentEditionId = editionsState.status === "ready" ? editionsState.current : null;
+  const resolvedEditionId = editionFromQuery || currentEditionId;
+  const activeMeta = editions.find((e) => e.edition_id === resolvedEditionId);
+
+  const { state: pdfMetaState } = useVerticalPdfMeta(resolvedEditionId);
+  const { state: competitorState } = useCompetitorReport(resolvedEditionId);
   const competitorSnapshot = competitorState.status === "ready" ? competitorState.data : undefined;
 
-  const usePdfMode = pdfMetaState.status === "ready";
+  const editionBlocksVertical =
+    (editionsState.status === "ready" && activeMeta && activeMeta.has_vertical === false) ||
+    pdfMetaState.status === "no_vertical";
+
+  const usePdfMode = !editionBlocksVertical && pdfMetaState.status === "ready";
 
   const pdfNavCompanies: VerticalCompanyNav[] = useMemo(() => {
     if (pdfMetaState.status !== "ready") return [];
@@ -261,7 +319,16 @@ function VerticalComparePageInner() {
     window.history.replaceState(null, "", `#${snapId}`);
   }, []);
 
-  if (pdfMetaState.status === "loading") {
+  if (editionBlocksVertical) {
+    return (
+      <VerticalNoVerticalState
+        editionId={resolvedEditionId}
+        periodLabel={activeMeta?.period_label || competitorSnapshot?.meta?.period_label}
+      />
+    );
+  }
+
+  if (pdfMetaState.status === "loading" || editionsState.status === "loading") {
     return (
       <div className="competitor-canvas p-6 md:p-8">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">纵向对比</h1>
@@ -281,15 +348,7 @@ function VerticalComparePageInner() {
         competitorSnapshot={competitorSnapshot}
         activeSnapId={activeSnapId}
         navigate={navigatePdf}
-      />
-    );
-  }
-
-  if (pdfMetaState.status === "error") {
-    return (
-      <VerticalSnapshotModeView
-        competitorSnapshot={competitorSnapshot}
-        financePath={finance_path || "/finance"}
+        editionId={resolvedEditionId}
       />
     );
   }
@@ -298,6 +357,7 @@ function VerticalComparePageInner() {
     <VerticalSnapshotModeView
       competitorSnapshot={competitorSnapshot}
       financePath={finance_path || "/finance"}
+      editionId={resolvedEditionId}
     />
   );
 }

@@ -11,7 +11,9 @@ import { verticalCompaniesForDisplay, verticalReportHref } from "../lib/vertical
 
 export function Sec10DetailLinks({ snapshot }: SectionProps) {
   const { finance_path } = useAuth();
-  const { state } = useVerticalReport();
+  const editionId = snapshot.meta?.edition_id ?? null;
+  const periodLabel = snapshot.meta?.period_label || "本期";
+  const { state } = useVerticalReport(editionId);
   const companies =
     state.status === "ready" ? verticalCompaniesForDisplay(state.data, snapshot) : [];
 
@@ -25,10 +27,12 @@ export function Sec10DetailLinks({ snapshot }: SectionProps) {
           content: (
             <div className="mx-auto max-w-3xl space-y-6">
               <p className="text-sm leading-relaxed text-zinc-400">
-                以下链接跳转至「纵向对比」页，查看各竞品公司 2025 年度纵向分析全文。
+                以下链接跳转至「纵向对比」页，查看各竞品公司{periodLabel}纵向分析全文。
               </p>
               {state.status === "loading" ? (
                 <p className="text-sm text-zinc-500">加载纵向分析目录…</p>
+              ) : state.status === "no_vertical" ? (
+                <p className="text-sm text-zinc-500">本期未提供纵向汇析。</p>
               ) : companies.length === 0 ? (
                 <p className="text-sm text-zinc-500">
                   暂无纵向分析报告。请管理员在
@@ -47,7 +51,7 @@ export function Sec10DetailLinks({ snapshot }: SectionProps) {
                       <FadeInView key={co.snapId} delayMs={i * 50}>
                         <li>
                           <Link
-                            href={verticalReportHref(co.snapId)}
+                            href={verticalReportHref(co.snapId, editionId)}
                             className="group flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3.5 transition hover:border-zinc-600 hover:bg-zinc-900/80"
                             style={{ borderLeftColor: accent, borderLeftWidth: 3 }}
                           >
@@ -61,7 +65,9 @@ export function Sec10DetailLinks({ snapshot }: SectionProps) {
                               <span className="block text-sm font-medium text-zinc-100 group-hover:text-blue-200">
                                 {co.name}
                               </span>
-                              <span className="mt-0.5 block text-xs text-zinc-500">纵向对比 · 2025 年报分析</span>
+                              <span className="mt-0.5 block text-xs text-zinc-500">
+                                纵向对比 · {periodLabel}
+                              </span>
                             </span>
                             <span className="shrink-0 text-zinc-600 transition group-hover:text-blue-400" aria-hidden>
                               →

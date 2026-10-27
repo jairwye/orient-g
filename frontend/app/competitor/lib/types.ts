@@ -20,6 +20,21 @@ export type CompetitorSection = {
   blocks: ReportBlock[];
 };
 
+export type CompetitorEditionKind = "annual" | "interim";
+
+/** GET /api/competitor/editions 单项 */
+export type CompetitorEdition = {
+  edition_id: string;
+  kind: CompetitorEditionKind | string;
+  period_label: string;
+  has_vertical: boolean;
+  is_current?: boolean;
+  has_snapshot?: boolean;
+  title?: string;
+  uploaded_at?: string;
+  notes?: string;
+};
+
 export type CompetitorReportSnapshot = {
   version: 1;
   meta: {
@@ -32,6 +47,9 @@ export type CompetitorReportSnapshot = {
     uploaded_by: string;
     parser_version: string;
     data_source?: "fixture" | "upload";
+    edition_id?: string;
+    kind?: CompetitorEditionKind | string;
+    period_label?: string;
   };
   companies: Array<{ id: string; label: string; short?: string; color?: string }>;
   sections: CompetitorSection[];

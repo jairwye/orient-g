@@ -9,10 +9,17 @@ type Props = {
   className?: string;
   /** 标题行下方占满剩余视口，无内边距/圆角/副标题 */
   fullscreen?: boolean;
+  editionId?: string | null;
 };
 
 /** 经鉴权 fetch PDF blob 后嵌入 iframe（sessionStorage JWT 无法直挂 iframe src）。 */
-export function VerticalPdfViewer({ companyId, title, className = "", fullscreen = false }: Props) {
+export function VerticalPdfViewer({
+  companyId,
+  title,
+  className = "",
+  fullscreen = false,
+  editionId = null,
+}: Props) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,7 +31,8 @@ export function VerticalPdfViewer({ companyId, title, className = "", fullscreen
     setError(null);
     setSrc(null);
 
-    fetch(`/api/competitor/vertical-pdf/${encodeURIComponent(companyId)}`, {
+    const q = editionId ? `?edition=${encodeURIComponent(editionId)}` : "";
+    fetch(`/api/competitor/vertical-pdf/${encodeURIComponent(companyId)}${q}`, {
       credentials: "include",
       headers: getAuthHeaders(),
     })
@@ -54,7 +62,7 @@ export function VerticalPdfViewer({ companyId, title, className = "", fullscreen
       cancelled = true;
       if (revoked) URL.revokeObjectURL(revoked);
     };
-  }, [companyId]);
+  }, [companyId, editionId]);
 
   const shellClass = fullscreen
     ? `flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-950 ${className}`

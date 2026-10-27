@@ -66,6 +66,13 @@ export function verticalCompanyBySnap(
 }
 
 /** 竞品财报「详情链接」→ 纵向对比页锚点 */
-export function verticalReportHref(snapId: string): string {
-  return `/competitor/vertical#${snapId}`;
+export function verticalReportHref(snapId: string, editionId?: string | null): string {
+  const q = editionId ? `?edition=${encodeURIComponent(editionId)}` : "";
+  return `/competitor/vertical${q}#${snapId}`;
+}
+
+/** 纵向对比页根路径（可带 edition；无 hash） */
+export function verticalPageHref(editionId?: string | null): string {
+  if (!editionId) return "/competitor/vertical";
+  return `/competitor/vertical?edition=${encodeURIComponent(editionId)}`;
 }

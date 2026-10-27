@@ -90,11 +90,18 @@ def _extract_pdfs_from_zip(zip_bytes: bytes, dest: Path) -> list[tuple[str, Path
     return entries
 
 
-def run_vertical_ingest_job(job_id: str, *, uploaded_by: str, source_filename: str) -> None:
+def run_vertical_ingest_job(
+    job_id: str,
+    *,
+    uploaded_by: str,
+    source_filename: str,
+    edition_id: str | None = None,
+) -> None:
     job_dir = _job_dir(job_id)
     status = get_ingest_job(job_id) or {}
     warnings: list[str] = []
     companies: list[dict[str, Any]] = []
+    eid = edition_id or status.get("edition_id")
 
     try:
         pdf_entries = []
@@ -120,6 +127,7 @@ def run_vertical_ingest_job(job_id: str, *, uploaded_by: str, source_filename: s
             [(cid, pdf_path, display_name) for cid, pdf_path, display_name in ordered],
             uploaded_by=uploaded_by,
             source_filename=source_filename,
+            edition_id=eid,
         )
         _write_job_status(
             job_id,
@@ -174,7 +182,11 @@ def run_vertical_ingest_job(job_id: str, *, uploaded_by: str, source_filename: s
             source_filename=source_filename,
         )
         snapshot["warnings"] = list(snapshot.get("warnings") or []) + warnings
-        save_vertical_snapshot(snapshot)
+        if eid:
+            snap_meta = dict(snapshot.get("meta") or {})
+            snap_meta["edition_id"] = eid
+            snapshot["meta"] = snap_meta
+        save_vertical_snapshot(snapshot, edition_id=eid)
         merged_md = merged_markdown_from_companies(companies, snapshot["meta"]["title"])
         (job_dir / "merged.md").write_text(merged_md, encoding="utf-8")
 
@@ -190,6 +202,7 @@ def run_vertical_ingest_job(job_id: str, *, uploaded_by: str, source_filename: s
                 "companies_parsed": len(companies),
                 "warnings": snapshot.get("warnings") or [],
                 "completed_at": now,
+                "edition_id": eid,
             },
         )
     except Exception as exc:
@@ -214,9 +227,12 @@ def start_vertical_ingest_from_zip(
     *,
     uploaded_by: str,
     source_filename: str,
+    edition_id: str | None = None,
 ) -> str:
     if len(zip_bytes) > MAX_ZIP_BYTES:
         raise ValueError("zip 文件过大（上限 120MB）")
+    if not edition_id:
+        raise ValueError("请指定 edition_id（如 2025-annual）")
     with _jobs_lock:
         if _running_jobs:
             raise ValueError("已有纵向解析任务进行中，请稍后再试")
@@ -236,11 +252,17 @@ def start_vertical_ingest_from_zip(
             "uploaded_by": uploaded_by,
             "created_at": now,
             "warnings": [],
+            "edition_id": edition_id,
         },
     )
 
     def _run() -> None:
-        run_vertical_ingest_job(job_id, uploaded_by=uploaded_by, source_filename=source_filename)
+        run_vertical_ingest_job(
+            job_id,
+            uploaded_by=uploaded_by,
+            source_filename=source_filename,
+            edition_id=edition_id,
+        )
 
     with _jobs_lock:
         _running_jobs.add(job_id)
@@ -253,10 +275,13 @@ def start_vertical_pdf_only_from_zip(
     *,
     uploaded_by: str,
     source_filename: str,
+    edition_id: str | None = None,
 ) -> dict[str, Any]:
     """仅存档 PDF 供纵向页直显，不调用 Docling。"""
     if len(zip_bytes) > MAX_ZIP_BYTES:
         raise ValueError("zip 文件过大（上限 120MB）")
+    if not edition_id:
+        raise ValueError("请指定 edition_id（如 2025-annual）")
     job_id = f"vpdf_{uuid.uuid4().hex[:12]}"
     job_dir = _job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -282,6 +307,7 @@ def start_vertical_pdf_only_from_zip(
         ordered,
         uploaded_by=uploaded_by,
         source_filename=source_filename,
+        edition_id=edition_id,
     )
     return {
         "job_id": job_id,
@@ -289,4 +315,5 @@ def start_vertical_pdf_only_from_zip(
         "companies_parsed": len(ordered),
         "pdf_meta": meta,
         "created_at": now,
+        "edition_id": edition_id,
     }

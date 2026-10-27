@@ -276,31 +276,50 @@ type CompetitorReportSnapshot = {
 #### 4.4.1 上传 MD（管理员 · 人工修正）
 
 - **路径**：`POST /api/competitor/admin/upload-vertical`
-- **请求**：`multipart/form-data`，字段 `file`（`.md`，UTF-8；须含 `## 1. 公司名` 等公司章节）
-- **存储**：`vertical_report.md` + `vertical.snapshot.json`
+- **请求**：`multipart/form-data`，字段 `file`（`.md`）+ **`edition_id`（必填）**；须含 `## 1. 公司名` 等公司章节
+- **存储**：`editions/{edition_id}/vertical_report.md` + `vertical.snapshot.json`
+- **400**：缺 `edition_id`；或该期 `has_vertical=false` → `edition_has_no_vertical`
 
 #### 4.4.2 上传 PDF zip（管理员 · Docling · 推荐）
 
 - **路径**：`POST /api/competitor/admin/vertical-ingest`
-- **请求**：`.zip` 内含各公司 `.pdf`（文件名含 canonical 代号如 `wm`、`37`，或 `wm2025.pdf`；**生产中文文件名**须在 `{upload_dir}/competitor/vertical_company_rules.json` 或 `VERTICAL_COMPANY_RULES_JSON` 配置规则，不入 Git）
-- **响应**：`{ "ok": true, "job_id": "ving_…", "status": "queued" }`
+- **请求**：form `file`（`.zip`）+ **`edition_id`（必填）**；zip 内各公司 `.pdf`（文件名含 canonical 代号如 `wm`、`37`，或 `wm2025.pdf`；**生产中文文件名**须在 `{upload_dir}/competitor/vertical_company_rules.json` 或 `VERTICAL_COMPANY_RULES_JSON` 配置规则，不入 Git）
+- **响应**：`{ "ok": true, "job_id": "ving_…", "status": "queued", "edition_id": "…" }`
 - **轮询**：`GET /api/competitor/admin/vertical-ingest/{job_id}`
-- **存储**：`vertical.snapshot.json`（页面生效）；**同时**存档原 PDF 至 `vertical/pdfs/`（见 4.4.4）；共用 Docling，不走 bigpdf 知识库
+- **存储**：`editions/{edition_id}/vertical.snapshot.json`；PDF → `editions/{edition_id}/vertical/pdfs/`；共用 Docling，不走 bigpdf 知识库
 
 #### 4.4.4 纵向 PDF 直显（管理员 · 仅存档 / 读取）
 
-- **路径**：`POST /api/competitor/admin/vertical-pdf-zip` — 上传 `.zip`（7 家 PDF），**不调用 Docling**，仅写入 `vertical/pdfs/{company_id}.pdf` + `meta.json`
-- **路径**：`GET /api/competitor/vertical-pdf/meta` — PDF 存档元数据；404 表示无 PDF 存档
-- **路径**：`GET /api/competitor/vertical-pdf/{company_id}` — 鉴权后返回 PDF 文件（`company_id` 须匹配 `^[a-z0-9][a-z0-9_-]{0,31}$`）
-- **展示**：`/competitor/vertical` **优先** PDF 直显；无 PDF 存档时回退 `GET /vertical-report` snapshot 结构化展示
+- **路径**：`POST /api/competitor/admin/vertical-pdf-zip` — form `file` + **`edition_id`**；不调用 Docling，写入 `editions/{id}/vertical/pdfs/{company_id}.pdf` + `meta.json`
+- **路径**：`GET /api/competitor/vertical-pdf/meta?edition=` — 默认 current；404：`no_vertical`（期次关闭纵向）或 `no_vertical_pdfs`
+- **路径**：`GET /api/competitor/vertical-pdf/{company_id}?edition=` — 鉴权后返回 PDF（`company_id` 须匹配 `^[a-z0-9][a-z0-9_-]{0,31}$`）
+- **展示**：`/competitor/vertical?edition=` **优先** PDF 直显；无 PDF 存档时回退 `GET /vertical-report`
 
 #### 4.4.5 读取 snapshot
 
-- **路径**：`GET /api/competitor/vertical-report`
-- **响应**：`VerticalReportSnapshot`（见下）；优先读 `vertical.snapshot.json`
-- **404**：`{ "detail": "no_vertical_report" }` — 生产环境未上传且无 fixture 回退
-- **路径**：`GET /api/competitor/vertical-report/meta` — 仅 `meta` + `warnings` + `company_count`
-- **说明**：展示路由 `/competitor/vertical`；财务后台上传区；公司 `id` 按章节顺序映射 canonical peer slug（`37`/`wm`/…），**展示名**来自 PDF 文件名或 MD 原文
+- **路径**：`GET /api/competitor/vertical-report?edition=` — 默认 current
+- **响应**：`VerticalReportSnapshot`；优先读 `editions/{id}/vertical.snapshot.json`（`2025-annual` 可读根目录旧路径直至迁移）
+- **404**：`no_vertical`（`has_vertical=false`）；`no_vertical_report`（允许纵向但未上传且无 fixture）
+- **路径**：`GET /api/competitor/vertical-report/meta?edition=` — 仅 `meta` + `warnings` + `company_count`
+- **说明**：展示路由 `/competitor/vertical`；财务后台仅对 `has_vertical` 期次展示上传；公司 `id` 映射 canonical peer slug
+
+### 4.5 多期次（1.2.3.e · draft）
+
+> 规制源：[`features/1.2.3.e-竞品财报多期次.md`](../features/1.2.3.e-竞品财报多期次.md)。**e-3 纵向已绑定 edition**；e-4 收口时再标 baseline。规划或行为变更时同步改 feature + 本节。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| GET | `/api/competitor/editions` | view_business_dashboard | 期次列表；含 `is_current`、`period_label`、`has_vertical` |
+| GET | `/api/competitor/report` | 同上 | 默认 **current**；`?edition=` 指定期次 |
+| GET | `/api/competitor/report/meta` | 同上 | 同上 |
+| GET | `/api/competitor/summary` | 同上 | 基于 **current** |
+| POST | `/api/competitor/admin/editions` | admin | 创建期次 meta |
+| POST | `/api/competitor/admin/upload` | admin | form 必填 `edition_id` + `file`；写入该期目录 |
+| POST | `/api/competitor/admin/current` | admin | `{ "edition_id" }` 设置侧栏默认 |
+| GET | `/api/competitor/vertical-report` 等 | 同上 | `?edition=`；`has_vertical=false` → 404 `no_vertical` |
+| POST | `/api/competitor/admin/upload-vertical` 等 | admin | form 必填 `edition_id`；`has_vertical=false` → 400 `edition_has_no_vertical` |
+
+存储：`{upload_dir}/competitor/editions/{edition_id}/`（含可选 `vertical_report.md` / `vertical.snapshot.json` / `vertical/pdfs/`）+ `current.json`（见 feature §3.2）。迁移会把根目录旧纵向幂等迁入 `editions/2025-annual/`。
 
 ```ts
 type VerticalReportSnapshot = {

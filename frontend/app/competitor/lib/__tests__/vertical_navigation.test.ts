@@ -28,6 +28,9 @@ describe("vertical_navigation", () => {
 
   it("详情链接 href", () => {
     expect(verticalReportHref("v-37")).toBe("/competitor/vertical#v-37");
+    expect(verticalReportHref("v-37", "2025-annual")).toBe(
+      "/competitor/vertical?edition=2025-annual#v-37",
+    );
   });
 
   it("返回竞品财报最后一节", () => {

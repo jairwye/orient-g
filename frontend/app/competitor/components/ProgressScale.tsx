@@ -20,12 +20,12 @@ export function ProgressScale({ activeSnapId, onNavigate, entries: entriesProp }
 
   return (
     <nav
-      className="hidden w-[min(94vw,984px)] shrink-0 sm:block"
+      className="hidden min-w-0 flex-1 sm:block"
       aria-label="章节进度"
       data-active-snap={activeSnapId}
       onMouseLeave={() => setHoveredId(null)}
     >
-      <div className="ml-auto flex w-full items-center">
+      <div className="ml-auto flex w-full max-w-[984px] items-center">
         {entries.map((entry) => {
           const isActive = activeSnapId === entry.snapId;
           const isMain = entry.kind === "main";

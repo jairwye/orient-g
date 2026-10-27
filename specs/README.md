@@ -25,6 +25,7 @@
 | [ui/1.2.3-agent-page.md](ui/1.2.3-agent-page.md) | **draft** | Agent 页（与 AI 互动并列，1.2.3） |
 | [ui/1.2.0.b-知识库页UI现状.md](ui/1.2.0.b-知识库页UI现状.md) | **baseline** | 知识库页（已合并并删除 2026-04 历史稿） |
 | [ui/1.2.3.c-竞品财报可视化-ui.md](ui/1.2.3.c-竞品财报可视化-ui.md) | **draft** | 竞品财报 10 屏 scroll-snap + Recharts（1.2.3.c） |
+| [ui/1.2.3.e-竞品财报多期次-ui.md](ui/1.2.3.e-竞品财报多期次-ui.md) | **draft** | 期次切换（侧栏=current；页内历史）（1.2.3.e） |
 
 外部视觉参考（**非规制**）：[docs/reference/kimi-ui-reference.md](../docs/reference/kimi-ui-reference.md)
 
@@ -40,11 +41,13 @@
 | [features/1.2.3-Hermes-Agent与Orient-G融合方案.md](features/1.2.3-Hermes-Agent与Orient-G融合方案.md) | **draft** — 1.2.3 Hermes 融合 |
 | [features/1.2.3-agent-kb-router-design.md](features/1.2.3-agent-kb-router-design.md) | **draft** — Agent KB 三路分流（fast / hermes_lite / hermes_full） |
 | [features/1.2.3.c-竞品财报可视化.md](features/1.2.3.c-竞品财报可视化.md) | **draft** — 1.2.3.c 竞品财报 MD → Snapshot → `/competitor` |
+| [features/1.2.3.e-竞品财报多期次.md](features/1.2.3.e-竞品财报多期次.md) | **draft** — 1.2.3.e 多期次（年报/半年报）、current、后台期次管理 |
 | [features/2026-04-22-resource-governance-design.md](features/2026-04-22-resource-governance-design.md) | 资源治理 |
 | [plans/2026-04-22-resource-governance-plan.md](plans/2026-04-22-resource-governance-plan.md) | 对应实施计划 |
 | [plans/1.2.3.b-acceptance-tests.md](plans/1.2.3.b-acceptance-tests.md) | Evidence Pack + Tier pytest / 冒烟 |
 | [plans/1.2.3.b-finance-matrix-browser-testing.md](plans/1.2.3.b-finance-matrix-browser-testing.md) | **baseline** — 财务矩阵 Chrome DevTools / CDP 浏览器实测规制 |
 | [plans/1.2.3.c-竞品财报可视化-plan.md](plans/1.2.3.c-竞品财报可视化-plan.md) | **draft** — 1.2.3.c 解析器 / API / 前端分屏实施 |
+| [plans/1.2.3.e-竞品财报多期次-plan.md](plans/1.2.3.e-竞品财报多期次-plan.md) | **draft** — 1.2.3.e 存储迁移 / 期次 API / 页头切换 / 后台 |
 
 ## API 契约
 
@@ -56,7 +59,7 @@
 
 ## 实施计划索引
 
-知识库 UI 见 [ui/1.2.0.b-知识库页UI现状.md](ui/1.2.0.b-知识库页UI现状.md)。RAG 见 [plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md](plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md)。Hermes 方案见 [plans/1.2.3-hermes-integration-plan.md](plans/1.2.3-hermes-integration-plan.md)；Agent KB 分流见 [plans/1.2.3-agent-kb-router-plan.md](plans/1.2.3-agent-kb-router-plan.md)；Evidence Pack 验收见 [plans/1.2.3.b-acceptance-tests.md](plans/1.2.3.b-acceptance-tests.md)；**财务矩阵浏览器实测**见 [plans/1.2.3.b-finance-matrix-browser-testing.md](plans/1.2.3.b-finance-matrix-browser-testing.md)；**竞品财报可视化**见 [plans/1.2.3.c-竞品财报可视化-plan.md](plans/1.2.3.c-竞品财报可视化-plan.md)（feature / UI 同前缀）。**联调操作**见 [../docs/hermes.md](../docs/hermes.md)。
+知识库 UI 见 [ui/1.2.0.b-知识库页UI现状.md](ui/1.2.0.b-知识库页UI现状.md)。RAG 见 [plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md](plans/1.2.0.d-1.2.0.c-audit-and-manifest-plan.md)。Hermes 方案见 [plans/1.2.3-hermes-integration-plan.md](plans/1.2.3-hermes-integration-plan.md)；Agent KB 分流见 [plans/1.2.3-agent-kb-router-plan.md](plans/1.2.3-agent-kb-router-plan.md)；Evidence Pack 验收见 [plans/1.2.3.b-acceptance-tests.md](plans/1.2.3.b-acceptance-tests.md)；**财务矩阵浏览器实测**见 [plans/1.2.3.b-finance-matrix-browser-testing.md](plans/1.2.3.b-finance-matrix-browser-testing.md)；**竞品财报可视化**见 [plans/1.2.3.c-竞品财报可视化-plan.md](plans/1.2.3.c-竞品财报可视化-plan.md)（feature / UI 同前缀）。**竞品多期次**见 [plans/1.2.3.e-竞品财报多期次-plan.md](plans/1.2.3.e-竞品财报多期次-plan.md)。**联调操作**见 [../docs/hermes.md](../docs/hermes.md)。
 
 ---
 

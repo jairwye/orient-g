@@ -96,6 +96,14 @@ export const ALL_SNAP_IDS = NAV_SECTIONS.flatMap((s) => s.subs.map((sub) => sub.
 export const COMPETITOR_LAST_SNAP_ID =
   NAV_SECTIONS[NAV_SECTIONS.length - 1]?.subs[0]?.id ?? "sec-10-a";
 
+export function competitorHomeHref(): string {
+  return "/competitor";
+}
+
+export function competitorEditionHref(editionId: string): string {
+  return `/competitor/e/${encodeURIComponent(editionId)}`;
+}
+
 export function competitorReportHref(snapId: string = COMPETITOR_LAST_SNAP_ID): string {
   return `/competitor#${snapId}`;
 }

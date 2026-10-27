@@ -58,9 +58,22 @@ def test_upload_forbidden_non_admin(client: TestClient, monkeypatch):
     r = client.post(
         "/api/competitor/admin/upload",
         headers=_headers("finance_user"),
+        data={"edition_id": "2025-annual"},
         files={"file": ("minimal.md", md, "text/markdown")},
     )
     assert r.status_code == 403
+
+
+def test_upload_requires_edition_id(client: TestClient, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    md = MINIMAL_FIXTURE.read_bytes()
+    r = client.post(
+        "/api/competitor/admin/upload",
+        headers=_headers("admin"),
+        files={"file": ("minimal.md", md, "text/markdown")},
+    )
+    assert r.status_code == 400
+    assert "edition_id" in (r.json().get("detail") or "")
 
 
 def test_upload_and_get_flow(client: TestClient, tmp_path, monkeypatch):
@@ -72,21 +85,130 @@ def test_upload_and_get_flow(client: TestClient, tmp_path, monkeypatch):
     upload = client.post(
         "/api/competitor/admin/upload",
         headers=_headers("admin"),
+        data={"edition_id": "2025-annual", "set_as_current": "true"},
         files={"file": (upload_md.name, upload_md.read_bytes(), "text/markdown")},
     )
     assert upload.status_code == 200, upload.text
     body = upload.json()
     assert body.get("ok") is True
     assert body.get("sections_parsed") == 9
+    assert body.get("edition_id") == "2025-annual"
 
     get_r = client.get("/api/competitor/report", headers=_headers("admin"))
     assert get_r.status_code == 200, get_r.text
     snap = get_r.json()
     assert len(snap.get("sections") or []) == 9
+    assert snap.get("meta", {}).get("edition_id") == "2025-annual"
 
     summary = client.get("/api/competitor/summary", headers=_headers("admin"))
     assert summary.status_code == 200
     assert summary.json().get("has_report") is True
+
+
+def test_multi_edition_current_and_query(client: TestClient, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    md = MINIMAL_FIXTURE.read_bytes()
+
+    r1 = client.post(
+        "/api/competitor/admin/upload",
+        headers=_headers("admin"),
+        data={"edition_id": "2025-annual", "set_as_current": "true"},
+        files={"file": ("a.md", md, "text/markdown")},
+    )
+    assert r1.status_code == 200, r1.text
+
+    client.post(
+        "/api/competitor/admin/editions",
+        headers=_headers("admin"),
+        json={
+            "edition_id": "2026-h1",
+            "kind": "interim",
+            "period_label": "2026 半年报",
+            "has_vertical": False,
+        },
+    )
+    r2 = client.post(
+        "/api/competitor/admin/upload",
+        headers=_headers("admin"),
+        data={"edition_id": "2026-h1"},
+        files={"file": ("b.md", md, "text/markdown")},
+    )
+    assert r2.status_code == 200, r2.text
+
+    # 未切 current：默认仍是 2025
+    cur = client.get("/api/competitor/report", headers=_headers("admin"))
+    assert cur.json()["meta"]["edition_id"] == "2025-annual"
+
+    set_c = client.post(
+        "/api/competitor/admin/current",
+        headers=_headers("admin"),
+        json={"edition_id": "2026-h1"},
+    )
+    assert set_c.status_code == 200, set_c.text
+
+    cur2 = client.get("/api/competitor/report", headers=_headers("admin"))
+    assert cur2.json()["meta"]["edition_id"] == "2026-h1"
+
+    hist = client.get("/api/competitor/report?edition=2025-annual", headers=_headers("admin"))
+    assert hist.status_code == 200
+    assert hist.json()["meta"]["edition_id"] == "2025-annual"
+
+    editions = client.get("/api/competitor/editions", headers=_headers("admin"))
+    assert editions.status_code == 200
+    body = editions.json()
+    assert body.get("current") == "2026-h1"
+    assert len(body.get("editions") or []) == 2
+
+
+def test_explicit_edition_missing_snapshot_is_404(client: TestClient, tmp_path, monkeypatch):
+    """显式 ?edition= 无快照时 404，不得返回 current 或 fixture。"""
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "competitor_fixture_fallback", True)
+    md = MINIMAL_FIXTURE.read_bytes()
+
+    up = client.post(
+        "/api/competitor/admin/upload",
+        headers=_headers("admin"),
+        data={"edition_id": "2025-annual", "set_as_current": "true"},
+        files={"file": ("a.md", md, "text/markdown")},
+    )
+    assert up.status_code == 200, up.text
+
+    client.post(
+        "/api/competitor/admin/editions",
+        headers=_headers("admin"),
+        json={
+            "edition_id": "2026-h1",
+            "kind": "interim",
+            "period_label": "2026 半年报",
+            "has_vertical": False,
+        },
+    )
+
+    missing = client.get(
+        "/api/competitor/report?edition=2026-h1",
+        headers=_headers("admin"),
+    )
+    assert missing.status_code == 404
+    assert missing.json().get("detail") == "no_report"
+
+    # current 仍可读
+    cur = client.get("/api/competitor/report", headers=_headers("admin"))
+    assert cur.status_code == 200
+    assert cur.json()["meta"]["edition_id"] == "2025-annual"
+
+
+def test_vertical_upload_rejects_unknown_edition(client: TestClient, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    r = client.post(
+        "/api/competitor/admin/upload-vertical",
+        headers=_headers("admin"),
+        data={"edition_id": "2099-ghost"},
+        files={"file": ("v.md", b"# none\n", "text/markdown")},
+    )
+    assert r.status_code == 400
+    detail = r.json().get("detail") or ""
+    assert "期次不存在" in detail
 
 
 def test_fixture_fallback_when_no_upload(client: TestClient, tmp_path, monkeypatch):
@@ -147,15 +269,22 @@ def test_vertical_upload_and_get_flow(client: TestClient, tmp_path, monkeypatch)
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
     monkeypatch.setattr(settings, "competitor_fixture_fallback", False)
 
+    from backend.services import competitor_edition_store as ed
+
+    ed.ensure_edition("2025-annual", kind="annual", has_vertical=True)
+    ed.set_current("2025-annual")
+
     upload = client.post(
         "/api/competitor/admin/upload-vertical",
         headers=_headers("admin"),
+        data={"edition_id": "2025-annual"},
         files={"file": ("vertical.md", VERTICAL_FIXTURE.read_bytes(), "text/markdown")},
     )
     assert upload.status_code == 200, upload.text
     body = upload.json()
     assert body.get("ok") is True
     assert body.get("companies_parsed") == 7
+    assert body.get("edition_id") == "2025-annual"
 
     get_r = client.get("/api/competitor/vertical-report", headers=_headers("admin"))
     assert get_r.status_code == 200, get_r.text

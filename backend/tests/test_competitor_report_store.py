@@ -39,4 +39,6 @@ def test_save_and_load_snapshot(tmp_path, monkeypatch):
     meta = load_meta()
     assert meta is not None
     assert meta["title"] == "测试"
-    assert (tmp_path / "competitor" / "report.snapshot.json").is_file()
+    assert (
+        tmp_path / "competitor" / "editions" / "2025-annual" / "report.snapshot.json"
+    ).is_file()
