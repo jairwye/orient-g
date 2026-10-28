@@ -1,6 +1,5 @@
 # 构建 backend / frontend 并推送到内网 Gitea Registry。
-# 路径 B：不拉取 GitHub Actions（无 uses: actions/* / docker/*-action）；
-# 构建所需基础镜像允许从 Docker Hub（docker.io）拉取。
+# 路径 B：不拉取 GitHub Actions；基础镜像经国内 Docker Hub 镜像站拉取（避免 auth.docker.io 超时）。
 name: Build and push Docker images
 
 on:
@@ -11,9 +10,11 @@ on:
 env:
   REGISTRY: 192.168.104.108:3090
   OWNER: u1
-  # 与 Dockerfile FROM 对齐；构建前显式 pull，失败时日志更清晰
+  # 与 Dockerfile FROM 对齐
   BASE_BACKEND: python:3.12-slim
   BASE_FRONTEND: node:22-alpine
+  # Docker Hub 代理镜像（library/*）；不可用时可改成其它加速站
+  HUB_MIRROR: docker.m.daocloud.io
 
 jobs:
   build-and-push:
@@ -24,7 +25,7 @@ jobs:
           git config --global http.sslVerify false
           git clone "http://${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}@192.168.104.108:3090/${{ github.repository }}.git" .
 
-      # job 镜像若已有 docker（或挂了宿主机 CLI）则跳过；否则用清华源安装，避免每次拉 deb.debian.org
+      # job 镜像若已有 docker 则跳过；否则用清华源安装
       - name: Ensure Docker CLI
         run: |
           set -e
@@ -50,24 +51,35 @@ jobs:
         run: |
           echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
 
-      - name: Pull base images from Docker Hub
+      - name: Pull base images (Hub mirror, then retag)
         run: |
           set -e
-          echo "Pulling ${{ env.BASE_BACKEND }} (docker.io)..."
-          docker pull "${{ env.BASE_BACKEND }}"
-          echo "Pulling ${{ env.BASE_FRONTEND }} (docker.io)..."
-          docker pull "${{ env.BASE_FRONTEND }}"
+          pull_base() {
+            local name="$1"
+            local mirror_ref="${{ env.HUB_MIRROR }}/library/${name}"
+            if docker image inspect "${name}" >/dev/null 2>&1; then
+              echo "Local image already present: ${name} (skip pull)"
+              return 0
+            fi
+            echo "Pulling ${mirror_ref} ..."
+            docker pull "${mirror_ref}"
+            docker tag "${mirror_ref}" "${name}"
+            echo "Tagged as ${name}"
+          }
+          pull_base "${{ env.BASE_BACKEND }}"
+          pull_base "${{ env.BASE_FRONTEND }}"
           docker images | grep -E 'python|node' || true
 
       - name: Extract short SHA
         id: meta
         run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
+      # 不用 --pull：避免构建时再打 auth.docker.io（本地已有基础镜像即可）
       - name: Build and push backend
         run: |
           set -e
           IMG="${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend"
-          docker build --pull \
+          docker build \
             -t "${IMG}:latest" \
             -t "${IMG}:sha-${{ steps.meta.outputs.sha }}" \
             -f backend/Dockerfile .
@@ -78,7 +90,7 @@ jobs:
         run: |
           set -e
           IMG="${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend"
-          docker build --pull \
+          docker build \
             -t "${IMG}:latest" \
             -t "${IMG}:sha-${{ steps.meta.outputs.sha }}" \
             -f frontend/Dockerfile .
