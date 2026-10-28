@@ -32,7 +32,7 @@ jobs:
 
       # Gitea Actions 没有内置 Docker 登录，需显式 login 到内网 registry
       - name: Log in to Gitea Registry
-        run: echo "${{ secrets.GITEA_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
       - name: Extract short SHA
         id: meta
