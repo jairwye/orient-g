@@ -1,4 +1,6 @@
-# 构建 backend / frontend 镜像并推送到内网 Gitea Registry
+# 构建 backend / frontend 并推送到内网 Gitea Registry。
+# 路径 B：不拉取 GitHub Actions（无 uses: actions/* / docker/*-action）；
+# 构建所需基础镜像允许从 Docker Hub（docker.io）拉取。
 name: Build and push Docker images
 
 on:
@@ -9,31 +11,54 @@ on:
 env:
   REGISTRY: 192.168.104.108:3090
   OWNER: u1
+  # 与 Dockerfile FROM 对齐；构建前显式 pull，失败时日志更清晰
+  BASE_BACKEND: python:3.12-slim
+  BASE_FRONTEND: node:22-alpine
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout from Gitea
         run: |
           git config --global http.sslVerify false
-          git clone http://${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}@192.168.104.108:3090/${{ github.repository }}.git .
+          git clone "http://${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}@192.168.104.108:3090/${{ github.repository }}.git" .
 
       - name: Log in to Gitea Registry
-        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+        run: |
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Pull base images from Docker Hub
+        run: |
+          set -e
+          echo "Pulling ${{ env.BASE_BACKEND }} (docker.io)..."
+          docker pull "${{ env.BASE_BACKEND }}"
+          echo "Pulling ${{ env.BASE_FRONTEND }} (docker.io)..."
+          docker pull "${{ env.BASE_FRONTEND }}"
+          docker images | grep -E 'python|node' || true
 
       - name: Extract short SHA
         id: meta
-        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push backend
         run: |
-          docker build -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:latest             -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:sha-${{ steps.meta.outputs.sha }}             -f backend/Dockerfile .
-          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:latest
-          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:sha-${{ steps.meta.outputs.sha }}
+          set -e
+          IMG="${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend"
+          docker build --pull \
+            -t "${IMG}:latest" \
+            -t "${IMG}:sha-${{ steps.meta.outputs.sha }}" \
+            -f backend/Dockerfile .
+          docker push "${IMG}:latest"
+          docker push "${IMG}:sha-${{ steps.meta.outputs.sha }}"
 
       - name: Build and push frontend
         run: |
-          docker build -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:latest             -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:sha-${{ steps.meta.outputs.sha }}             -f frontend/Dockerfile .
-          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:latest
-          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:sha-${{ steps.meta.outputs.sha }}
+          set -e
+          IMG="${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend"
+          docker build --pull \
+            -t "${IMG}:latest" \
+            -t "${IMG}:sha-${{ steps.meta.outputs.sha }}" \
+            -f frontend/Dockerfile .
+          docker push "${IMG}:latest"
+          docker push "${IMG}:sha-${{ steps.meta.outputs.sha }}"
