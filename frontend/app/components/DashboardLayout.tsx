@@ -41,11 +41,10 @@ export default function DashboardLayout({
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(true);
   const { is_admin, view_business_dashboard } = useAuth();
+  // 有经营数据权限时：经营数据 → 竞品财报 → AI内网 → …
   const navItems = [
-    ...(view_business_dashboard ? [businessDashboardNavItem] : []),
-    ...baseNavItems.slice(0, 3),
-    ...(view_business_dashboard ? [competitorNavItem] : []),
-    ...baseNavItems.slice(3),
+    ...(view_business_dashboard ? [businessDashboardNavItem, competitorNavItem] : []),
+    ...baseNavItems,
     ...(is_admin ? [{ href: "/equity", label: "股权全景", icon: Network }] : []),
     ...(is_admin ? [{ href: "/admin", label: "管理后台", icon: Settings }] : []),
   ];
