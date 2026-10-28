@@ -24,9 +24,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 使用 runner 自带的 buildx
+      # 使用 docker 直接构建（不需要 buildx）
       - name: Set up Docker Buildx
-        run: docker buildx create --use --name builder --driver docker-container
+        run: docker buildx create --use --name builder --driver docker
 
       # Gitea Actions 没有内置 Docker 登录，需显式 login 到内网 registry
       - name: Log in to Gitea Registry
