@@ -7,8 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 生产 backend 不打包 docling（解析由 docker/docling-sidecar 承担，见 DOCLING_MODE=http）
+# 默认国内 PyPI 镜像；海外可 --build-arg PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY backend/requirements-base.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r requirements.txt
 
 COPY backend/ ./backend/
 COPY .env.example .env

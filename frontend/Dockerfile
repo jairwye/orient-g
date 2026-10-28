@@ -1,8 +1,10 @@
 FROM node:22-alpine AS builder
 
 WORKDIR /app
+# 默认国内 npm 镜像；海外可 --build-arg NPM_REGISTRY=https://registry.npmjs.org
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 COPY frontend/package*.json ./
-RUN npm install --legacy-peer-deps
+RUN npm install --legacy-peer-deps --registry="${NPM_REGISTRY}"
 COPY frontend/ .
 RUN mkdir -p public && npm run build
 
