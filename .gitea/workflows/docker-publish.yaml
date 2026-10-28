@@ -24,11 +24,27 @@ jobs:
           git config --global http.sslVerify false
           git clone "http://${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}@192.168.104.108:3090/${{ github.repository }}.git" .
 
-      - name: Install Docker CLI
+      # job 镜像若已有 docker（或挂了宿主机 CLI）则跳过；否则用清华源安装，避免每次拉 deb.debian.org
+      - name: Ensure Docker CLI
         run: |
+          set -e
+          if command -v docker >/dev/null 2>&1; then
+            echo "Docker CLI already present:"
+            docker version
+            exit 0
+          fi
+          echo "Docker CLI missing; installing via Tsinghua Debian mirror..."
+          if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+            sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+              /etc/apt/sources.list.d/debian.sources
+          elif [ -f /etc/apt/sources.list ]; then
+            sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+              /etc/apt/sources.list
+          fi
           apt-get update
           apt-get install -y docker.io
           ln -sf /usr/bin/docker /usr/local/bin/docker
+          docker version
 
       - name: Log in to Gitea Registry
         run: |
