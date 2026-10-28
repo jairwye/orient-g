@@ -1,17 +1,10 @@
 # 构建 backend / frontend 镜像并推送到内网 Gitea Registry
-# 使用 Gitea Actions 原生格式，保留 docker/login-action 和 setup-buildx-action
-# 服务器上使用 docker compose pull && docker compose up -d 拉取镜像运行
-
 name: Build and push Docker images
 
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: write
 
 env:
   REGISTRY: 192.168.104.108:3090
@@ -21,14 +14,14 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
+      - name: Install Docker CLI
+        run: |
+          curl -fsSL https://get.docker.com | sh
+          ln -sf /usr/bin/docker /usr/local/bin/docker
+
       - name: Checkout
-        uses: actions/checkout@v4
+        run: git clone https://${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}@192.168.104.108:3090/${{ github.repository }}.git .
 
-      # 使用 docker 直接构建（不需要 buildx）
-      - name: Set up Docker Buildx
-        run: docker buildx create --use --name builder --driver docker
-
-      # Gitea Actions 没有内置 Docker 登录，需显式 login 到内网 registry
       - name: Log in to Gitea Registry
         run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
@@ -37,22 +30,13 @@ jobs:
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Build and push backend
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: backend/Dockerfile
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:latest
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:sha-${{ steps.meta.outputs.sha }}
+        run: |
+          docker build -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:latest             -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:sha-${{ steps.meta.outputs.sha }}             -f backend/Dockerfile .
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:latest
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-backend:sha-${{ steps.meta.outputs.sha }}
 
       - name: Build and push frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: frontend/Dockerfile
-          push: true
-          no-cache: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:latest
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:sha-${{ steps.meta.outputs.sha }}
+        run: |
+          docker build -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:latest             -t ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:sha-${{ steps.meta.outputs.sha }}             -f frontend/Dockerfile .
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:latest
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/orient-g-frontend:sha-${{ steps.meta.outputs.sha }}
