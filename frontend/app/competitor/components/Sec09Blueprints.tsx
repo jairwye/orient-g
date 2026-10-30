@@ -16,6 +16,7 @@ import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS, colorForCompany } fro
 import { colToLabel, companyColsForSnapshot, COMPANY_COLS, labelToCol } from "../lib/companies";
 import { CL } from "../lib/field_keys";
 import { formatDecimal2, parseNum } from "../lib/format";
+import { companyFillDownKey, fillDownTableRows } from "../lib/table_fill_down";
 import type { CompetitorReportSnapshot, TableBlock } from "../lib/types";
 import { CompetitorChartTooltip, competitorBarTooltipProps } from "./CompetitorChartTooltip";
 import { DataTable } from "./DataTable";
@@ -187,6 +188,110 @@ export function GovSubsidyDetailPanel({
               </BarChart>
             </ResponsiveContainer>
           </div>
+          </div>
+        ) : null}
+      </div>
+    </FadeInView>
+  );
+}
+
+function detailAmountHeader(headers: string[]): string | undefined {
+  return headers.find((h) => h.includes("\u91d1\u989d"));
+}
+
+function buildCompanyAmountTotals(
+  rows: Record<string, string | number | null>[],
+  companyKey: string,
+  amountKey: string,
+) {
+  const totals = new Map<string, number>();
+  for (const row of rows) {
+    const co = String(row[companyKey] ?? "").trim();
+    const amt = parseNum(row[amountKey]);
+    if (!co || co === "—" || co === "-" || amt == null) continue;
+    totals.set(co, (totals.get(co) ?? 0) + amt);
+  }
+  return [...totals.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+/**
+ * 投资理财明细：有「竞企名称/公司 + 金额」长表时，表 + 分项合计柱（对齐政府补助）。
+ * 无明细表时由调用方不渲染。宽表第二张只出表，不画空柱。
+ */
+export function InvestmentDetailPanel({
+  table,
+  snapshot,
+  delayMs = 60,
+}: {
+  table?: TableBlock;
+  snapshot: CompetitorReportSnapshot;
+  delayMs?: number;
+}) {
+  const companyKey = table ? companyFillDownKey(table.headers) : undefined;
+  const amountKey = table ? detailAmountHeader(table.headers) : undefined;
+  const longForm = Boolean(table?.rows.length && companyKey && amountKey);
+
+  const displayRows = useMemo(() => {
+    if (!table?.rows.length) return table?.rows ?? [];
+    return fillDownTableRows(table.rows, table.headers);
+  }, [table]);
+
+  const chartData = useMemo(() => {
+    if (!longForm || !companyKey || !amountKey || !displayRows.length) return [];
+    return buildCompanyAmountTotals(displayRows, companyKey, amountKey).map((d) => ({
+      ...d,
+      label: colToLabel(labelToCol(d.name) ?? d.name, snapshot) || d.name,
+      fill: colorForCompany(labelToCol(d.name) ?? d.name, snapshot),
+    }));
+  }, [longForm, companyKey, amountKey, displayRows, snapshot]);
+
+  if (!table?.rows.length) return null;
+
+  if (!longForm) {
+    return (
+      <div className="mt-5 sm:mt-6">
+        <DataTable headers={table.headers} rows={displayRows} title={CL.investmentDetail} compact wrapText delayMs={delayMs} />
+      </div>
+    );
+  }
+
+  const chartH = Math.max(180, chartData.length * 32 + 48);
+
+  return (
+    <FadeInView delayMs={delayMs}>
+      <div className="mt-5 space-y-4 sm:mt-6">
+        <DataTable headers={table.headers} rows={displayRows} title={CL.investmentDetail} compact wrapText delayMs={0} />
+        {chartData.length > 0 ? (
+          <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/45 p-3 sm:p-4">
+            <p className="mb-2 text-xs font-medium text-zinc-400">{CL.investmentDetailTotal}</p>
+            <div style={{ height: chartH }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
+                  <CartesianGrid {...CHART_CARTESIAN_GRID} horizontal={false} />
+                  <XAxis type="number" {...CHART_X_AXIS} tick={{ fontSize: 10 }} />
+                  <YAxis
+                    type="category"
+                    dataKey="label"
+                    {...CHART_Y_AXIS}
+                    width={80}
+                    interval={0}
+                    tick={{ fontSize: 10 }}
+                  />
+                  <Tooltip
+                    {...competitorBarTooltipProps({
+                      content: <CompetitorChartTooltip valueFormatter={(v) => `${formatDecimal2(v)} \u4e07`} />,
+                    })}
+                  />
+                  <Bar dataKey="value" name={CL.investmentDetailTotal} radius={[0, 3, 3, 0]}>
+                    {chartData.map((d, i) => (
+                      <Cell key={i} fill={d.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         ) : null}
       </div>

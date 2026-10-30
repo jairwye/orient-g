@@ -1,4 +1,5 @@
 import { buildSubjectAnalysisGroups, detectCompanyInTitle } from "./balance_subject_analysis";
+import { isPlaceholderNarrative, stripPlaceholderLines } from "./narrative_format";
 import type { AnalystInsight, InsightTone } from "./finance_analysis";
 import type { CompetitorReportSnapshot } from "./types";
 
@@ -73,13 +74,15 @@ function narrativeBullets(body: string, sectionTitle: string, snapshot?: Competi
   const bullets: TopicBullet[] = [];
   for (const g of groups) {
     for (const b of g.bullets) {
+      const line = stripPlaceholderLines(b.text);
+      if (!line || isPlaceholderNarrative(line)) continue;
       let text: string;
       if (g.company === "综合观察" && titleCo) {
-        text = `${titleCo}：${b.text}`;
+        text = `${titleCo}：${line}`;
       } else if (g.company === "综合观察") {
-        text = b.text;
+        text = line;
       } else {
-        text = `${g.company}：${b.text}`;
+        text = `${g.company}：${line}`;
       }
       bullets.push({ text, tone: b.tone, tag: b.tag });
     }

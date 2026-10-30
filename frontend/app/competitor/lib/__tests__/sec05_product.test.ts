@@ -2,9 +2,11 @@ import { FK } from "../field_keys";
 import {
   SEC05_COST_SHARE,
   SEC05_MARGIN_CHANGE,
+  SEC05_MOBILE_GAME,
   SEC05_REV_DELTA_RATE,
   isSec05CompactHeader,
   normalizeSec05ProductRow,
+  normalizeSec05ProductType,
   parseSec05MarginChangePct,
   sec05PercentPoints,
 } from "../sec05_product";
@@ -155,6 +157,21 @@ describe("normalizeSec05ProductRow", () => {
     expect(out[FK.grossMargin]).toBe(-16.5);
     expect(out[SEC05_REV_DELTA_RATE]).toBe(-3.4);
     expect(out[SEC05_MARGIN_CHANGE]).toBe("-21.1pct");
+  });
+});
+
+describe("normalizeSec05ProductType", () => {
+  it("移动端游戏与移动游戏并入同一桶", () => {
+    expect(normalizeSec05ProductType("移动端游戏")).toBe(SEC05_MOBILE_GAME);
+    expect(normalizeSec05ProductType("移动游戏")).toBe(SEC05_MOBILE_GAME);
+    expect(normalizeSec05ProductType("移动终端游戏")).toBe(SEC05_MOBILE_GAME);
+    expect(normalizeSec05ProductType("手机游戏")).toBe(SEC05_MOBILE_GAME);
+    expect(normalizeSec05ProductType("移动网络游戏")).toBe(SEC05_MOBILE_GAME);
+  });
+
+  it("非移动口径保持原名", () => {
+    expect(normalizeSec05ProductType("客户端游戏")).toBe("客户端游戏");
+    expect(normalizeSec05ProductType("网页游戏")).toBe("网页游戏");
   });
 });
 

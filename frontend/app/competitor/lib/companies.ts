@@ -39,11 +39,51 @@ export function isLikelyMetricHeader(header: string): boolean {
   return METRIC_HEADER_RE.test(t);
 }
 
+/**
+ * 宽表维度列。精确「科目 / 指标 / 项目 / 事项」，或以「变动」开头。
+ * 半年报把单位写进列表头时是「科目(万)」，不是「科目」。
+ * 「二级科目(万)」不是科目列，留给投资理财汇总的拆表逻辑。
+ */
+export function isWideDimensionHeader(header: string): boolean {
+  const t = header.trim();
+  if (!t) return false;
+  if (WIDE_TABLE_MARKERS.has(t) || t.startsWith("\u53d8\u52a8")) return true;
+  return /^\u79d1\u76ee[(（]/.test(t);
+}
+
 /** 宽表：指标/科目 × 公司列；长表含「公司」列时公司名在行内 */
 export function isWideCompanyTable(headers: string[]): boolean {
   const normalized = headers.map((h) => h.trim()).filter(Boolean);
   if (!normalized.length || normalized.includes(FK.company)) return false;
-  return normalized.some((h) => WIDE_TABLE_MARKERS.has(h) || h.startsWith("变动"));
+  return normalized.some((h) => isWideDimensionHeader(h));
+}
+
+/** 宽表行名：兼容「科目」与「科目(万)」（值如「货币资金」，单位在表头） */
+export function wideSubjectLabel(
+  row: Record<string, string | number | null | undefined>,
+  headers?: string[],
+): string {
+  const ordered: string[] = [];
+  const push = (key: string) => {
+    const t = key.trim();
+    if (t && !ordered.includes(t)) ordered.push(t);
+  };
+  for (const h of headers ?? []) {
+    if (isWideDimensionHeader(h) || h.trim() === FK.subject || h.trim() === FK.metric || h.trim() === "\u9879\u76ee") {
+      push(h);
+    }
+  }
+  push(FK.subject);
+  push("\u9879\u76ee");
+  push(FK.metric);
+  for (const key of Object.keys(row)) {
+    if (/^\u79d1\u76ee[(（]/.test(key.trim())) push(key);
+  }
+  for (const key of ordered) {
+    const raw = String(row[key] ?? "").trim();
+    if (raw) return raw;
+  }
+  return "";
 }
 
 export function isSubjectCol(colOrLabel: string): boolean {

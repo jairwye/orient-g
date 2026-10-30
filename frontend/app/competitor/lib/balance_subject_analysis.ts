@@ -9,7 +9,13 @@ import {
 } from "./companies";
 import type { CompetitorReportSnapshot } from "./types";
 import type { AnalystInsight, InsightTone } from "./finance_analysis";
-import { formatNarrative, type FormatNarrativeOptions, type NarrativePart } from "./narrative_format";
+import {
+  formatNarrative,
+  isPlaceholderNarrative,
+  stripPlaceholderLines,
+  type FormatNarrativeOptions,
+  type NarrativePart,
+} from "./narrative_format";
 
 export type SubjectBullet = {
   text: string;
@@ -201,9 +207,10 @@ function ingestParagraph(
   activeCompany: string | null,
   ctx: LabelCtx,
 ): string | null {
-  const trimmed = text.trim();
+  const trimmed = stripPlaceholderLines(text);
   if (
     !trimmed ||
+    isPlaceholderNarrative(trimmed) ||
     isGenericAnalysisLead(trimmed, ctx) ||
     isOrphanSubjectLabel(trimmed) ||
     isTableCaptionTitle(trimmed)
@@ -229,8 +236,8 @@ function ingestPart(
   ctx: LabelCtx,
 ): string | null {
   if (part.kind === "company") {
-    const text = part.text.trim();
-    if (text) pushBullet(buckets, part.company, { text });
+    const text = stripPlaceholderLines(part.text);
+    if (text && !isPlaceholderNarrative(text)) pushBullet(buckets, part.company, { text });
     return part.company;
   }
 

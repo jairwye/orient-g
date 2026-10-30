@@ -31,8 +31,10 @@ import { CL, FK } from "../lib/field_keys";
 import { formatPctPoints, parseNum } from "../lib/format";
 import {
   SEC05_MARGIN_CHANGE,
+  SEC05_MOBILE_GAME,
   SEC05_REV_SHARE,
   normalizeSec05ProductRows,
+  normalizeSec05ProductType,
   parseSec05MarginChangePct,
   sec05PercentPoints,
   type Sec05ProductRow,
@@ -46,22 +48,12 @@ import { type SectionProps } from "../lib/section_ui";
 const REV_SHARE = SEC05_REV_SHARE;
 const MARGIN_CHANGE = SEC05_MARGIN_CHANGE;
 
-/** 移动类收入口径归一（图例合并、同色） */
-const MOBILE_GAME_CANONICAL = "\u79fb\u52a8\u6e38\u620f";
-const MOBILE_GAME_ALIASES = new Set([
-  MOBILE_GAME_CANONICAL,
-  "\u624b\u673a\u6e38\u620f",
-  "\u79fb\u52a8\u7f51\u7edc\u6e38\u620f",
-  "\u79fb\u52a8\u7ec8\u7aef\u6e38\u620f",
-]);
-
-/** 网页类收入口径归一（网页游戏 / 互联网页面游戏 同色） */
+/** 网页类收入口径（与 sec05_product 归一结果同色） */
 const WEB_GAME_CANONICAL = "\u7f51\u9875\u6e38\u620f";
-const WEB_GAME_ALIASES = new Set([WEB_GAME_CANONICAL, "\u4e92\u8054\u7f51\u9875\u9762\u6e38\u620f"]);
 
 /** 归一后产品类型色 */
 const PRODUCT_TYPE_COLORS: Record<string, string> = {
-  [MOBILE_GAME_CANONICAL]: BUSINESS_CHART_COLORS.current,
+  [SEC05_MOBILE_GAME]: BUSINESS_CHART_COLORS.current,
   "\u5ba2\u6237\u7aef\u6e38\u620f": BUSINESS_CHART_COLORS.actual,
   "PC/\u4e3b\u673a\u6e38\u620f": "#34d399",
   [WEB_GAME_CANONICAL]: "#a78bfa",
@@ -84,7 +76,7 @@ const FALLBACK_PRODUCT_COLORS = [
 
 /** 图例展示顺序 */
 const PRODUCT_TYPE_ORDER = [
-  MOBILE_GAME_CANONICAL,
+  SEC05_MOBILE_GAME,
   "\u5ba2\u6237\u7aef\u6e38\u620f",
   "PC/\u4e3b\u673a\u6e38\u620f",
   WEB_GAME_CANONICAL,
@@ -95,13 +87,6 @@ const PRODUCT_TYPE_ORDER = [
 ];
 
 type ProductRow = Sec05ProductRow;
-
-function normalizeProductType(raw: string): string {
-  const t = raw.trim();
-  if (MOBILE_GAME_ALIASES.has(t)) return MOBILE_GAME_CANONICAL;
-  if (WEB_GAME_ALIASES.has(t)) return WEB_GAME_CANONICAL;
-  return t;
-}
 
 function normalizeShare(raw: number): number {
   return sec05PercentPoints(raw);
@@ -133,7 +118,7 @@ function buildRevenueMix(rows: ProductRow[], snapshot: SectionProps["snapshot"])
 
   for (const row of rows) {
     const company = String(row[FK.company] ?? "");
-    const productType = normalizeProductType(String(row[FK.productType] ?? ""));
+    const productType = normalizeSec05ProductType(String(row[FK.productType] ?? ""));
     const shareRaw = parseNum(row[REV_SHARE]);
     if (!company || !productType || shareRaw == null) continue;
     productTypes.add(productType);
@@ -174,7 +159,7 @@ function buildProductMarginRows(rows: ProductRow[], snapshot: SectionProps["snap
   for (const [company, items] of byCompany) {
     const base = colorForCompany(company, snapshot);
     items.forEach((row, idx) => {
-      const productType = normalizeProductType(String(row[FK.productType] ?? ""));
+      const productType = normalizeSec05ProductType(String(row[FK.productType] ?? ""));
       const marginRaw = parseNum(row[FK.grossMargin]);
       if (!productType || marginRaw == null) return;
       result.push({
@@ -210,7 +195,7 @@ function buildMarginChangeRows(rows: ProductRow[], snapshot: SectionProps["snaps
   for (const [company, items] of byCompany) {
     const base = colorForCompany(company, snapshot);
     items.forEach((row, idx) => {
-      const productType = normalizeProductType(String(row[FK.productType] ?? ""));
+      const productType = normalizeSec05ProductType(String(row[FK.productType] ?? ""));
       const change = parseSec05MarginChangePct(row[MARGIN_CHANGE]);
       if (!productType || change == null) return;
       result.push({

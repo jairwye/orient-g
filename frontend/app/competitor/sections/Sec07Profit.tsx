@@ -16,6 +16,7 @@ import { ChapterPanel } from "../components/ChapterPanel";
 import { ChartPanel } from "../components/ChartPanel";
 import { CompetitorChartTooltip, competitorBarTooltipProps } from "../components/CompetitorChartTooltip";
 import { DataTable } from "../components/DataTable";
+import { StickySummary } from "../components/StickySummary";
 import { DivergingBarPanel } from "../components/DivergingBarPanel";
 import { SubjectAnalysisBoard } from "../components/SubjectAnalysisBoard";
 import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
@@ -251,7 +252,9 @@ export function Sec07Profit({ snapshot }: SectionProps) {
           content: (
             <>
               {core ? (
-                <DataTable title={CL.profitCoreItems} headers={core.headers} rows={core.rows} delayMs={60} compact {...competitorTableUiProps(snapshot)} />
+                <StickySummary active={profitSubjectGroups.length > 0}>
+                  <DataTable title={CL.profitCoreItems} headers={core.headers} rows={core.rows} delayMs={60} compact {...competitorTableUiProps(snapshot)} />
+                </StickySummary>
               ) : null}
               <SubjectAnalysisBoard groups={profitSubjectGroups} snapshot={snapshot} delayMs={100} />
             </>

@@ -7,6 +7,7 @@ import {
   isLikelyMetricHeader,
   isWideCompanyTable,
   labelToCol,
+  wideSubjectLabel,
   normalizeTableCompanyKeys,
   rowValueForCompany,
   runtimeCompanyDisplayName,
@@ -95,6 +96,16 @@ describe("companyColsForSnapshot", () => {
 
   it("无表头时回退 snapshot.companies", () => {
     expect(companyColsForSnapshot(snap)).toEqual(["YYCQ", "可比公司A"]);
+  });
+
+  it("科目(万) 仍是宽表，行名取货币资金", () => {
+    const headers = ["科目(万)", "游艺春秋", "三七互娱"];
+    expect(isWideCompanyTable(headers)).toBe(true);
+    expect(companyColsFromTableHeaders(headers)).toEqual(["游艺春秋", "三七互娱"]);
+    expect(wideSubjectLabel({ "科目(万)": "货币资金", 游艺春秋: 15750 }, headers)).toBe("货币资金");
+    expect(wideSubjectLabel({ "科目(万)": "短期借款", 游艺春秋: 8000 }, headers)).toBe("短期借款");
+    expect(wideSubjectLabel({ 科目: "货币资金(万)", YYCQ: 8527 }, ["科目", "YYCQ"])).toBe("货币资金(万)");
+    expect(isWideCompanyTable(["二级科目(万)", "游艺春秋", "三七互娱"])).toBe(false);
   });
 });
 
