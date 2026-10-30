@@ -122,15 +122,15 @@ export function Sec09OperatingProductsExplorer({ summary, detail, snapshot }: Pr
 
   return (
     <>
-      <StickySummary active={slides.length > 0}>
-        <div className="relative">
-          <div
-            ref={measureRef}
-            className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
-            aria-hidden
-          >
-            {measurePanels}
-          </div>
+      <div className="relative">
+        <div
+          ref={measureRef}
+          className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
+          aria-hidden
+        >
+          {measurePanels}
+        </div>
+        <StickySummary active={slides.length > 0}>
           <DataTable
             title={CL.operatingProducts}
             headers={summary.headers}
@@ -146,8 +146,8 @@ export function Sec09OperatingProductsExplorer({ summary, detail, snapshot }: Pr
               setUserPaused(true);
             }}
           />
-        </div>
-      </StickySummary>
+        </StickySummary>
+      </div>
       {slides.length > 0 ? (
         <div style={!focused ? { minHeight: layoutLockPx } : undefined}>
           <CompanyPeekCarousel

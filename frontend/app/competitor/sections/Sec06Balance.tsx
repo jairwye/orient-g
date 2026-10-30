@@ -33,9 +33,10 @@ import {
   CHART_Y_AXIS,
   colorForCompany,
 } from "../lib/competitor_chart_colors";
+import { buildCashDebtChartRows } from "../lib/asset_cash_debt";
 import { buildSubjectAnalysisGroups } from "../lib/balance_subject_analysis";
 import { buildTopicAnalysisGroups } from "../lib/topic_analysis";
-import { companyColsForSnapshot, colToLabel, competitorTableUiProps, rowValueForCompany, wideSubjectLabel } from "../lib/companies";
+import { companyColsForSnapshot, colToLabel, competitorTableUiProps, rowValueForCompany } from "../lib/companies";
 import {
   deriveAssetFpaInsights,
   deriveBalanceInsights,
@@ -88,29 +89,6 @@ function changeRowValue(
   const row = table?.rows.find((r) => String(r[FK_CHANGE] ?? r[FK.subject] ?? "") === subject);
   if (!row) return null;
   return parseNum(rowValueForCompany(row, col));
-}
-
-/** 图表轴是「亿」。行名带（万）或未标单位时，按万元换算。科目(万) 的单位在表头，行名是「货币资金」。 */
-function assetAmountToYi(raw: number, label: string): number {
-  if (label.includes("(\u4ebf)") || label.includes("\uff08\u4ebf\uff09")) return raw;
-  return raw / 10000;
-}
-
-function assetRowValue(
-  table: ReturnType<typeof getTable>,
-  subjectPrefix: string,
-  col: string,
-  snapshot: SectionProps["snapshot"],
-): { value: number; label: string } | null {
-  const row = table?.rows.find((r) => {
-    const label = wideSubjectLabel(r, table?.headers).replace(/\s/g, "");
-    return label.startsWith(subjectPrefix) || label.includes(subjectPrefix);
-  });
-  if (!row) return null;
-  const label = wideSubjectLabel(row, table?.headers);
-  const value = parseNum(rowValueForCompany(row, col, snapshot));
-  if (value == null) return null;
-  return { value, label };
 }
 
 function buildMetricBars(
@@ -257,18 +235,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
 
   const cashDebtData = useMemo(
     () =>
-      balanceCols.map((col) => {
-        const cash = assetRowValue(assets, "\u8d27\u5e01\u8d44\u91d1", col, snapshot);
-        const debt = assetRowValue(assets, "\u77ed\u671f\u501f\u6b3e", col, snapshot);
-        if (cash == null && debt == null) return null;
-        return {
-          name: colToLabel(col, snapshot),
-          cash: cash ? assetAmountToYi(cash.value, cash.label) : 0,
-          debt: debt ? assetAmountToYi(debt.value, debt.label) : 0,
-        };
-      })
-        .filter((row): row is { name: string; cash: number; debt: number } => row != null)
-        .sort((a, b) => b.cash - a.cash),
+      buildCashDebtChartRows(assets, balanceCols, snapshot, (col) => colToLabel(col, snapshot)),
     [assets, balanceCols, snapshot],
   );
 

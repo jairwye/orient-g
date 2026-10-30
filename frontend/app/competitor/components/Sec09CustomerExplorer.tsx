@@ -116,15 +116,15 @@ export function Sec09CustomerExplorer({ blocks, snapshot }: Props) {
 
   return (
     <>
-      <StickySummary active={slides.length > 0}>
-        <div className="relative">
-          <div
-            ref={measureRef}
-            className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
-            aria-hidden
-          >
-            {measurePanels}
-          </div>
+      <div className="relative">
+        <div
+          ref={measureRef}
+          className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
+          aria-hidden
+        >
+          {measurePanels}
+        </div>
+        <StickySummary active={slides.length > 0}>
           <DataTable
             title={CL.majorCustomers}
             headers={["公司", "明细条数"]}
@@ -137,8 +137,8 @@ export function Sec09CustomerExplorer({ blocks, snapshot }: Props) {
               setUserPaused(true);
             }}
           />
-        </div>
-      </StickySummary>
+        </StickySummary>
+      </div>
       <div style={!focused ? { minHeight: layoutLockPx } : undefined}>
         <CompanyPeekCarousel
           slides={slides}
