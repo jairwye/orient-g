@@ -33,6 +33,7 @@ import {
   CHART_Y_AXIS,
   colorForCompany,
 } from "../lib/competitor_chart_colors";
+import { buildCashDebtChartRows } from "../lib/asset_cash_debt";
 import { buildSubjectAnalysisGroups } from "../lib/balance_subject_analysis";
 import { buildTopicAnalysisGroups } from "../lib/topic_analysis";
 import { companyColsForSnapshot, colToLabel, competitorTableUiProps, rowValueForCompany } from "../lib/companies";
@@ -86,16 +87,6 @@ function changeRowValue(
   col: string,
 ): number | null {
   const row = table?.rows.find((r) => String(r[FK_CHANGE] ?? r[FK.subject] ?? "") === subject);
-  if (!row) return null;
-  return parseNum(rowValueForCompany(row, col));
-}
-
-function assetRowValue(
-  table: ReturnType<typeof getTable>,
-  subjectPrefix: string,
-  col: string,
-): number | null {
-  const row = table?.rows.find((r) => String(r[FK.subject] ?? "").startsWith(subjectPrefix));
   if (!row) return null;
   return parseNum(rowValueForCompany(row, col));
 }
@@ -244,18 +235,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
 
   const cashDebtData = useMemo(
     () =>
-      balanceCols.map((col) => {
-        const cash = assetRowValue(assets, "货币资金", col);
-        const debt = assetRowValue(assets, "短期借款", col);
-        if (cash == null && debt == null) return null;
-        return {
-          name: colToLabel(col, snapshot),
-          cash: (cash ?? 0) / 10000,
-          debt: (debt ?? 0) / 10000,
-        };
-      })
-        .filter(Boolean)
-        .sort((a, b) => b!.cash - a!.cash),
+      buildCashDebtChartRows(assets, balanceCols, snapshot, (col) => colToLabel(col, snapshot)),
     [assets, balanceCols, snapshot],
   );
 
@@ -367,6 +347,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
         {
           id: "sec-06-a",
           title: subTitleForSnap("sec-06-a"),
+          dense: true,
           content: (
             <>
               {assets ? (
@@ -393,37 +374,43 @@ export function Sec06Balance({ snapshot }: SectionProps) {
               ) : null}
               <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:gap-5">
                 <ChartPanel title={CL.cashVsStDebt} delayMs={80} height="h-auto min-h-[240px]">
-                  <div style={{ height: cashDebtH }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={cashDebtData}
-                        layout="vertical"
-                        margin={{ left: 4, right: 16, top: 4, bottom: 4 }}
-                      >
-                        <CartesianGrid {...CHART_CARTESIAN_GRID} horizontal={false} />
-                        <XAxis type="number" {...CHART_X_AXIS} unit={CL.unitYi} tick={{ fontSize: 10 }} />
-                        <YAxis
-                          type="category"
-                          dataKey="name"
-                          {...CHART_Y_AXIS}
-                          width={80}
-                          interval={0}
-                          tick={{ fontSize: 10 }}
-                        />
-                        <Tooltip
-                          {...competitorBarTooltipProps({
-                            content: (
-                              <CompetitorChartTooltip valueFormatter={(v) => `${formatDecimal2(v)} ${CL.unitYi}`} />
-                            ),
-                          })}
-                        />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Bar dataKey="cash" name={CL.cashOnHand} fill={BUSINESS_CHART_COLORS.actual} radius={[0, 3, 3, 0]} />
-                        <Bar dataKey="debt" name={CL.shortTermDebt} fill="#d97706" radius={[0, 3, 3, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <p className="mt-2 text-xs text-zinc-500">期末毛现金 vs 短借，差值即净现金的第一层近似。</p>
+                  {cashDebtData.length > 0 ? (
+                    <>
+                      <div style={{ height: cashDebtH }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={cashDebtData}
+                            layout="vertical"
+                            margin={{ left: 4, right: 16, top: 4, bottom: 4 }}
+                          >
+                            <CartesianGrid {...CHART_CARTESIAN_GRID} horizontal={false} />
+                            <XAxis type="number" {...CHART_X_AXIS} unit={CL.unitYi} tick={{ fontSize: 10 }} />
+                            <YAxis
+                              type="category"
+                              dataKey="name"
+                              {...CHART_Y_AXIS}
+                              width={80}
+                              interval={0}
+                              tick={{ fontSize: 10 }}
+                            />
+                            <Tooltip
+                              {...competitorBarTooltipProps({
+                                content: (
+                                  <CompetitorChartTooltip valueFormatter={(v) => `${formatDecimal2(v)} ${CL.unitYi}`} />
+                                ),
+                              })}
+                            />
+                            <Legend wrapperStyle={{ fontSize: 10 }} />
+                            <Bar dataKey="cash" name={CL.cashOnHand} fill={BUSINESS_CHART_COLORS.actual} radius={[0, 3, 3, 0]} />
+                            <Bar dataKey="debt" name={CL.shortTermDebt} fill="#d97706" radius={[0, 3, 3, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <p className="mt-2 text-xs text-zinc-500">期末毛现金 vs 短借，差值即净现金的第一层近似。</p>
+                    </>
+                  ) : (
+                    <p className="py-8 text-sm text-zinc-500">{CL.cashVsStDebtEmpty}</p>
+                  )}
                 </ChartPanel>
                 {changeCharts.map(({ subject, data }, idx) => (
                   <DivergingChangeChart

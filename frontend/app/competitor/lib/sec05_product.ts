@@ -4,6 +4,27 @@ import { FK } from "./field_keys";
 import { formatTableCell, parseNum } from "./format";
 import type { CompetitorReportSnapshot } from "./types";
 
+/** 移动类收入口径：手机 / 移动网络 / 移动终端 / 移动端 → 移动游戏 */
+export const SEC05_MOBILE_GAME = "\u79fb\u52a8\u6e38\u620f";
+const SEC05_MOBILE_GAME_ALIASES = new Set([
+  SEC05_MOBILE_GAME,
+  "\u624b\u673a\u6e38\u620f",
+  "\u79fb\u52a8\u7f51\u7edc\u6e38\u620f",
+  "\u79fb\u52a8\u7ec8\u7aef\u6e38\u620f",
+  "\u79fb\u52a8\u7aef\u6e38\u620f",
+]);
+
+const SEC05_WEB_GAME = "\u7f51\u9875\u6e38\u620f";
+const SEC05_WEB_GAME_ALIASES = new Set([SEC05_WEB_GAME, "\u4e92\u8054\u7f51\u9875\u9762\u6e38\u620f"]);
+
+/** 收入成本产品线：别名并入同一图例桶（精确匹配，避免误并） */
+export function normalizeSec05ProductType(raw: string): string {
+  const t = raw.trim();
+  if (SEC05_MOBILE_GAME_ALIASES.has(t)) return SEC05_MOBILE_GAME;
+  if (SEC05_WEB_GAME_ALIASES.has(t)) return SEC05_WEB_GAME;
+  return t;
+}
+
 export const SEC05_REV_SHARE = "\u6536\u5165\u5360\u6bd4";
 export const SEC05_COST_SHARE = "\u6210\u672c\u5360\u6bd4";
 export const SEC05_MARGIN_CHANGE = "\u6bdb\u5229\u7387\u53d8\u52a8";

@@ -1,4 +1,5 @@
-import { normalizeTableCompanyKeys } from "./companies";
+import { isWideCompanyTable, normalizeTableCompanyKeys } from "./companies";
+import { companyFillDownKey } from "./table_fill_down";
 import type { CompetitorReportSnapshot, NarrativeBlock, TableBlock } from "./types";
 
 export function getTable(
@@ -67,6 +68,32 @@ export function getAnchorAnalysisMarkdown(snapshot: CompetitorReportSnapshot, an
       return true;
     })
     .join("\n\n");
+}
+
+/**
+ * 同锚点多表：宽表（科目/指标 × 公司）为汇总；其余表为明细。
+ * 只有一张宽表时不返回 detail，避免无明细期次画出空面板。
+ * 只有一张「公司 / 竞企名称」长表时视为明细。
+ */
+export function splitSummaryDetailTables(tables: TableBlock[]): {
+  summary?: TableBlock;
+  detail?: TableBlock;
+} {
+  if (!tables.length) return {};
+  const wideIdx = tables.findIndex((t) => isWideCompanyTable(t.headers));
+  if (wideIdx < 0) {
+    const detailIdx = tables.findIndex((t) => Boolean(companyFillDownKey(t.headers)));
+    if (detailIdx >= 0) {
+      const detail = tables[detailIdx];
+      const summary = tables.find((_, i) => i !== detailIdx);
+      return summary ? { summary, detail } : { detail };
+    }
+    if (tables.length === 1) return { summary: tables[0] };
+    return { summary: tables[0], detail: tables[1] };
+  }
+  const summary = tables[wideIdx];
+  const detail = tables.find((t, i) => i !== wideIdx && t.rows.length > 0);
+  return detail ? { summary, detail } : { summary };
 }
 
 /** sec-09-3 第二张表：政府补助分项明细 */

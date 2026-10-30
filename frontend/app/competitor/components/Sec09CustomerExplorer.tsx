@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CompanyPeekCarousel } from "./CompanyPeekCarousel";
 import { DataTable } from "./DataTable";
+import { StickySummary } from "./StickySummary";
 import { colorForCompany } from "../lib/competitor_chart_colors";
 import { CL } from "../lib/field_keys";
 import { peekCarouselDwellMs } from "../lib/peek_carousel_dwell";
@@ -114,26 +115,30 @@ export function Sec09CustomerExplorer({ blocks, snapshot }: Props) {
   if (!companyTables.length) return null;
 
   return (
-    <div className="relative space-y-5 sm:space-y-6">
-      <div
-        ref={measureRef}
-        className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
-        aria-hidden
-      >
-        {measurePanels}
+    <>
+      <div className="relative">
+        <div
+          ref={measureRef}
+          className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
+          aria-hidden
+        >
+          {measurePanels}
+        </div>
+        <StickySummary active={slides.length > 0}>
+          <DataTable
+            title={CL.majorCustomers}
+            headers={["公司", "明细条数"]}
+            rows={summaryRows}
+            compact
+            rowAccent={(row) => colorForCompany(String(row["公司"] ?? ""), snapshot)}
+            isRowSelected={(_, i) => i === activeIndex}
+            onRowClick={(_, i) => {
+              setActiveIndex(i);
+              setUserPaused(true);
+            }}
+          />
+        </StickySummary>
       </div>
-      <DataTable
-        title={CL.majorCustomers}
-        headers={["公司", "明细条数"]}
-        rows={summaryRows}
-        compact
-        rowAccent={(row) => colorForCompany(String(row["公司"] ?? ""), snapshot)}
-        isRowSelected={(_, i) => i === activeIndex}
-        onRowClick={(_, i) => {
-          setActiveIndex(i);
-          setUserPaused(true);
-        }}
-      />
       <div style={!focused ? { minHeight: layoutLockPx } : undefined}>
         <CompanyPeekCarousel
           slides={slides}
@@ -148,6 +153,6 @@ export function Sec09CustomerExplorer({ blocks, snapshot }: Props) {
           initialDwellMs={initialDwellMs}
         />
       </div>
-    </div>
+    </>
   );
 }

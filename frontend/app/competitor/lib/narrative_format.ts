@@ -28,6 +28,24 @@ export type FormatNarrativeOptions = {
   snapshot?: CompetitorReportSnapshot;
 };
 
+/** 空文、Markdown 分隔线，或仅由破折号组成的占位（无指标、无句子） */
+export function isPlaceholderNarrative(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (/^(?:[-*_]\s*){3,}$/.test(t)) return true;
+  return /^[—–\-－]+$/.test(t);
+}
+
+/** 去掉独立占位行（如章节间 `---`），保留其余正文 */
+export function stripPlaceholderLines(text: string): string {
+  return text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !isPlaceholderNarrative(line))
+    .join("\n")
+    .trim();
+}
+
 function narrativeLabels(opts: FormatNarrativeOptions): string[] {
   if (opts.snapshot?.companies?.length) {
     return [...getCompanyContext(opts.snapshot).labelOrder];
@@ -195,7 +213,7 @@ function splitCompanyMentions(text: string, opts: FormatNarrativeOptions): Narra
     const end = hits[i + 1]?.index ?? text.length;
     const chunk = text.slice(start, end).trim();
     const company = hits[i].company;
-    const body = chunk.slice(company.length).trim().replace(/^[，,：:\s]+/, "");
+    const body = stripPlaceholderLines(chunk.slice(company.length).replace(/^[，,：:\s]+/, ""));
     const sentence = body ? `${body}` : "";
     if (!sentence) continue;
     const prev = companyChunks.get(company) ?? [];
@@ -234,7 +252,7 @@ function splitCompanySentences(text: string, opts: FormatNarrativeOptions): Narr
     const end = hits[i + 1]?.index ?? text.length;
     const chunk = text.slice(start, end).trim();
     const company = hits[i].company;
-    const body = chunk.slice(company.length).trim().replace(/^[，,：:\s]+/, "");
+    const body = stripPlaceholderLines(chunk.slice(company.length).replace(/^[，,：:\s]+/, ""));
     if (body) parts.push({ kind: "company", company, text: body });
   }
   return parts;
@@ -255,7 +273,7 @@ export function formatNarrative(
 
   for (const chunk of chunks) {
     const t = chunk.trim();
-    if (!t) continue;
+    if (!t || isPlaceholderNarrative(t)) continue;
 
     const numbered = t.match(/^\(\d+\)/);
     if (numbered && out.length > 0 && out[out.length - 1].kind === "list") {

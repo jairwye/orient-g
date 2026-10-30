@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CompanyPeekCarousel } from "./CompanyPeekCarousel";
 import { DataTable } from "./DataTable";
+import { StickySummary } from "./StickySummary";
 import { colorForCompany } from "../lib/competitor_chart_colors";
 import { colToLabel, companyDisplayLabel, labelToCol } from "../lib/companies";
 import { CL } from "../lib/field_keys";
@@ -120,29 +121,33 @@ export function Sec09OperatingProductsExplorer({ summary, detail, snapshot }: Pr
   );
 
   return (
-    <div className="relative space-y-5 sm:space-y-6">
-      <div
-        ref={measureRef}
-        className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
-        aria-hidden
-      >
-        {measurePanels}
+    <>
+      <div className="relative">
+        <div
+          ref={measureRef}
+          className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
+          aria-hidden
+        >
+          {measurePanels}
+        </div>
+        <StickySummary active={slides.length > 0}>
+          <DataTable
+            title={CL.operatingProducts}
+            headers={summary.headers}
+            rows={summary.rows}
+            delayMs={40}
+            compact
+            wrapText
+            formatCell={sec09FormatCell}
+            rowAccent={(row) => colorForCompany(String(row[COMPANY_KEY_SUMMARY] ?? ""), snapshot)}
+            isRowSelected={(_, i) => i === activeIndex}
+            onRowClick={(_, i) => {
+              setActiveIndex(i);
+              setUserPaused(true);
+            }}
+          />
+        </StickySummary>
       </div>
-      <DataTable
-        title={CL.operatingProducts}
-        headers={summary.headers}
-        rows={summary.rows}
-        delayMs={40}
-        compact
-        wrapText
-        formatCell={sec09FormatCell}
-        rowAccent={(row) => colorForCompany(String(row[COMPANY_KEY_SUMMARY] ?? ""), snapshot)}
-        isRowSelected={(_, i) => i === activeIndex}
-        onRowClick={(_, i) => {
-          setActiveIndex(i);
-          setUserPaused(true);
-        }}
-      />
       {slides.length > 0 ? (
         <div style={!focused ? { minHeight: layoutLockPx } : undefined}>
           <CompanyPeekCarousel
@@ -159,6 +164,6 @@ export function Sec09OperatingProductsExplorer({ summary, detail, snapshot }: Pr
           />
         </div>
       ) : null}
-    </div>
+    </>
   );
 }

@@ -16,6 +16,7 @@ import { ChapterPanel } from "../components/ChapterPanel";
 import { ChartPanel } from "../components/ChartPanel";
 import { CompetitorChartTooltip, competitorBarTooltipProps } from "../components/CompetitorChartTooltip";
 import { DataTable } from "../components/DataTable";
+import { StickySummary } from "../components/StickySummary";
 import { BlueprintAnalysisPanel } from "../components/BlueprintAnalysisPanel";
 import { Sec09CustomerExplorer } from "../components/Sec09CustomerExplorer";
 import { Sec09CustomerViz } from "../components/Sec09CustomerViz";
@@ -23,7 +24,7 @@ import { parseCustomerCompanyTables } from "../lib/sec09_customer_blocks";
 import { Sec09OperatingProductsExplorer } from "../components/Sec09OperatingProductsExplorer";
 import { Sec09RelatedPartyExplorer } from "../components/Sec09RelatedPartyExplorer";
 import { Sec09RndProjectExplorer } from "../components/Sec09RndProjectExplorer";
-import { GovSubsidyDetailPanel } from "../components/Sec09Blueprints";
+import { GovSubsidyDetailPanel, InvestmentDetailPanel } from "../components/Sec09Blueprints";
 import { Sec09BlockStream } from "../components/Sec09BlockStream";
 import { SubjectAnalysisBoard } from "../components/SubjectAnalysisBoard";
 import { TopicSubjectBoard } from "../components/TopicSubjectBoard";
@@ -38,7 +39,7 @@ import { buildTopicSubjectGroups } from "../lib/sec09_topic_subject_analysis";
 import { mergeRndProjectTable } from "../lib/sec09_table_transforms";
 import { stripBlocksAfterLastTable } from "../lib/sec09_block_utils";
 import { relatedPartyChangeFormatCell } from "../lib/related_party_change_format";
-import { getAnchorAnalysisMarkdown, getAnchorBlocks, getGovSubsidyDetailTable, getNarrativeMarkdown, getTable, getTables } from "../lib/selectors";
+import { getAnchorAnalysisMarkdown, getAnchorBlocks, getGovSubsidyDetailTable, getNarrativeMarkdown, getTable, getTables, splitSummaryDetailTables } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
 
 const SNAP_ANCHORS: Record<string, string> = {
@@ -171,7 +172,9 @@ export function Sec09Others({ snapshot }: SectionProps) {
   const rndProjects = getTable(snapshot, "sec-09-4");
   const dividend = getTable(snapshot, "sec-09-5");
   const currency = getTable(snapshot, "sec-09-6");
-  const investment = getTable(snapshot, "sec-09-7");
+  const investmentParts = splitSummaryDetailTables(getTables(snapshot, "sec-09-7"));
+  const investment = investmentParts.summary;
+  const investmentDetail = investmentParts.detail;
   const arAging = getTable(snapshot, "sec-09-8");
   const productTables = getTables(snapshot, "sec-09-9");
 
@@ -403,7 +406,17 @@ export function Sec09Others({ snapshot }: SectionProps) {
         subSlide(
           "sec-09-b",
           <>
-            {roi ? <DataTable title={CL.roiAds} headers={roi.headers} rows={roi.rows} delayMs={40} compact /> : null}
+            {roi ? (
+              <StickySummary
+                active={
+                  roiData.length > 0 ||
+                  adShareData.length > 0 ||
+                  (analysisByAnchor.subject["sec-09-2"]?.length ?? 0) > 0
+                }
+              >
+                <DataTable title={CL.roiAds} headers={roi.headers} rows={roi.rows} delayMs={40} compact />
+              </StickySummary>
+            ) : null}
             {roiCharts}
           </>,
           { dense: true, subjectAnchor: "sec-09-2" },
@@ -449,9 +462,16 @@ export function Sec09Others({ snapshot }: SectionProps) {
         ),
         subSlide(
           "sec-09-g",
-          investment ? (
-            <DataTable title={CL.investmentAlloc} headers={investment.headers} rows={investment.rows} delayMs={40} compact />
-          ) : null,
+          <>
+            {investment ? (
+              <StickySummary active={Boolean(investmentDetail)}>
+                <DataTable title={CL.investmentAlloc} headers={investment.headers} rows={investment.rows} delayMs={40} compact />
+              </StickySummary>
+            ) : null}
+            {investmentDetail ? (
+              <InvestmentDetailPanel table={investmentDetail} snapshot={snapshot} delayMs={60} />
+            ) : null}
+          </>,
           { dense: true, subjectAnchor: "sec-09-7" },
         ),
         subSlide(
