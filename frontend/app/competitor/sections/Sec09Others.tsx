@@ -32,7 +32,7 @@ import { BUSINESS_CHART_COLORS } from "../../lib/business_chart_colors";
 import { CHART_CARTESIAN_GRID, CHART_X_AXIS, CHART_Y_AXIS, colorForCompany } from "../lib/competitor_chart_colors";
 import { companyColsForSnapshot, colToLabel, rowValueForCompany } from "../lib/companies";
 import { CL, FK, FK_METRIC } from "../lib/field_keys";
-import { formatDecimal2, formatPctPoints, parseNum, sharePercentPoints, toPercentPoints } from "../lib/format";
+import { cellPercentPoints, formatDecimal2, formatPctPoints, parseNum, sharePercentPoints } from "../lib/format";
 import { subTitleForSnap } from "../lib/navigation";
 import { buildSec09SubjectGroups } from "../lib/sec09_subject_analysis";
 import { buildTopicSubjectGroups } from "../lib/sec09_topic_subject_analysis";
@@ -83,9 +83,11 @@ function metricBars(
   if (!row) return [];
   const cols = companyColsForSnapshot(snapshot, table?.headers);
   return cols.map((col) => {
-    const raw = parseNum(rowValueForCompany(row, col));
-    if (raw == null) return null;
-    const value = opts?.asPct ? toPercentPoints(raw) : raw;
+    const cell = rowValueForCompany(row, col);
+    const raw = parseNum(cell);
+    if (raw == null && cellPercentPoints(cell) == null) return null;
+    const value = opts?.asPct ? cellPercentPoints(cell) : raw;
+    if (value == null) return null;
     return { name: colToLabel(col, snapshot), value, fill: colorForCompany(col, snapshot) };
   })
     .filter(Boolean)
@@ -190,9 +192,8 @@ export function Sec09Others({ snapshot }: SectionProps) {
     const row = roi?.rows.find((r) => String(r[FK.metric] ?? "") === FK_METRIC.adSalesRatio);
     if (!row) return [];
     return sec09Cols.map((col) => {
-      const raw = parseNum(rowValueForCompany(row, col));
-      if (raw == null) return null;
-      const pct = toPercentPoints(raw);
+      const pct = cellPercentPoints(rowValueForCompany(row, col));
+      if (pct == null) return null;
       return {
         name: colToLabel(col, snapshot),
         value: pct,
@@ -207,8 +208,8 @@ export function Sec09Others({ snapshot }: SectionProps) {
     if (!rmbRow && !fxRow) return [];
     const cols = companyColsForSnapshot(snapshot, currency?.headers);
     return cols.map((col) => {
-      const rmb = rmbRow ? toPercentPoints(parseNum(rowValueForCompany(rmbRow, col)) ?? 0) : 0;
-      const fx = fxRow ? toPercentPoints(parseNum(rowValueForCompany(fxRow, col)) ?? 0) : 0;
+      const rmb = rmbRow ? (cellPercentPoints(rowValueForCompany(rmbRow, col)) ?? 0) : 0;
+      const fx = fxRow ? (cellPercentPoints(rowValueForCompany(fxRow, col)) ?? 0) : 0;
       if (rmb === 0 && fx === 0) return null;
       return { name: colToLabel(col, snapshot), rmb, fx };
     }).filter(Boolean);

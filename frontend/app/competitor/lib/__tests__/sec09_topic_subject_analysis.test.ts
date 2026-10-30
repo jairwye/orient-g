@@ -61,6 +61,54 @@ function productSnapshot(): CompetitorReportSnapshot {
   } as CompetitorReportSnapshot;
 }
 
+describe("buildTopicSubjectGroups sec-09-8 应收账龄", () => {
+  it("年报：单独的分析导语不吞掉后续应收/预付/应付主题", () => {
+    const md = [
+      "**分析——往来账龄揭示信用风险。**",
+      "",
+      "**应收账款——质量分化。** 可比公司A一年以内占比高。可比公司D一年以上占比高。",
+      "",
+      "**预付账款——授权金。** 可比公司B预付周期较长。",
+      "",
+      "**应付账款——结算模式。** 可比公司C无需应付账期。",
+    ].join("\n");
+
+    const groups = buildTopicSubjectGroups(md, productSnapshot());
+    expect(groups.map((g) => g.topic)).toEqual(["应收账款", "预付账款", "应付账款"]);
+    expect(groups.some((g) => g.topic === "分析" || g.topic.startsWith("往来账龄"))).toBe(false);
+  });
+
+  it("半年报：分析与正文同一段、没有应付/预付小标题时仍展示", () => {
+    const md = [
+      "**分析——往来账龄揭示信用风险。**",
+      "可比公司D应收账款超一年占比高，坏账风险高；",
+      "可比公司B回款周期较长，并非单纯坏账信号；",
+      "可比公司A账龄健康。",
+    ].join("\n");
+
+    const groups = buildTopicSubjectGroups(md, productSnapshot());
+    expect(groups.map((g) => g.topic)).toEqual(["往来账龄揭示信用风险"]);
+    const text = groups[0]!.subjects.flatMap((s) => s.bullets.map((b) => b.text)).join("");
+    expect(text).toContain("可比公司D");
+    expect(text).toContain("可比公司B");
+    expect(text).toContain("可比公司A");
+  });
+
+  it("运营产品：分析与总结前缀与正文同一段时不丢正文", () => {
+    const md = [
+      "**分析与总结——品类集中度与全球化分层。**",
+      "可比公司A覆盖多品类。",
+      "可比公司B以成熟产品为主。",
+    ].join("\n");
+
+    const groups = buildTopicSubjectGroups(md, productSnapshot());
+    expect(groups.map((g) => g.topic)).toEqual(["品类集中度与全球化分层"]);
+    const text = groups[0]!.subjects.flatMap((s) => s.bullets.map((b) => b.text)).join("");
+    expect(text).toContain("可比公司A");
+    expect(text).toContain("可比公司B");
+  });
+});
+
 describe("buildTopicSubjectGroups sec-09-9 运营产品", () => {
   it("发行地区：连续「和」连接的两公司合并一行", () => {
     const md = [

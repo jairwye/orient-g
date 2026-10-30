@@ -14,6 +14,42 @@ function laborCostMetricPlain(metric: string): string {
   return metric.replace(/\*\*/g, "").trim();
 }
 
+function laborBlockKind(plain: string): "labor" | "excluded" | null {
+  if (plain === "人力成本") return "labor";
+  if (LABOR_COST_SECTION_TITLES.has(plain) || plain.startsWith("工会经费")) return "excluded";
+  return null;
+}
+
+/** 人力成本分组内的人均水平（万/年、万/半年），排除增减行与职工福利/工会经费 */
+function isTotalLaborPerCapitaMetric(plain: string): boolean {
+  return plain.startsWith("人均(万/") && !plain.includes("增减");
+}
+
+/**
+ * sec-04-3 人均成本对比：只取「人力成本」分组的人均(万/…)行。
+ * 不取职工福利、工会经费的人均(元/…)。无分组标题时回退到第一行人均(万/…)。
+ */
+export function findTotalLaborPerCapitaRow(
+  rows: LaborCostRow[],
+  metricKey = FK.metric,
+): LaborCostRow | undefined {
+  let section: "labor" | "excluded" | "unset" = "unset";
+  let unsetFallback: LaborCostRow | undefined;
+  for (const row of rows) {
+    const plain = laborCostMetricPlain(String(row[metricKey] ?? ""));
+    if (!plain) continue;
+    const kind = laborBlockKind(plain);
+    if (kind) {
+      section = kind;
+      continue;
+    }
+    if (!isTotalLaborPerCapitaMetric(plain)) continue;
+    if (section === "labor") return row;
+    if (section === "unset" && !unsetFallback) unsetFallback = row;
+  }
+  return unsetFallback;
+}
+
 /** sec-04-3 是否含职工福利 / 工会经费分组（完整蓝本 ≥8 行） */
 export function laborCostTableHasFullSections(rows: LaborCostRow[], metricKey = FK.metric): boolean {
   const plain = rows.map((r) => laborCostMetricPlain(String(r[metricKey] ?? "")));

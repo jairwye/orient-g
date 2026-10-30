@@ -5,7 +5,7 @@ import { colorForCompany } from "../lib/competitor_chart_colors";
 import type { CompetitorReportSnapshot } from "../lib/types";
 import { CL, FK } from "../lib/field_keys";
 import { buildMetricDelta } from "../lib/metric_delta";
-import { formatPct, formatYiWan, parseNum } from "../lib/format";
+import { cellPercentPoints, formatPctPoints, formatYiWan, parseNum } from "../lib/format";
 import { pickChangeRateAfterDelta } from "../lib/table_header_keys";
 import { FadeInView } from "./FadeInView";
 import { MetricDeltaBadge } from "./MetricDeltaBadge";
@@ -80,7 +80,7 @@ export function CompanyMetricGrid({
         const name = String(row[FK.company] ?? "");
         const revenue = parseNum(row[FK.revenueWan]);
         const profit = parseNum(row[FK.profitWan]);
-        const roe = parseNum(row[ROE_KEY]);
+        const roe = cellPercentPoints(row[ROE_KEY]);
         const accent = colorForCompany(name, snapshot);
         const profitPositive = profit != null && profit >= 0;
         const displayName = colToLabel(name, snapshot);
@@ -137,7 +137,7 @@ export function CompanyMetricGrid({
                           (dense ? "text-sm" : "text-lg")
                         }
                       >
-                        {formatPct(roe)}
+                        {formatPctPoints(roe)}
                       </p>
                       {roeDelta.amountText ? (
                         <MetricDeltaBadge delta={roeDelta} compact />

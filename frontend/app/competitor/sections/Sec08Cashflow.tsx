@@ -30,7 +30,7 @@ import {
   formatPctPoints,
   formatTableCell,
   parseNum,
-  toPercentPoints,
+  cellPercentPoints,
 } from "../lib/format";
 import { hasMarkdownBold, renderBoldMarkdown, stripMarkdownBold } from "../lib/markdown_bold";
 import { subTitleForSnap } from "../lib/navigation";
@@ -81,7 +81,8 @@ function formatCfQualityCell(
     return formatPctPoints(cfProfitRatioToPercentPoints(n));
   }
   if (metric.includes("增长率")) {
-    return formatPctPoints(toPercentPoints(n));
+    const pts = cellPercentPoints(value);
+    return pts == null ? "—" : formatPctPoints(pts);
   }
   if (metric.includes("销售收现比")) {
     return formatDecimal2(n);

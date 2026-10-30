@@ -4,6 +4,25 @@ import type { SubjectAnalysisGroup } from "./balance_subject_analysis";
 
 const TOPIC_DASH = /[—–\-－]/;
 
+/**
+ * 「分析——副标题」是章节导语，不是主题白名单。
+ * 导语单独成段（年报）则丢掉，避免盖住后面的 **应收账款——** 等主题；
+ * 导语与正文同一段（半年报）则用副标题当主题，正文照常展示。
+ * 不按应收/应付/预付等词过滤。
+ */
+function peelAnalysisLead(
+  title: string,
+  rest: string,
+): { title: string; rest: string } | "drop" | null {
+  const m = title.trim().match(/^(分析与总结|分析|总结)(?:[—–\-－]+(.*))?$/);
+  if (!m) return null;
+  const subtitle = (m[2] ?? "").replace(/[。．.\s]+$/g, "").trim();
+  const body = rest.trim();
+  if (!body) return "drop";
+  if (!subtitle) return { title: m[1]!, rest: body };
+  return { title: subtitle, rest: body };
+}
+
 export type TopicSubjectGroup = {
   topic: string;
   subjects: SubjectAnalysisGroup[];
@@ -283,14 +302,17 @@ export function buildTopicSubjectGroups(
   for (const chunk of raw.split(/\n\n+/)) {
     const t = chunk.trim();
     if (!t || t.startsWith("###") || t.startsWith(">")) continue;
-    if (/^分析|^总结/.test(t.replace(/^\*\*([^*]+)\*\*/, "$1"))) continue;
 
     const bold = t.match(/^\*\*([^*]+)\*\*\s*([\s\S]*)$/);
     if (!bold) continue;
 
-    const parsed = parseTopicChunk(bold[1].trim(), bold[2].trim());
+    const lead = peelAnalysisLead(bold[1].trim(), bold[2]);
+    if (lead === "drop") continue;
+    const title = lead ? lead.title : bold[1].trim();
+    const rest = lead ? lead.rest : bold[2].trim();
+
+    const parsed = parseTopicChunk(title, rest);
     if (!parsed) continue;
-    if (/^分析——/.test(parsed.topic) && !TOPIC_DASH.test(bold[1].replace(/^分析——/, ""))) continue;
 
     let subjects: SubjectAnalysisGroup[];
     if (isBriefAnalysisTopic(parsed.topic)) {

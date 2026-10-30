@@ -19,6 +19,8 @@ export const FK = {
   rdShare: "\u7814\u53d1\u5360\u6bd4",
   opsSales: "\u8fd0\u8425\u9500\u552e",
   adminFinance: "\u884c\u653f\u8d22\u52a1",
+  /** sec-04-4 \u4e0e\u300c\u884c\u653f\u8d22\u52a1\u300d\u540c\u4e49\uff1b2026-h1 \u84dd\u672c\u5217\u540d */
+  staffOther: "\u5176\u4ed6",
   productType: "\u4ea7\u54c1\u7c7b\u578b",
   region: "\u5730\u533a",
   incomeWan: "\u6536\u5165(\u4e07)",
@@ -104,8 +106,11 @@ export const CL = {
   ocf: "\u7ecf\u8425\u73b0\u91d1\u6d41",
   perCapRevAxis: "\u4eba\u5747\u521b\u6536",
   headcountAmpChart: "\u4eba\u5458\u589e\u51cf\u5e45\u5ea6\u5bf9\u6bd4",
+  perCapLaborCostChart: "\u4eba\u5747\u6210\u672c\u5bf9\u6bd4\uff08\u4eba\u529b\u6210\u672c\uff09",
   perCapProfitAxis: "\u4eba\u5747\u521b\u5229",
   rdShort: "\u7814\u53d1",
+  /** \u4eba\u5458\u7ed3\u6784\u56fe\u4f8b\uff1a\u6570\u636e\u4ecd\u8bfb\u300c\u884c\u653f\u8d22\u52a1\u300d\uff0c\u7f3a\u5217\u56de\u9000\u300c\u5176\u4ed6\u300d */
+  adminFinanceEtc: "\u884c\u653f\u8d22\u52a1\u7b49",
   change: "\u53d8\u52a8",
   chapterHighlights: "\u5148\u5237\u91cd\u70b9",
   scrollExplore: "\u5de6\u53f3\u6ed1\u52a8\u63a2\u7d22",

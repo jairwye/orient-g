@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { Tooltip, type TooltipProps } from "recharts";
 import { CHART_BAR_CURSOR, CHART_NO_CURSOR, CHART_SCATTER_CURSOR } from "../lib/competitor_chart_colors";
-import { formatDecimal2 } from "../lib/format";
+import { formatDecimal2, formatPercentFromPoints } from "../lib/format";
 
 type PayloadItem = {
   name: string;
@@ -145,6 +145,5 @@ export function CompetitorChartTooltip({
 }
 
 function formatPct(n: number): string {
-  if (!Number.isFinite(n)) return "—";
-  return `${n.toFixed(1)}%`;
+  return formatPercentFromPoints(n);
 }

@@ -4,7 +4,7 @@
  */
 import { SUBJECT_COL, colToLabel, companyColsForSnapshot, rowValueForCompany } from "./companies";
 import { FK, FK_AMOUNT_CHANGE, FK_CF_ITEM, FK_CHANGE, FK_METRIC, CL } from "./field_keys";
-import { cfProfitRatioToPercentPoints, parseNum, round2, sharePercentPoints, toPercentPoints } from "./format";
+import { cellPercentPoints, cfProfitRatioToPercentPoints, parseNum, round2, sharePercentPoints } from "./format";
 import { getTable } from "./selectors";
 import type { CompetitorReportSnapshot, TableBlock } from "./types";
 
@@ -48,6 +48,13 @@ function tableMetric(table: TableBlock | undefined, metric: string, col: string)
   return parseNum(rowValueForCompany(row, col));
 }
 
+/** 百分数单元格：保留 % / pct 后缀，避免 parseNum 后再 ×100。 */
+function tablePercentPoints(table: TableBlock | undefined, metric: string, col: string): number | null {
+  const row = table?.rows.find((r) => String(r[FK.metric] ?? "") === metric);
+  if (!row) return null;
+  return cellPercentPoints(rowValueForCompany(row, col));
+}
+
 function cellNum(row: Record<string, string | number | null | undefined> | undefined, col: string): number | null {
   return parseNum(rowValueForCompany(row, col));
 }
@@ -77,16 +84,16 @@ export function parseDupontPoints(snapshot: CompetitorReportSnapshot): DupontPoi
   const raw = dupont.rows
     .map((row) => {
       const colKey = String(row[FK.company] ?? "");
-      const roeRaw = parseNum(row["ROE"]);
-      const marginRaw = parseNum(row["\u51c0\u5229\u7387"]);
+      const roe = cellPercentPoints(row["ROE"]);
+      const netMargin = cellPercentPoints(row["\u51c0\u5229\u7387"]);
       const turnover = parseNum(row["\u603b\u8d44\u4ea7\u5468\u8f6c\u7387"]);
       const leverage = parseNum(row["\u6743\u76ca\u4e58\u6570"]);
-      if (!colKey || roeRaw == null || marginRaw == null || turnover == null || leverage == null) return null;
+      if (!colKey || roe == null || netMargin == null || turnover == null || leverage == null) return null;
       return {
         colKey,
         name: companyName(colKey),
-        roe: toPercentPoints(roeRaw),
-        netMargin: toPercentPoints(marginRaw),
+        roe,
+        netMargin,
         turnover,
         leverage,
       };
@@ -372,9 +379,9 @@ export function deriveLiquidityFpaInsights(snapshot: CompetitorReportSnapshot): 
   }
 
   const arStress = companyColsForSnapshot(snapshot).map((col) => {
-    const raw = tableMetric(solvency, FK_METRIC.arToCurrent, col);
-    if (raw == null) return null;
-    return { name: companyName(col), pct: toPercentPoints(raw) };
+    const pct = tablePercentPoints(solvency, FK_METRIC.arToCurrent, col);
+    if (pct == null) return null;
+    return { name: companyName(col), pct };
   })
     .filter(Boolean)
     .sort((a, b) => b!.pct - a!.pct)[0];
@@ -412,15 +419,11 @@ export function deriveProfitInsights(snapshot: CompetitorReportSnapshot): Analys
   const insights: AnalystInsight[] = [];
 
   const grossRows = companyColsForSnapshot(snapshot).map((col) => {
-    const g = tableMetric(fees, FK.grossMarginRate, col);
-    const s = tableMetric(fees, FK.salesFeeRate, col);
-    const a = tableMetric(fees, FK.adminFeeRate, col);
-    const r = tableMetric(fees, FK.rndFeeRate, col);
-    if (g == null) return null;
-    const gross = toPercentPoints(g);
-    const sales = s != null ? toPercentPoints(s) : 0;
-    const admin = a != null ? toPercentPoints(a) : 0;
-    const rnd = r != null ? toPercentPoints(r) : 0;
+    const gross = tablePercentPoints(fees, FK.grossMarginRate, col);
+    const sales = tablePercentPoints(fees, FK.salesFeeRate, col) ?? 0;
+    const admin = tablePercentPoints(fees, FK.adminFeeRate, col) ?? 0;
+    const rnd = tablePercentPoints(fees, FK.rndFeeRate, col) ?? 0;
+    if (gross == null) return null;
     const opMargin = gross - sales - admin - rnd;
     return { name: companyName(col), gross, sales, opMargin, totalFee: sales + admin + rnd };
   }).filter(Boolean) as Array<{ name: string; gross: number; sales: number; opMargin: number; totalFee: number }>;
@@ -837,7 +840,7 @@ export function deriveCurrencyInsights(snapshot: CompetitorReportSnapshot): Anal
   if (!fxRow) return [];
   const high = companyColsForSnapshot(snapshot).map((col) => ({
     name: companyName(col),
-    pct: rowValueForCompany(fxRow, col) != null ? toPercentPoints(cellNum(fxRow, col) ?? 0) : null,
+    pct: cellPercentPoints(rowValueForCompany(fxRow, col)),
   }))
     .filter((x) => x.pct != null)
     .sort((a, b) => b!.pct! - a!.pct!)[0];
@@ -965,9 +968,9 @@ export function deriveRoiInsights(snapshot: CompetitorReportSnapshot): AnalystIn
   if (roiRow && adRow) {
     const pairs = companyColsForSnapshot(snapshot).map((col) => {
       const r = cellNum(roiRow, col);
-      const ad = cellNum(adRow, col);
-      if (r == null || ad == null) return null;
-      return { name: companyName(col), roi: r, adShare: toPercentPoints(ad) };
+      const adShare = cellPercentPoints(rowValueForCompany(adRow, col));
+      if (r == null || adShare == null) return null;
+      return { name: companyName(col), roi: r, adShare };
     }).filter(Boolean) as Array<{ name: string; roi: number; adShare: number }>;
 
     const buyLowRoi = pairs.filter((p) => p.adShare >= 85).sort((a, b) => a.roi - b.roi)[0];
@@ -1003,15 +1006,11 @@ export function acquisitionModel(adSharePct: number): { model: AcquisitionModel;
 export function computeOperatingMargins(snapshot: CompetitorReportSnapshot) {
   const fees = getTable(snapshot, "sec-07-3");
   return companyColsForSnapshot(snapshot).map((col) => {
-    const g = tableMetric(fees, FK.grossMarginRate, col);
-    const s = tableMetric(fees, FK.salesFeeRate, col);
-    const a = tableMetric(fees, FK.adminFeeRate, col);
-    const r = tableMetric(fees, FK.rndFeeRate, col);
-    if (g == null) return null;
-    const gross = toPercentPoints(g);
-    const sales = s != null ? toPercentPoints(s) : 0;
-    const admin = a != null ? toPercentPoints(a) : 0;
-    const rnd = r != null ? toPercentPoints(r) : 0;
+    const gross = tablePercentPoints(fees, FK.grossMarginRate, col);
+    const sales = tablePercentPoints(fees, FK.salesFeeRate, col) ?? 0;
+    const admin = tablePercentPoints(fees, FK.adminFeeRate, col) ?? 0;
+    const rnd = tablePercentPoints(fees, FK.rndFeeRate, col) ?? 0;
+    if (gross == null) return null;
     return {
       colKey: col,
       name: companyName(col),

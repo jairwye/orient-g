@@ -116,15 +116,16 @@ export function Sec09CustomerExplorer({ blocks, snapshot }: Props) {
 
   return (
     <>
-      <div className="relative">
-        <div
-          ref={measureRef}
-          className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
-          aria-hidden
-        >
-          {measurePanels}
-        </div>
-        <StickySummary active={slides.length > 0}>
+      {/* 测量用 relative 必须留在吸顶节点内部。包在外面时包含块只有汇总表高度，sticky 没有行程。 */}
+      <StickySummary active={slides.length > 0}>
+        <div className="relative">
+          <div
+            ref={measureRef}
+            className="pointer-events-none absolute left-[8%] top-0 -z-10 w-[84%] opacity-0"
+            aria-hidden
+          >
+            {measurePanels}
+          </div>
           <DataTable
             title={CL.majorCustomers}
             headers={["公司", "明细条数"]}
@@ -137,8 +138,8 @@ export function Sec09CustomerExplorer({ blocks, snapshot }: Props) {
               setUserPaused(true);
             }}
           />
-        </StickySummary>
-      </div>
+        </div>
+      </StickySummary>
       <div style={!focused ? { minHeight: layoutLockPx } : undefined}>
         <CompanyPeekCarousel
           slides={slides}
