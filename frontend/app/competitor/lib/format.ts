@@ -71,6 +71,69 @@ export function toPercentPoints(n: number): number {
   return round2(n);
 }
 
+/** 蓝本「+0.4pct / -1.1pct」：已是百分点变动，不是比例。 */
+export function blueprintPctPointLiteral(val: string | number | null | undefined): string | null {
+  if (typeof val !== "string") return null;
+  const t = val.trim().replace(/\s+/g, "");
+  if (!t || t === "—" || t === "-") return null;
+  if (/^[+-]?[\d,]+(\.\d+)?pct$/i.test(t)) return t;
+  return null;
+}
+
+/**
+ * 列/行标签表明数值已是百分点（变动(pct)、占比），不得再 ×100。
+ * 「可比公司A」这类公司列名不算；宽表要同时看行标签键（如「变动(pct)」）。
+ */
+export function isStoredPercentPointKey(key: string | undefined | null): boolean {
+  if (!key) return false;
+  const k = key.trim();
+  if (isSharePercentColumnKey(k)) return true;
+  if (/\(pct\)/i.test(k)) return true;
+  return false;
+}
+
+/**
+ * 单元格 → 百分点。
+ * - 带 % / pct 的字符串已是百分点（"0.82%" → 0.82，"+0.4pct" → 0.4），不再 ×100。
+ *   parseNum 会先剥掉后缀得到 0.82，若再交 toPercentPoints，|n|<1 会被当成比例画成 82%。
+ * - alreadyPoints：变动(pct) 等列里的裸数字 0.8 表示 0.8 个百分点，不是 80%。
+ * - 其余裸数字仍走 toPercentPoints（兼容旧比例 0.494 → 49.4）。
+ */
+export function cellPercentPoints(
+  val: string | number | null | undefined,
+  opts?: { alreadyPoints?: boolean },
+): number | null {
+  if (val == null || val === "") return null;
+  if (typeof val === "string" && (blueprintPercentLiteral(val) || blueprintPctPointLiteral(val))) {
+    const n = parseNum(String(val).replace(/pct/gi, ""));
+    return n == null ? null : round2(n);
+  }
+  const n = typeof val === "number" ? (Number.isFinite(val) ? val : null) : parseNum(val);
+  if (n == null) return null;
+  if (opts?.alreadyPoints) return round2(n);
+  return toPercentPoints(n);
+}
+
+/** 单元格直接格式化为百分号展示（0.82% → "0.82%"，不是 "82%"）。 */
+export function formatCellPercent(
+  val: string | number | null | undefined,
+  opts?: { alreadyPoints?: boolean },
+): string {
+  const pts = cellPercentPoints(val, opts);
+  if (pts == null) return "—";
+  return formatPercentFromPoints(pts);
+}
+
+/**
+ * 增减幅度 → 百分点。
+ * 蓝本单元格带 % 时数值已是百分点（+0.44% → 0.44），不得再走 toPercentPoints
+ * （|n|<1 会当成比例 ×100，0.44% 会被画成 44%）。
+ * 无 % 的裸数字仍兼容旧比例存储。
+ */
+export function amplitudePercentPoints(val: string | number | null | undefined): number | null {
+  return cellPercentPoints(val);
+}
+
 /** 蓝本「占比/持股/费比」等列已是百分点，与 sec-05 一致直接引用 */
 export function sharePercentPoints(n: number): number {
   return round2(n);
@@ -104,7 +167,7 @@ export function formatPercentForCell(
 ): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const useShare =
-    isSharePercentColumnKey(columnKey) || (metric != null && isSharePercentColumnKey(metric));
+    isStoredPercentPointKey(columnKey) || (metric != null && isStoredPercentPointKey(metric));
   const points = useShare ? sharePercentPoints(n) : toPercentPoints(n);
   return formatPercentFromPoints(points);
 }
@@ -227,6 +290,68 @@ export function formatScore(n: number | null | undefined): string {
   return formatDecimal2(n);
 }
 
+const YI_AMOUNT = /约?\s*(-?[\d,]+(?:\.\d+)?)\s*亿/;
+
+/** 行业格局「合计营收 / 含…合计」类指标：金额合计，不是家数或变动率 */
+function isRevenueAggregateLabel(label: string): boolean {
+  const l = label.trim();
+  if (!l) return false;
+  if (/变动|同比|增长|为正|占比|毛利|费用/.test(l)) return false;
+  if (l.includes("合计营收") || l.includes("营收合计")) return true;
+  if (l.includes("营收") && l.includes("合计")) return true;
+  if (l.includes("合计") && l.includes("收入")) return true;
+  // 「含本公司合计」「含YYCQ」等；排除含税/含期权等非金额标签
+  if (/^含/.test(l) && !/含税|含期权|含水印|含量/.test(l)) return true;
+  return false;
+}
+
+/**
+ * sec-01-1 指标卡。列头通常只是「值」，单位写在单元格里。
+ * 上一期「约 243.62亿」原样保留；本期裸数字在同表已有「亿」（及「约」）时补上同样单位。
+ */
+export function formatIndustryMetricValue(
+  label: string,
+  value: string | number | null | undefined,
+  rows: Array<Record<string, string | number | null>>,
+  valueKey: string,
+): string {
+  const base = formatTableCell(valueKey, value);
+  if (value == null || value === "") return base;
+  if (typeof value === "string" && /亿|约|%|家/.test(value)) return base;
+  if (!isRevenueAggregateLabel(label)) return base;
+
+  const n = typeof value === "number" ? value : parseNum(value);
+  if (n == null || !Number.isFinite(n)) return base;
+
+  const samples: number[] = [];
+  let useApprox = false;
+  for (const row of rows) {
+    const raw = row[valueKey];
+    if (typeof raw !== "string") continue;
+    const matched = raw.match(YI_AMOUNT);
+    if (!matched) continue;
+    if (raw.includes("约")) useApprox = true;
+    const sample = parseFloat(matched[1].replace(/,/g, ""));
+    if (Number.isFinite(sample)) samples.push(Math.abs(sample));
+  }
+
+  const headerYi = /亿/.test(valueKey);
+  if (!samples.length && !headerYi) return base;
+
+  let yi = Math.abs(n);
+  if (samples.length) {
+    const sorted = [...samples].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)] || 0;
+    const ratio = median > 0 ? yi / median : 1;
+    if (ratio >= 500) yi = yi / 10000;
+    else if (ratio > 20) return base;
+  }
+
+  const numText = formatDecimal2(n < 0 ? -yi : yi);
+  if (useApprox) return `约 ${numText}亿`;
+  return `${numText}亿`;
+}
+
 /** 表格/卡片单元格：同比等百分数列、其余数值两位小数 */
 export function formatTableCell(
   columnKey: string,
@@ -235,6 +360,8 @@ export function formatTableCell(
   if (val == null || val === "") return "—";
   const pctLiteral = blueprintPercentLiteral(val);
   if (pctLiteral) return pctLiteral;
+  const pctPointLiteral = blueprintPctPointLiteral(val);
+  if (pctPointLiteral) return pctPointLiteral;
   const timesLiteral = blueprintTimesLiteral(val);
   if (timesLiteral) return timesLiteral;
   const col = columnKey.trim();
@@ -289,6 +416,8 @@ export function formatTableCellForRow(
 ): string {
   const pctLiteral = blueprintPercentLiteral(val);
   if (pctLiteral) return pctLiteral;
+  const pctPointLiteral = blueprintPctPointLiteral(val);
+  if (pctPointLiteral) return pctPointLiteral;
   const timesLiteral = blueprintTimesLiteral(val);
   if (timesLiteral) return timesLiteral;
 
@@ -305,8 +434,12 @@ export function formatTableCellForRow(
   }
   if (metric && isPercentMetricLabel(metric)) {
     if (val == null || val === "") return "—";
-    const n = typeof val === "number" ? val : parseNum(val);
-    if (n != null) return formatPercentForCell(columnKey, n, metric);
+    const alreadyPoints =
+      isStoredPercentPointKey(columnKey) ||
+      isStoredPercentPointKey(metric) ||
+      isStoredPercentPointKey(rowLabelKey);
+    const n = cellPercentPoints(val, { alreadyPoints });
+    if (n != null) return formatPercentFromPoints(n);
     return formatTableCell(columnKey, val);
   }
   return formatTableCell(columnKey, val);
@@ -336,6 +469,14 @@ export function formatPctPoints(n: number | null | undefined): string {
   return formatPercentFromPoints(n);
 }
 
+/** 增减幅度轴/Tooltip：正数带 +，保留至多两位小数（+0.44%、-2.86%） */
+export function formatSignedPctPoints(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const body = formatPercentFromPoints(n);
+  if (n > 0 && !body.startsWith("+")) return `+${body}`;
+  return body;
+}
+
 /** sec-06-3 偿债表：按行指标名格式化（参照蓝本） */
 const SOLVENCY_PERCENT_METRICS = ["资产负债率", "货币资金/总资产", "应收账款/流动资产", "有息负债率"] as const;
 const SOLVENCY_TIMES_METRICS = ["权益乘数", "应收账款周转率", "总资产周转率"] as const;
@@ -351,7 +492,7 @@ export function formatSolvencyMetricValue(
   const n = parseNum(val);
   if (n == null) return String(val);
   const m = metric.trim();
-  if (SOLVENCY_PERCENT_METRICS.some((k) => m === k || m.includes(k))) return formatPct(n);
+  if (SOLVENCY_PERCENT_METRICS.some((k) => m === k || m.includes(k))) return formatCellPercent(val);
   if (m.includes("净现金")) return `${formatDecimal2(n)} 亿`;
   if (SOLVENCY_TIMES_METRICS.some((k) => m === k || m.includes(k))) return `${formatDecimal2(n)}x`;
   return formatDecimal2(n);

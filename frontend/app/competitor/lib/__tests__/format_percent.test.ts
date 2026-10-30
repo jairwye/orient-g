@@ -1,7 +1,11 @@
 import {
+  amplitudePercentPoints,
+  cellPercentPoints,
+  formatCellPercent,
   formatDecimal2,
   formatPct,
   formatPercentFromPoints,
+  formatSignedPctPoints,
   formatTableCell,
   formatTableCellForRow,
   toPercentPoints,
@@ -25,6 +29,57 @@ describe("toPercentPoints", () => {
   it("旧 snapshot 大百分比被 /100 后", () => {
     expect(toPercentPoints(-2.146)).toBe(-214.6);
     expect(toPercentPoints(1.221)).toBe(122.1);
+  });
+});
+
+describe("cellPercentPoints / formatCellPercent", () => {
+  it("0.82% 与 0.8% 已是百分点，不再 ×100 成 82% 或 80%", () => {
+    expect(cellPercentPoints("0.82%")).toBe(0.82);
+    expect(cellPercentPoints("0.8%")).toBe(0.8);
+    expect(cellPercentPoints("+0.44%")).toBe(0.44);
+    expect(formatCellPercent("0.82%")).toBe("0.82%");
+    expect(formatCellPercent("0.8%")).toBe("0.8%");
+    expect(formatCellPercent("0.82%")).not.toBe("82%");
+    expect(formatCellPercent("0.8%")).not.toBe("80%");
+    expect(formatTableCell("ROE", "0.82%")).toBe("0.82%");
+    expect(formatTableCell("ROE", "0.8%")).toBe("0.8%");
+  });
+
+  it("pct 后缀与变动(pct) 裸数字不再 ×100", () => {
+    expect(cellPercentPoints("+0.4pct")).toBe(0.4);
+    expect(cellPercentPoints(0.8, { alreadyPoints: true })).toBe(0.8);
+    expect(formatTableCell("毛利率变动", "+0.4pct")).toBe("+0.4pct");
+    const grossRow = { "变动(pct)": "毛利率" };
+    expect(formatTableCellForRow("可比公司A", 0.8, grossRow, "变动(pct)")).toBe("0.8%");
+    expect(formatTableCellForRow("可比公司A", -0.2, { "变动(pct)": "销售费用率" }, "变动(pct)")).toBe("-0.2%");
+    expect(formatTableCellForRow("可比公司B", 13, grossRow, "变动(pct)")).toBe("13%");
+  });
+
+  it("无 % 的旧比例存储仍 ×100", () => {
+    expect(cellPercentPoints(0.494)).toBe(49.4);
+    expect(formatCellPercent(0.414)).toBe("41.4%");
+  });
+});
+
+describe("amplitudePercentPoints", () => {
+  it("带 % 的增减幅度已是百分点，小于 1 不再 ×100", () => {
+    expect(amplitudePercentPoints("+0.44%")).toBe(0.44);
+    expect(amplitudePercentPoints("-2.86%")).toBe(-2.86);
+    expect(amplitudePercentPoints("+4.03%")).toBe(4.03);
+    expect(amplitudePercentPoints("-9.35%")).toBe(-9.35);
+    expect(amplitudePercentPoints("-4.85%")).toBe(-4.85);
+  });
+
+  it("无 % 的裸小数仍按比例换算", () => {
+    expect(amplitudePercentPoints(0.494)).toBe(49.4);
+  });
+});
+
+describe("formatSignedPctPoints", () => {
+  it("正数带加号，保留源小数", () => {
+    expect(formatSignedPctPoints(0.44)).toBe("+0.44%");
+    expect(formatSignedPctPoints(-2.86)).toBe("-2.86%");
+    expect(formatSignedPctPoints(4.03)).toBe("+4.03%");
   });
 });
 

@@ -1,6 +1,7 @@
 import { FK } from "../field_keys";
 import { SUBJECT_COL } from "../companies";
 import {
+  findTotalLaborPerCapitaRow,
   formatLaborCostDataValue,
   getLaborCostCellValue,
   isLaborCostSectionRow,
@@ -80,6 +81,36 @@ describe("laborCostTableHasFullSections", () => {
         { 指标: "人均(万/年)" },
       ]),
     ).toBe(false);
+  });
+});
+
+describe("findTotalLaborPerCapitaRow", () => {
+  const h1Rows = [
+    { 指标: "**人力成本**" },
+    { 指标: "月均(万)", 本公司: 512 },
+    { 指标: "人均(万/半年)", 本公司: 14.8 },
+    { 指标: "人均增减变动(万/半年)", 本公司: 1.5 },
+    { 指标: "**职工福利**" },
+    { 指标: "人均(元/半年)", 本公司: 4693 },
+    { 指标: "**工会经费及教育经费**" },
+    { 指标: "人均(元/半年)", 本公司: 0 },
+  ];
+
+  it("只取人力成本分组的人均(万/…)，不取福利与工会", () => {
+    const row = findTotalLaborPerCapitaRow(h1Rows);
+    expect(row?.指标).toBe("人均(万/半年)");
+    expect(row?.本公司).toBe(14.8);
+  });
+
+  it("年报口径人均(万/年)同样命中人力成本分组", () => {
+    const row = findTotalLaborPerCapitaRow([
+      { 指标: "**人力成本**" },
+      { 指标: "人均(万/年)", 可比公司A: 47.52 },
+      { 指标: "**职工福利**" },
+      { 指标: "人均(元/年)", 可比公司A: 18180 },
+    ]);
+    expect(row?.指标).toBe("人均(万/年)");
+    expect(row?.可比公司A).toBe(47.52);
   });
 });
 

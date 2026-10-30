@@ -2,7 +2,7 @@ import { KPICard } from "./KPICard";
 import { colorForCompany } from "../lib/competitor_chart_colors";
 import type { CompetitorReportSnapshot } from "../lib/types";
 import { FK } from "../lib/field_keys";
-import { formatTableCell } from "../lib/format";
+import { formatIndustryMetricValue, formatTableCell } from "../lib/format";
 import { extractCompaniesHint, isGrowthCompanyMetric } from "../lib/metric_hint";
 import { colToLabel } from "../lib/companies";
 import { FadeInView } from "./FadeInView";
@@ -42,7 +42,7 @@ export function MetricCardGrid({
           <KPICard
             key={i}
             label={label}
-            value={formatTableCell(valueKey, rawValue)}
+            value={formatIndustryMetricValue(label, rawValue, rows, valueKey)}
             hint={hint}
             delayMs={i * 60}
             prominent={prominent}

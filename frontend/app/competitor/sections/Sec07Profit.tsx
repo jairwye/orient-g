@@ -28,7 +28,7 @@ import {
 } from "../lib/competitor_chart_colors";
 import { companyColsForSnapshot, colToLabel, competitorTableUiProps, rowValueForCompany } from "../lib/companies";
 import { CL, FK, FK_AMOUNT_CHANGE } from "../lib/field_keys";
-import { formatPctPoints, parseNum, toPercentPoints } from "../lib/format";
+import { cellPercentPoints, formatPctPoints, parseNum } from "../lib/format";
 import { subTitleForSnap } from "../lib/navigation";
 import { buildFeeSubjectGroups, buildProfitSubjectGroups } from "../lib/profit_subject_analysis";
 import { getTable } from "../lib/selectors";
@@ -44,9 +44,8 @@ const FEE_CHANGE_METRICS = [FK.grossMarginRate, FK.salesFeeRate, FK.adminFeeRate
 
 const FEE_AMOUNT_ROWS = ["营业成本", "销售费用", "管理费用", "研发费用"] as const;
 
-function pctPoints(v: number | null): number | null {
-  if (v == null) return null;
-  return toPercentPoints(v);
+function pctPoints(v: string | number | null | undefined): number | null {
+  return cellPercentPoints(v);
 }
 
 function deltaFill(metric: string, delta: number): string {
@@ -121,7 +120,7 @@ export function Sec07Profit({ snapshot }: SectionProps) {
         let hasAny = false;
         for (const { key } of FEE_STACK) {
           const row = fees?.rows.find((r) => String(r[FK.metric] ?? "") === key);
-          const v = row ? pctPoints(parseNum(rowValueForCompany(row, col))) : null;
+          const v = row ? pctPoints(rowValueForCompany(row, col)) : null;
           if (v != null) {
             point[key] = v;
             hasAny = true;
@@ -136,7 +135,7 @@ export function Sec07Profit({ snapshot }: SectionProps) {
     () =>
       feeCols.map((col) => {
         const row = fees?.rows.find((r) => String(r[FK.metric] ?? "") === FK.grossMarginRate);
-        const v = row ? pctPoints(parseNum(rowValueForCompany(row, col))) : null;
+        const v = row ? pctPoints(rowValueForCompany(row, col)) : null;
         if (v == null) return null;
         return { name: colToLabel(col, snapshot), value: v, fill: colorForCompany(col, snapshot) };
       })

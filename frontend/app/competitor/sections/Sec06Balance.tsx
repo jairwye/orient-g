@@ -48,6 +48,8 @@ import {
 } from "../lib/finance_analysis";
 import { CL, FK, FK_CHANGE, FK_METRIC } from "../lib/field_keys";
 import {
+  cellPercentPoints,
+  formatCellPercent,
   formatDecimal2,
   formatPctPoints,
   formatSolvencyMetricValue,
@@ -79,6 +81,16 @@ function metricRowValue(
   const row = table?.rows.find((r) => String(r[FK.metric] ?? "") === metric);
   if (!row) return null;
   return parseNum(rowValueForCompany(row, col));
+}
+
+function metricCell(
+  table: ReturnType<typeof getTable>,
+  metric: string,
+  col: string,
+) {
+  const row = table?.rows.find((r) => String(r[FK.metric] ?? "") === metric);
+  if (!row) return null;
+  return rowValueForCompany(row, col);
 }
 
 function changeRowValue(
@@ -280,11 +292,11 @@ export function Sec06Balance({ snapshot }: SectionProps) {
   const arShareData = useMemo(
     () =>
       balanceCols.map((col) => {
-        const raw = metricRowValue(solvency, FK_METRIC.arToCurrent, col);
-        if (raw == null) return null;
+        const pts = cellPercentPoints(metricCell(solvency, FK_METRIC.arToCurrent, col));
+        if (pts == null) return null;
         return {
           name: colToLabel(col, snapshot),
-          value: toPercentPoints(raw),
+          value: pts,
           fill: colorForCompany(col, snapshot),
         };
       })
@@ -323,7 +335,7 @@ export function Sec06Balance({ snapshot }: SectionProps) {
     if (!dupont?.rows.length) return { headers: [] as string[], rows: [] as Record<string, string | number | null>[] };
     const headers = [...dupont.headers, CL.impliedRoe];
     const rows = dupont.rows.map((row) => {
-      const margin = toPercentPoints(parseNum(row["\u51c0\u5229\u7387"]) ?? 0);
+      const margin = cellPercentPoints(row["\u51c0\u5229\u7387"]) ?? 0;
       const turn = parseNum(row["\u603b\u8d44\u4ea7\u5468\u8f6c\u7387"]) ?? 0;
       const lev = parseNum(row["\u6743\u76ca\u4e58\u6570"]) ?? 0;
       const implied = impliedDupontRoe(margin, turn, lev);
@@ -543,8 +555,8 @@ export function Sec06Balance({ snapshot }: SectionProps) {
                     {...competitorTableUiProps(snapshot)}
                     formatCell={(h, v) => {
                       if (h === FK.company) return colToLabel(String(v ?? ""), snapshot);
-                      if (h === "ROE" || h === "\u51c0\u5229\u7387" || h === CL.impliedRoe)
-                        return formatPctPoints(toPercentPoints(parseNum(v) ?? 0));
+                      if (h === "ROE" || h === "\u51c0\u5229\u7387") return formatCellPercent(v);
+                      if (h === CL.impliedRoe) return formatPctPoints(toPercentPoints(parseNum(v) ?? 0));
                       if (String(h).includes("\u5468\u8f6c") || h === "\u6743\u76ca\u4e58\u6570")
                         return v != null ? `${formatDecimal2(parseNum(v))}x` : "\u2014";
                       return formatTableCell(h, v);

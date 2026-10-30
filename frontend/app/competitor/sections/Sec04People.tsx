@@ -26,9 +26,17 @@ import {
 } from "../lib/competitor_chart_colors";
 import { companyColsForSnapshot, colToLabel, companyDisplayLabel, rowValueForCompany } from "../lib/companies";
 import { CL, FK } from "../lib/field_keys";
-import { formatDecimal2, formatPctPoints, formatTableCell, parseNum, toPercentPoints } from "../lib/format";
+import {
+  amplitudePercentPoints,
+  formatDecimal2,
+  formatPctPoints,
+  formatSignedPctPoints,
+  formatTableCell,
+  parseNum,
+} from "../lib/format";
 import { LaborCostTable } from "../components/LaborCostTable";
-import { laborCostTableHasFullSections } from "../lib/labor_cost_table_utils";
+import { findTotalLaborPerCapitaRow, laborCostTableHasFullSections } from "../lib/labor_cost_table_utils";
+import { staffStructureShares } from "../lib/staff_structure";
 import { subTitleForSnap } from "../lib/navigation";
 import { getBestTable } from "../lib/selectors";
 import { type SectionProps } from "../lib/section_ui";
@@ -36,7 +44,7 @@ import { type SectionProps } from "../lib/section_ui";
 const STACK_SERIES = [
   { key: "rd", label: CL.rdShort, color: BUSINESS_CHART_COLORS.current },
   { key: "ops", label: FK.opsSales, color: BUSINESS_CHART_COLORS.actual },
-  { key: "adm", label: FK.adminFinance, color: BUSINESS_CHART_COLORS.lastYear },
+  { key: "adm", label: CL.adminFinanceEtc, color: BUSINESS_CHART_COLORS.lastYear },
 ] as const;
 
 const METRIC_HEADCOUNT_CHANGE = "\u589e\u51cf\u53d8\u52a8";
@@ -48,11 +56,9 @@ function formatAmplitudePct(val: string | number | null | undefined): string {
     const t = val.trim();
     if (t.endsWith("%")) return t;
   }
-  const n = parseNum(val);
-  if (n == null) return typeof val === "string" ? val : "\u2014";
-  const pct = toPercentPoints(n);
-  const sign = pct > 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}%`;
+  const pct = amplitudePercentPoints(val);
+  if (pct == null) return typeof val === "string" ? val : "\u2014";
+  return formatSignedPctPoints(pct);
 }
 
 function headcountTableRows(rows: Record<string, string | number | null>[]) {
@@ -119,7 +125,7 @@ function findPerCapProfitRow(rows: Record<string, string | number | null>[] | un
 }
 
 function buildMetricBarData(
-  metricRow: Record<string, string | number | null> | undefined,
+  metricRow: Record<string, string | number | null | undefined> | undefined,
   snapshot: SectionProps["snapshot"],
   tableHeaders?: string[],
 ) {
@@ -146,9 +152,8 @@ function buildHeadcountAmpData(
   const cols = companyColsForSnapshot(snapshot, tableHeaders);
   return cols.map((col) => {
     const raw = rowValueForCompany(ampRow, col);
-    const n = parseNum(raw);
-    if (n == null) return null;
-    const pct = toPercentPoints(n);
+    const pct = amplitudePercentPoints(raw);
+    if (pct == null) return null;
     return {
       name: colToLabel(col, snapshot),
       colKey: col,
@@ -169,16 +174,13 @@ export function Sec04People({ snapshot }: SectionProps) {
     structure?.rows
       .map((row) => {
         const name = String(row[FK.company] ?? "");
-        const rd = parseNum(row[FK.rdStaff]) ?? 0;
-        const ops = parseNum(row[FK.opsSales]) ?? 0;
-        const adm = parseNum(row[FK.adminFinance]) ?? 0;
-        const total = rd + ops + adm;
-        if (!name || total <= 0) return null;
+        const shares = staffStructureShares(row);
+        if (!name || !shares) return null;
         return {
           name: companyDisplayLabel(name, snapshot),
-          rd: (rd / total) * 100,
-          ops: (ops / total) * 100,
-          adm: (adm / total) * 100,
+          rd: shares.rd,
+          ops: shares.ops,
+          adm: shares.adm,
         };
       })
       .filter(Boolean) ?? [];
@@ -189,6 +191,13 @@ export function Sec04People({ snapshot }: SectionProps) {
   const perCapRevData = buildMetricBarData(revRow, snapshot, efficiency?.headers);
   const perCapProfitData = buildMetricBarData(profRow, snapshot, efficiency?.headers);
   const headcountAmpData = buildHeadcountAmpData(headcount?.rows, snapshot, headcount?.headers);
+  const laborPerCapRow = findTotalLaborPerCapitaRow(laborCost?.rows ?? []);
+  const perCapLaborCostData = buildMetricBarData(laborPerCapRow, snapshot, laborCost?.headers)
+    .slice()
+    .sort((a, b) => (b?.value ?? 0) - (a?.value ?? 0));
+  const laborPerCapSeriesName = laborPerCapRow
+    ? String(laborPerCapRow[FK.metric] ?? "").replace(/\*\*/g, "").trim()
+    : CL.perCapLaborCostChart;
 
   const headcountAmpChart = (
     <PanelChart caption={CL.headcountAmpChart} chartClassName="h-60 w-full sm:h-72">
@@ -203,14 +212,14 @@ export function Sec04People({ snapshot }: SectionProps) {
           <XAxis
             type="number"
             {...CHART_X_AXIS}
-            tickFormatter={(v) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`}
+            tickFormatter={(v) => formatSignedPctPoints(Number(v))}
             tick={{ fontSize: 10 }}
           />
           <YAxis type="category" dataKey="name" {...CHART_Y_AXIS} width={80} tick={{ fontSize: 10 }} interval={0} />
           <Tooltip
             {...competitorBarTooltipProps({
               content: (
-                <CompetitorChartTooltip valueFormatter={(v) => `${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(1)}%`} />
+                <CompetitorChartTooltip valueFormatter={(v) => formatSignedPctPoints(Number(v))} />
               ),
             })}
           />
@@ -301,6 +310,34 @@ export function Sec04People({ snapshot }: SectionProps) {
     </PanelChart>
   );
 
+  const perCapLaborCostChart = (
+    <PanelChart caption={CL.perCapLaborCostChart} chartClassName="h-60 w-full sm:h-72">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={perCapLaborCostData}
+          layout="vertical"
+          margin={{ left: 4, right: 12, top: 4, bottom: 4 }}
+          barCategoryGap="16%"
+        >
+          <CartesianGrid {...CHART_CARTESIAN_GRID} horizontal={false} />
+          <XAxis type="number" {...CHART_X_AXIS} tickFormatter={(v) => formatDecimal2(v)} tick={{ fontSize: 10 }} />
+          <YAxis type="category" dataKey="name" {...CHART_Y_AXIS} width={80} tick={{ fontSize: 10 }} interval={0} />
+          <Tooltip
+            {...competitorBarTooltipProps({
+              content: <CompetitorChartTooltip valueFormatter={(v) => formatDecimal2(v)} />,
+            })}
+          />
+          <Legend wrapperStyle={{ fontSize: 10 }} />
+          <Bar dataKey="value" name={laborPerCapSeriesName} radius={[0, 3, 3, 0]}>
+            {perCapLaborCostData.map((d, i) => (
+              <Cell key={i} fill={colorForCompany(d!.colKey, snapshot)} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </PanelChart>
+  );
+
   const headcountTable =
     headcount?.rows && headcount.rows.length > 0 ? (
       <DataTable
@@ -373,6 +410,7 @@ export function Sec04People({ snapshot }: SectionProps) {
                   </p>
                 ) : null}
                 {laborTable}
+                {perCapLaborCostData.length > 0 ? perCapLaborCostChart : null}
                 <NarrativesFromSection blocks={blocks} anchor="sec-04-3" immediate plain stripAnalysisPrefix />
               </TopicStack>
             ),
