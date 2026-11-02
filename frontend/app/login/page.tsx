@@ -62,7 +62,7 @@ function LoginForm() {
     <div className="flex min-h-screen items-center justify-center bg-zinc-950">
       <div className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900/80 p-6 shadow-xl">
         <h1 className="text-center text-lg font-medium text-zinc-100">登录</h1>
-        <p className="mt-1 text-center text-sm text-zinc-500">请输入后台设置的用户名和密码</p>
+        <p className="mt-1 text-center text-sm text-zinc-500">请输入后台设置的用户名和密码（jiaxx 部署演练）</p>
         {justChangedPassword && (
           <p className="mt-2 text-center text-sm text-emerald-400">密码已修改，请使用新密码登录。</p>
         )}
